@@ -734,6 +734,19 @@ SORT_MAP = {
     'rating': 'vote_average.desc',
 }
 
+GENRE_MAP = {
+    '动作': {'movie': 28,    'tv': 10759},
+    '喜剧': {'movie': 35,    'tv': 35},
+    '犯罪': {'movie': 80,    'tv': 80},
+    '纪录': {'movie': 99,    'tv': 99},
+    '剧情': {'movie': 18,    'tv': 18},
+    '动画': {'movie': 16,    'tv': 16},
+    '悬疑': {'movie': 9648,  'tv': 9648},
+    '科幻': {'movie': 878,   'tv': 10765},
+    '恐怖': {'movie': 27,    'tv': None},
+    '战争': {'movie': 10752, 'tv': 10768},
+}
+
 
 def action_explore(args):
     region = getattr(args, 'region', 'all') or 'all'
@@ -742,6 +755,7 @@ def action_explore(args):
     media = getattr(args, 'media', 'movie') or 'movie'
     page = int(getattr(args, 'page', 1) or 1)
     query = (getattr(args, 'q', '') or '').strip()
+    genre = (getattr(args, 'genre', '') or '').strip()
 
     t = Tmdb()
     if not t.key:
@@ -756,6 +770,10 @@ def action_explore(args):
         if region != 'all' and region in REGION_MAP: params.update(REGION_MAP[region])
         if year:
             params['first_air_date_year' if media == 'tv' else 'primary_release_year'] = year
+        if genre and genre in GENRE_MAP:
+            gid = GENRE_MAP[genre].get(media)
+            if gid:
+                params['with_genres'] = str(gid)
 
     try:
         res = t.get(tmdb_path, **params) or {}

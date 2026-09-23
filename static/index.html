@@ -1229,6 +1229,21 @@ window.addEventListener('unhandledrejection', function(e){
               <button data-v="tv" class="chip">剧集</button>
             </div>
           </div>
+          <div class="filter-row"><span class="filter-label">题材</span>
+            <div class="filter-chips" id="filterGenre">
+              <button data-v="" class="chip active">全部</button>
+              <button data-v="动作" class="chip">动作</button>
+              <button data-v="喜剧" class="chip">喜剧</button>
+              <button data-v="犯罪" class="chip">犯罪</button>
+              <button data-v="纪录" class="chip">纪录</button>
+              <button data-v="剧情" class="chip">剧情</button>
+              <button data-v="动画" class="chip">动画</button>
+              <button data-v="悬疑" class="chip">悬疑</button>
+              <button data-v="科幻" class="chip">科幻</button>
+              <button data-v="恐怖" class="chip">恐怖</button>
+              <button data-v="战争" class="chip">战争</button>
+            </div>
+          </div>
           <div class="filter-row"><span class="filter-label">年份</span>
             <div class="filter-chips" id="filterYear">
               <button data-v="" class="chip active">全部</button>
@@ -1236,10 +1251,9 @@ window.addEventListener('unhandledrejection', function(e){
               <button data-v="2025" class="chip">2025</button>
               <button data-v="2024" class="chip">2024</button>
               <button data-v="2023" class="chip">2023</button>
-              <button data-v="2022" class="chip">2022</button>
-              <button data-v="2021" class="chip">2021</button>
-              <button data-v="2020" class="chip">2020</button>
             </div>
+            <input type="number" id="filterYearInput" placeholder="或输入年份" min="1900" max="2030"
+                   style="width:130px;flex-shrink:0;font-size:13px;padding:8px 10px">
           </div>
           <div class="filter-row"><span class="filter-label">排序</span>
             <div class="filter-chips" id="filterSort">
@@ -2189,7 +2203,7 @@ async function runClean(){
 }
 
 /* ═══════════ 影视探索 ═══════════ */
-var exploreState = { region: 'all', media: 'movie', year: '', sort: 'popularity', page: 1, totalPages: 1, q: '' };
+var exploreState = { region: 'all', media: 'movie', year: '', sort: 'popularity', genre: '', page: 1, totalPages: 1, q: '' };
 var exploreLoading = false;
 var exploreFiltersOpen = false;
 
@@ -2201,6 +2215,7 @@ function updateFilterSummaryText(){
   var parts = [
     REGION_LABEL[exploreState.region] || '全部地区',
     MEDIA_LABEL[exploreState.media]   || '电影',
+    exploreState.genre || '全题材',
     exploreState.year ? (exploreState.year + ' 年') : '全部年份',
     SORT_LABEL[exploreState.sort]     || '热度'
   ];
@@ -2237,6 +2252,7 @@ function setupChipGroup(id, key){
     exploreState.page = 1;
     exploreState.q = '';
     $('exploreSearch').value = '';
+    if (key === 'year') { var yi = $('filterYearInput'); if (yi) yi.value = ''; }
     updateFilterSummaryText();
     // 选完自动收起（移动端体验好；桌面端也一致）
     if (exploreFiltersOpen) toggleExploreFilters();
@@ -2260,6 +2276,7 @@ async function loadExplore(){
            + '&year=' + encodeURIComponent(exploreState.year)
            + '&sort=' + encodeURIComponent(exploreState.sort)
            + '&media=' + encodeURIComponent(exploreState.media)
+           + '&genre=' + encodeURIComponent(exploreState.genre)
            + '&page=' + exploreState.page
            + '&q=' + encodeURIComponent(exploreState.q);
     var r = await api('/api/explore?' + qs);
@@ -2346,6 +2363,21 @@ function switchExploreTab_init(){
   setupChipGroup('filterMedia', 'media');
   setupChipGroup('filterYear', 'year');
   setupChipGroup('filterSort', 'sort');
+  setupChipGroup('filterGenre', 'genre');
+  var yi = $('filterYearInput');
+  if (yi) {
+    yi.addEventListener('keydown', function(e){
+      if (e.key !== 'Enter') return;
+      var v = yi.value.trim();
+      if (!v) return;
+      exploreState.year = v; exploreState.page = 1; exploreState.q = '';
+      $('exploreSearch').value = '';
+      document.querySelectorAll('#filterYear .chip').forEach(function(b){ b.classList.remove('active'); });
+      updateFilterSummaryText();
+      if (exploreFiltersOpen) toggleExploreFilters();
+      loadExplore();
+    });
+  }
   $('exploreSearch').addEventListener('keydown', function(e){ if (e.key === 'Enter') doExploreSearch(); });
   updateFilterSummaryText();
 }
