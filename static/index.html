@@ -1070,6 +1070,30 @@ body {
   .ui-modal-actions .btn { width: 100%; }
 }
 
+
+
+
+
+/* ===== 仪表盘分类卡片（强制） ===== */
+body::before { display: none !important; }
+.panel::before, .card::before { display: none !important; }
+.tab.active::before { display: none !important; }
+.main { max-width: none !important; }
+.cards { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)) !important; gap: 14px !important; }
+.cat-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important; gap: 10px !important; }
+.cat-card { background: var(--surface-hover) !important; border: 1px solid var(--border) !important; border-radius: 12px !important; padding: 12px !important; text-align: center !important; transition: all .18s ease !important; }
+.cat-card .cat-name { font-size: 12px !important; color: var(--text-dim) !important; margin-bottom: 6px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+.cat-card .cat-num { font-size: 20px !important; font-weight: 700 !important; color: var(--text) !important; letter-spacing: -.5px !important; }
+.cat-card .cat-sub { font-size: 10px !important; color: var(--text-dim) !important; margin-top: 4px !important; }
+.cat-card.cat-all { background: linear-gradient(135deg, rgba(99,102,241,.1), rgba(139,92,246,.1)) !important; border-color: rgba(99,102,241,.3) !important; }
+@media (max-width: 640px) {
+  .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important; gap: 10px !important; }
+  .cat-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)) !important; gap: 8px !important; }
+  .cat-card { padding: 10px !important; }
+  .cat-card .cat-num { font-size: 18px !important; }
+  .cat-card .cat-name { font-size: 11px !important; }
+}
+
 </style>
 <script>
 /* 尽早设置主题，避免页面闪烁（FOUC） */
@@ -1151,6 +1175,11 @@ window.addEventListener('unhandledrejection', function(e){
             <div class="sub" id="stat-ingest-sub">电影 / 剧集</div>
           </div>
           <div class="card"><div class="label" data-icon="clock">入库缓存</div><div class="value indigo" style="font-size:16px;margin-top:6px" id="stat-ingest-age">—</div><div class="sub">后台自动刷新</div></div>
+        </div>
+        <div class="panel">
+          <h3 data-icon="database">总库分类统计</h3>
+          <div id="libStatsSummary" style="font-size:12px;color:var(--text-dim);margin-bottom:12px">加载中...</div>
+          <div class="cat-grid" id="libStatsGrid"><div class="list-empty">加载中...</div></div>
         </div>
         <div class="panel">
           <h3 data-icon="zap">快速操作</h3>
@@ -1978,6 +2007,34 @@ function switchTab(id){
 }
 
 /* ═══════════ 治理总览 ═══════════ */
+async function loadLibraryStats(){
+  try {
+    var r = await api('/api/library_stats');
+    if (r.status !== 'success') throw new Error(r.message || '\u5931\u8d25');
+    var grid = $('libStatsGrid');
+    var html = '<div class="cat-card cat-all"><div class="cat-name">\u5168\u90e8</div>'
+      + '<div class="cat-num">' + (r.local_total + r.share_total).toLocaleString() + '</div>'
+      + '<div class="cat-sub">\u672c\u5730 ' + r.local_total.toLocaleString() + ' / \u5206\u4eab ' + r.share_total.toLocaleString() + '</div>'
+      + '</div>';
+    var sorted = r.rows.slice().sort(function(a, b){ return b.total - a.total; });
+    sorted.forEach(function(row){
+      if (row.total === 0) return;
+      html += '<div class="cat-card"><div class="cat-name">' + esc(row.name) + '</div>'
+        + '<div class="cat-num">' + row.total.toLocaleString() + '</div>'
+        + '<div class="cat-sub">\u672c\u5730 ' + row.local.toLocaleString() + ' / \u5206\u4eab ' + row.share.toLocaleString() + '</div>'
+        + '</div>';
+    });
+    grid.innerHTML = html;
+    var summary = '\u5171 ' + (r.local_total + r.share_total).toLocaleString() + ' \u4e2a STRM';
+    if (r.local_other + r.share_other > 0) {
+      summary += '\uff08\u672a\u5206\u7c7b ' + (r.local_other + r.share_other).toLocaleString() + '\uff09';
+    }
+    $('libStatsSummary').textContent = summary;
+  } catch(e){
+    $('libStatsGrid').innerHTML = '<div class="list-empty">\u52a0\u8f7d\u5931\u8d25: ' + esc(e.message) + '</div>';
+  }
+}
+
 async function loadDashboard(){
   try {
     var d = await api('/api/dashboard');
@@ -3056,8 +3113,21 @@ document.addEventListener('DOMContentLoaded', async function(){
   // 预加载订阅列表（供探索页订阅按钮用）
   try { var r = await api('/api/subscriptions'); currentSubs = r.subscriptions || []; } catch(e){}
   loadDashboard();
+  loadLibraryStats();
   pollTmdbProgress();
 });
 </script>
+<style id="tdd-final-override">
+body::before { display: none !important; }
+.panel::before, .card::before { display: none !important; }
+.tab.active::before { display: none !important; }
+.main { max-width: none !important; }
+.cat-grid { display: grid !important; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important; gap: 10px !important; }
+.cat-card { background: var(--surface-hover) !important; border: 1px solid var(--border) !important; border-radius: 12px !important; padding: 12px !important; text-align: center !important; }
+.cat-card .cat-num { font-size: 20px !important; font-weight: 700 !important; }
+.cat-card .cat-name { font-size: 12px !important; margin-bottom: 6px !important; }
+.cat-card .cat-sub { font-size: 10px !important; margin-top: 4px !important; }
+.cat-card.cat-all { background: linear-gradient(135deg, rgba(99,102,241,.1), rgba(139,92,246,.1)) !important; }
+</style>
 </body>
 </html>

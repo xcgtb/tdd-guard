@@ -1574,6 +1574,78 @@ def scan_exempt_matches():
     return list(results.values())
 
 
+
+def action_library_stats(args):
+    """统计双库各分类的 STRM 数量（按实际目录名匹配）"""
+    CATS = [
+        ('\U0001F476 儿童节目', ['儿童']),
+        ('\U0001F3A4 演唱会',       ['演唱会']),
+        ('\U0001F3AA 综艺剧',       ['综艺']),
+        ('\u26e9\ufe0f 动漫剧',     ['动漫']),
+        ('\U0001F9F8 动画电影',   ['动画电影']),
+        ('\U0001F4FD\ufe0f 纪录片',  ['纪录']),
+        ('\U0001F1E8\U0001F1F3 国产剧', ['国产剧集', '国产剧']),
+        ('\U0001F1FA\U0001F1F8 欧美剧', ['欧美剧集', '欧美剧', '其他剧集']),
+        ('\U0001F1EF\U0001F1F5 日韩剧', ['日韩剧集', '日韩剧']),
+        ('\U0001F1E8\U0001F1F3 华语电影', ['国产电影', '华语电影']),
+        ('\U0001F310 外语电影', ['欧美电影', '日韩电影', '外语电影', '其他电影']),
+    ]
+    cat_names = [c[0] for c in CATS]
+
+    out = {
+        'local': {c: 0 for c in cat_names},
+        'share': {c: 0 for c in cat_names},
+        'local_other': 0,
+        'share_other': 0,
+        'local_total': 0,
+        'share_total': 0,
+    }
+
+    for root, key in ((L_ROOT, 'local'), (S_ROOT, 'share')):
+        if not root.exists():
+            continue
+        for f in root.rglob('*.strm'):
+            try:
+                parts = f.relative_to(root).parts
+            except ValueError:
+                continue
+            matched = None
+            for part in parts:
+                for cat_name, kws in CATS:
+                    hit = False
+                    for kw in kws:
+                        if kw in part:
+                            hit = True
+                            break
+                    if hit:
+                        matched = cat_name
+                        break
+                if matched:
+                    break
+            if matched:
+                out[key][matched] += 1
+            else:
+                out[key + '_other'] += 1
+            out[key + '_total'] += 1
+
+    rows = []
+    for cat in cat_names:
+        rows.append({
+            'name': cat,
+            'local': out['local'][cat],
+            'share': out['share'][cat],
+            'total': out['local'][cat] + out['share'][cat],
+        })
+    return {
+        'status': 'success',
+        'rows': rows,
+        'local_total': out['local_total'],
+        'share_total': out['share_total'],
+        'local_other': out['local_other'],
+        'share_other': out['share_other'],
+    }
+
+
 ACTIONS = {
     'inter_check':  action_inter_check,
     'inter_clean':  action_inter_clean,
@@ -1583,6 +1655,7 @@ ACTIONS = {
     'logs':         action_logs,
     'explore':      action_explore,
     'emby_library': action_emby_library,
+    'library_stats': action_library_stats,
 }
 MUTATING = {'inter_clean'}
 

@@ -454,6 +454,15 @@ def api_emby_library(force: int = 0, with_tmdb: int = 1):
     return {'status': 'started', 'message': 'TMDB 对照已在后台启动'}
 
 
+
+
+@app.get('/api/library_stats', dependencies=[Depends(auth)])
+def api_library_stats():
+    try:
+        return engine.action_library_stats(Args())
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
 # ═══════════════════ 治理策略 ═══════════════════
 @app.get('/api/strategy', dependencies=[Depends(auth)])
 def api_get_strategy():
