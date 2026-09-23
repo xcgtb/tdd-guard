@@ -1,0 +1,3063 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#6366f1">
+<title>TDD Guard</title>
+<style>
+/* ═══════════════════════════════════════════════
+   TDD Guard · Aurora UI v3
+   浅色 / 深色 双主题 + 移动端适配
+   ═══════════════════════════════════════════════ */
+
+/* ── CSS 变量：浅色（默认） ── */
+:root{
+  --bg:#eef1f8;
+  --bg-soft:#f8fafc;
+  --bg-dim:#f3f4f6;
+  --surface:rgba(255,255,255,.72);
+  --surface-solid:#ffffff;
+  --surface-hover:rgba(15,23,42,.04);
+  --surface-active:rgba(15,23,42,.07);
+
+  --text:#0f172a;
+  --text-mid:#475569;
+  --text-dim:#94a3b8;
+  --text-inverse:#ffffff;
+
+  --border:rgba(15,23,42,.06);
+  --border-strong:rgba(15,23,42,.1);
+  --border-input:#d1d5db;
+
+  --brand:#6366f1;
+  --brand-2:#8b5cf6;
+  --brand-3:#06b6d4;
+  --grad-brand:linear-gradient(135deg,#6366f1,#8b5cf6 55%,#06b6d4);
+  --grad-brand-hover:linear-gradient(135deg,#4f46e5,#7c3aed 55%,#0891b2);
+
+  --ok:#10b981;
+  --ok-soft:#ecfdf5;
+  --ok-border:#a7f3d0;
+  --warn:#f59e0b;
+  --warn-soft:#fffbeb;
+  --warn-border:#fef3c7;
+  --err:#ef4444;
+  --err-soft:#fef2f2;
+  --err-border:#fee2e2;
+  --info:#2563eb;
+  --info-soft:#eff6ff;
+  --info-border:#bfdbfe;
+
+  --shadow-sm:0 1px 2px rgba(15,23,42,.04),0 2px 8px rgba(15,23,42,.04);
+  --shadow-md:0 2px 4px rgba(15,23,42,.04),0 12px 32px rgba(15,23,42,.08);
+  --shadow-lg:0 8px 16px rgba(15,23,42,.06),0 24px 48px rgba(15,23,42,.12);
+
+  --r-sm:8px; --r-md:12px; --r-lg:18px; --r-xl:24px;
+  --ease:cubic-bezier(.2,.8,.2,1);
+
+  --aurora-1:rgba(99,102,241,.18);
+  --aurora-2:rgba(139,92,246,.16);
+  --aurora-3:rgba(6,182,212,.12);
+  --grid-line:rgba(15,23,42,.025);
+
+  color-scheme:light;
+}
+
+/* ── 深色主题（手动切换） ── */
+html[data-theme="dark"]{
+  --bg:#0b1120;
+  --bg-soft:#111827;
+  --bg-dim:#1e293b;
+  --surface:rgba(30,41,59,.7);
+  --surface-solid:#1e293b;
+  --surface-hover:rgba(148,163,184,.08);
+  --surface-active:rgba(148,163,184,.14);
+
+  --text:#f1f5f9;
+  --text-mid:#cbd5e1;
+  --text-dim:#64748b;
+
+  --border:rgba(148,163,184,.12);
+  --border-strong:rgba(148,163,184,.2);
+  --border-input:rgba(148,163,184,.25);
+
+  --ok-soft:rgba(16,185,129,.12);
+  --ok-border:rgba(16,185,129,.3);
+  --warn-soft:rgba(245,158,11,.12);
+  --warn-border:rgba(245,158,11,.3);
+  --err-soft:rgba(239,68,68,.12);
+  --err-border:rgba(239,68,68,.3);
+  --info-soft:rgba(59,130,246,.12);
+  --info-border:rgba(59,130,246,.3);
+
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3),0 2px 8px rgba(0,0,0,.3);
+  --shadow-md:0 2px 4px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.4);
+  --shadow-lg:0 8px 16px rgba(0,0,0,.4),0 24px 48px rgba(0,0,0,.5);
+
+  --aurora-1:rgba(99,102,241,.24);
+  --aurora-2:rgba(139,92,246,.22);
+  --aurora-3:rgba(6,182,212,.16);
+  --grid-line:rgba(148,163,184,.05);
+
+  color-scheme:dark;
+}
+
+/* ── 跟随系统（用户未手动选择） ── */
+@media (prefers-color-scheme: dark){
+  html:not([data-theme]){
+    --bg:#0b1120;
+    --bg-soft:#111827;
+    --bg-dim:#1e293b;
+    --surface:rgba(30,41,59,.7);
+    --surface-solid:#1e293b;
+    --surface-hover:rgba(148,163,184,.08);
+    --surface-active:rgba(148,163,184,.14);
+    --text:#f1f5f9;
+    --text-mid:#cbd5e1;
+    --text-dim:#64748b;
+    --border:rgba(148,163,184,.12);
+    --border-strong:rgba(148,163,184,.2);
+    --border-input:rgba(148,163,184,.25);
+    --ok-soft:rgba(16,185,129,.12);
+    --ok-border:rgba(16,185,129,.3);
+    --warn-soft:rgba(245,158,11,.12);
+    --warn-border:rgba(245,158,11,.3);
+    --err-soft:rgba(239,68,68,.12);
+    --err-border:rgba(239,68,68,.3);
+    --info-soft:rgba(59,130,246,.12);
+    --info-border:rgba(59,130,246,.3);
+    --shadow-sm:0 1px 2px rgba(0,0,0,.3),0 2px 8px rgba(0,0,0,.3);
+    --shadow-md:0 2px 4px rgba(0,0,0,.3),0 12px 32px rgba(0,0,0,.4);
+    --shadow-lg:0 8px 16px rgba(0,0,0,.4),0 24px 48px rgba(0,0,0,.5);
+    --aurora-1:rgba(99,102,241,.24);
+    --aurora-2:rgba(139,92,246,.22);
+    --aurora-3:rgba(6,182,212,.16);
+    --grid-line:rgba(148,163,184,.05);
+    color-scheme:dark;
+  }
+}
+
+/* ── Reset ── */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg)}
+body{
+  font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  color:var(--text);
+  background-image:
+    radial-gradient(1200px 800px at 8% -10%, var(--aurora-1), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, var(--aurora-2), transparent 55%),
+    radial-gradient(900px 600px at 600% 100%, var(--aurora-3), transparent 60%);
+  background-attachment:fixed;
+  background-repeat:no-repeat;
+  -webkit-tap-highlight-color:transparent;
+  transition:background-color .3s var(--ease), color .3s var(--ease);
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size:32px 32px;
+  mask-image:radial-gradient(ellipse 80% 60% at 50% 0%, #000 20%, transparent 80%);
+  -webkit-mask-image:radial-gradient(ellipse 80% 60% at 50% 0%, #000 20%, transparent 80%);
+}
+a{color:inherit;text-decoration:none}
+.hidden{display:none!important}
+.green{color:var(--ok)}.blue{color:var(--info)}.amber{color:var(--warn)}.red{color:var(--err)}.indigo{color:var(--brand)}.gray{color:var(--text-dim)}
+
+svg.ic{display:inline-block;vertical-align:-3px;width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.btn svg.ic{width:14px;height:14px;vertical-align:-2px}
+.panel h3 svg.ic{width:16px;height:16px}
+.card .label svg.ic{width:14px;height:14px;opacity:.85}
+
+/* ═══════════ 布局 ═══════════ */
+.app-wrap{min-height:100vh}
+
+.header{
+  height:60px;
+  background:var(--surface);
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 16px;position:sticky;top:0;z-index:10;
+}
+.header .left{display:flex;align-items:center;gap:10px;min-width:0}
+.header .right{display:flex;align-items:center;gap:8px}
+.header .menu-btn{background:none;border:none;cursor:pointer;color:var(--text-mid);padding:8px;display:flex;align-items:center;border-radius:10px;transition:background .15s}
+.header .menu-btn:hover{background:var(--surface-hover)}
+.header .menu-btn svg.ic{width:22px;height:22px}
+.header h2{font-size:15px;font-weight:700;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 主题切换按钮 */
+.theme-btn{
+  background:var(--surface-hover);border:1px solid var(--border);
+  border-radius:10px;cursor:pointer;color:var(--text-mid);
+  padding:8px 10px;display:flex;align-items:center;justify-content:center;
+  transition:all .18s var(--ease);font-family:inherit;
+}
+.theme-btn:hover{background:var(--surface-active);color:var(--text)}
+.theme-btn svg.ic{width:18px;height:18px}
+
+.sidebar{
+  position:fixed;top:0;left:0;bottom:0;width:260px;
+  background:var(--surface);
+  backdrop-filter:blur(24px) saturate(180%);
+  -webkit-backdrop-filter:blur(24px) saturate(180%);
+  border-right:1px solid var(--border);
+  z-index:100;transform:translateX(-100%);
+  transition:transform .25s var(--ease);
+  display:flex;flex-direction:column;
+}
+.sidebar.open{transform:translateX(0)}
+.side-title{
+  height:64px;display:flex;align-items:center;padding:0 20px;
+  border-bottom:1px solid var(--border);
+  font-size:18px;font-weight:800;gap:8px;letter-spacing:-.3px;
+}
+.side-title svg.ic{width:22px;height:22px;color:var(--brand)}
+.side-title .v{
+  font-size:11px;font-weight:600;color:#fff;
+  background:var(--grad-brand);
+  padding:2px 8px;border-radius:999px;letter-spacing:.3px;
+  box-shadow:0 2px 8px rgba(99,102,241,.3);
+}
+.sidebar nav{flex:1;overflow-y:auto;padding:12px 10px}
+.sidebar nav a{
+  display:flex;align-items:center;padding:10px 12px;border-radius:var(--r-sm);
+  color:var(--text-mid);font-size:13px;font-weight:500;cursor:pointer;
+  margin-bottom:2px;gap:12px;position:relative;
+  transition:all .18s var(--ease);
+}
+.sidebar nav a:hover{background:var(--surface-hover);color:var(--text)}
+.sidebar nav a.active{
+  background:var(--grad-brand);color:#fff;
+  box-shadow:0 4px 14px rgba(99,102,241,.35),inset 0 1px 0 rgba(255,255,255,.25);
+}
+.sidebar nav a.active::before{
+  content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);
+  width:3px;height:20px;border-radius:0 3px 3px 0;background:var(--grad-brand);
+}
+.sidebar nav a .icon{display:flex;align-items:center}
+.side-foot{padding:16px;border-top:1px solid var(--border)}
+.side-foot button{
+  background:none;border:none;color:var(--text-mid);font-size:13px;font-weight:500;
+  cursor:pointer;padding:8px 12px;border-radius:8px;text-align:left;width:100%;
+  font-family:inherit;display:flex;align-items:center;gap:8px;
+  transition:all .15s var(--ease);
+}
+.side-foot button:hover{background:rgba(239,68,68,.08);color:#dc2626}
+
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99;display:none}
+.mask.show{display:block}
+
+.main{padding:22px;padding-bottom:60px;max-width:1100px;margin:0 auto;position:relative;z-index:1}
+
+/* ═══════════ Tab 切换 ═══════════ */
+.tab{display:none}
+.tab.active{
+  display:block;
+  animation:tabEnter .34s cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes tabEnter{
+  from{opacity:0;transform:translateY(10px)}
+  to  {opacity:1;transform:translateY(0)}
+}
+.tab.active{position:relative}
+.tab.active::before{
+  content:"";position:absolute;top:-22px;left:-22px;right:-22px;height:180px;
+  background:radial-gradient(ellipse 60% 100% at 50% 0%, rgba(99,102,241,.09), transparent 70%);
+  pointer-events:none;z-index:-1;
+}
+
+/* ═══════════ 卡片 / 面板 ═══════════ */
+.cards{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:18px}
+@media(min-width:640px){.cards{grid-template-columns:repeat(4,1fr)}}
+
+.panel,.card,.poster-card,.emby-card{
+  background:var(--surface);
+  backdrop-filter:blur(20px) saturate(160%);
+  -webkit-backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border);
+  box-shadow:var(--shadow-sm);
+  border-radius:var(--r-lg);
+  position:relative;
+  overflow:hidden;
+  transition:transform .22s var(--ease),box-shadow .22s var(--ease),border-color .22s var(--ease),background-color .3s var(--ease);
+}
+.panel::before,.card::before{
+  content:"";position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);
+  opacity:.7;
+}
+html[data-theme="dark"] .panel::before,
+html[data-theme="dark"] .card::before{opacity:.15}
+@media (prefers-color-scheme:dark){
+  html:not([data-theme]) .panel::before,
+  html:not([data-theme]) .card::before{opacity:.15}
+}
+
+.panel{padding:22px 24px;margin-bottom:18px}
+.card{padding:18px 20px;border-radius:var(--r-lg)}
+.card.clickable{cursor:pointer}
+.card.clickable:hover,.poster-card:hover,.emby-card:hover{
+  transform:translateY(-3px);
+  box-shadow:var(--shadow-md);
+  border-color:rgba(99,102,241,.25);
+}
+.card .label{
+  font-size:11.5px;color:var(--text-dim);font-weight:600;
+  letter-spacing:.3px;text-transform:uppercase;
+  margin-bottom:6px;display:flex;align-items:center;gap:4px;
+}
+.card .value{
+  font-size:28px;font-weight:800;letter-spacing:-1px;
+  line-height:1.1;margin-top:4px;color:var(--text);
+}
+.card .value.blue{background:linear-gradient(135deg,#2563eb,#6366f1);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.card .value.green{background:linear-gradient(135deg,#059669,#10b981);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.card .value.amber{background:linear-gradient(135deg,#d97706,#f59e0b);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.card .value.red{background:linear-gradient(135deg,#dc2626,#ef4444);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.card .value.indigo{background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.card .value.gray{color:var(--text-dim)}
+.card .sub{color:var(--text-dim);font-size:10.5px;margin-top:6px}
+
+.panel h3{
+  font-size:15px;font-weight:700;margin-bottom:14px;color:var(--text);
+  display:flex;align-items:center;gap:6px;
+}
+.panel .row-between{
+  display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:8px;margin-bottom:14px;
+}
+.panel .row-between h3{margin:0}
+
+/* ═══════════ 按钮 ═══════════ */
+.btn{
+  background:var(--grad-brand);color:#fff;border:none;
+  padding:9px 16px;border-radius:10px;font-size:12px;font-weight:600;
+  cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  font-family:inherit;letter-spacing:.1px;
+  transition:all .18s var(--ease);
+  box-shadow:0 1px 2px rgba(15,23,42,.05);
+  background-size:150% 150%;
+}
+.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(99,102,241,.32);background-position:100% 0}
+.btn:active{transform:translateY(0)}
+.btn:disabled{background:var(--surface-active);color:var(--text-dim);cursor:not-allowed;transform:none;box-shadow:none}
+.btn.gray{
+  background:var(--surface-hover);color:var(--text-mid);
+  border:1px solid var(--border);
+}
+.btn.gray:hover{background:var(--surface-active);box-shadow:var(--shadow-sm)}
+.btn.green{background:linear-gradient(135deg,#059669,#10b981)}
+.btn.green:hover{box-shadow:0 6px 16px rgba(16,185,129,.32)}
+.btn.red{background:linear-gradient(135deg,#dc2626,#ef4444)}
+.btn.red:hover{box-shadow:0 6px 16px rgba(239,68,68,.32)}
+.btn.sm{padding:5px 11px;font-size:11px;border-radius:8px}
+
+/* ═══════════ 输入框 ═══════════ */
+input[type=text],input[type=number],input[type=password],select,textarea{
+  border:1px solid var(--border-input);border-radius:10px;
+  background:var(--surface-solid);color:var(--text);
+  padding:9px 12px;font-size:13.5px;outline:none;width:100%;font-family:inherit;
+  transition:border-color .15s var(--ease),box-shadow .15s var(--ease),background-color .3s var(--ease);
+}
+input::placeholder,textarea::placeholder{color:var(--text-dim)}
+input:focus,select:focus,textarea:focus{
+  border-color:rgba(99,102,241,.5);outline:none;
+  box-shadow:0 0 0 4px rgba(99,102,241,.1);
+}
+.input-row{display:flex;gap:8px;align-items:stretch}
+.input-row input{flex:1}
+.input-row .eye-btn{
+  background:var(--surface-hover);border:1px solid var(--border-input);
+  border-radius:10px;padding:0 12px;cursor:pointer;font-family:inherit;
+  font-size:13px;color:var(--text-mid);display:flex;align-items:center;gap:4px;
+  white-space:nowrap;font-weight:500;
+}
+.input-row .eye-btn:hover{background:var(--surface-active)}
+.input-row .eye-btn.on{background:var(--info-soft);border-color:var(--info-border);color:var(--info)}
+
+/* ═══════════ 表单 ═══════════ */
+.form-row{margin-bottom:14px}
+.form-row label{
+  display:block;font-size:12px;color:var(--text-mid);font-weight:600;
+  margin-bottom:6px;display:flex;align-items:center;gap:6px;
+}
+.form-row .hint{font-size:11px;color:var(--text-dim);margin-top:4px}
+.form-row .masked-hint{font-size:11px;color:var(--warn);margin-top:4px;display:none}
+.form-row.revealed .masked-hint{display:block}
+
+/* ═══════════ 分段控件 / Chip ═══════════ */
+.segmented{
+  display:inline-flex;background:var(--surface-hover);border-radius:11px;
+  padding:3px;gap:0;overflow-x:auto;width:100%;-webkit-overflow-scrolling:touch;
+}
+.segmented button{
+  flex:1;background:transparent;border:none;padding:8px 6px;border-radius:9px;
+  font-size:12.5px;color:var(--text-mid);cursor:pointer;font-family:inherit;
+  transition:all .18s var(--ease);white-space:nowrap;font-weight:500;
+}
+.segmented button:hover{color:var(--text)}
+.segmented button.active{
+  background:var(--surface-solid);color:var(--text);font-weight:600;
+  box-shadow:0 1px 3px rgba(15,23,42,.1);
+}
+
+.filter-row{display:flex;align-items:center;gap:14px;padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.filter-row:last-child{border-bottom:none}
+.filter-label{
+  font-size:11px;color:var(--text-dim);text-transform:uppercase;
+  letter-spacing:.6px;font-weight:700;min-width:52px;
+}
+.filter-chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{
+  background:var(--surface-hover);border:none;color:var(--text-mid);
+  font-size:12.5px;padding:6px 14px;border-radius:999px;cursor:pointer;
+  font-family:inherit;font-weight:500;margin-right:4px;
+  transition:all .18s var(--ease);
+}
+.chip:hover{background:rgba(99,102,241,.1);color:var(--brand)}
+.chip.active{
+  background:var(--grad-brand);color:#fff;
+  box-shadow:0 3px 10px rgba(99,102,241,.35);
+  transform:scale(1.02);
+}
+
+/* ═══════════ 搜索框 ═══════════ */
+.search-hero{
+  background:var(--surface-solid);border:1px solid var(--border);
+  border-radius:14px;padding:7px 7px 7px 16px;margin-bottom:16px;
+  display:flex;gap:8px;align-items:center;
+  box-shadow:var(--shadow-sm);
+  transition:box-shadow .2s var(--ease),border-color .2s var(--ease);
+}
+.search-hero:focus-within{border-color:rgba(99,102,241,.4);box-shadow:0 0 0 4px rgba(99,102,241,.08),var(--shadow-md)}
+.search-hero input{flex:1;border:none;background:transparent;padding:12px 8px;font-size:14px;color:var(--text)}
+.search-hero input:focus{outline:none}
+.search-hero .search-btn{
+  background:var(--grad-brand);color:#fff;border:none;border-radius:10px;
+  padding:10px 22px;cursor:pointer;display:flex;align-items:center;gap:6px;
+  font-family:inherit;font-size:13px;font-weight:600;
+  box-shadow:0 4px 12px rgba(99,102,241,.3);white-space:nowrap;
+}
+.search-hero .search-btn:hover{background:var(--grad-brand-hover)}
+.search-hero .search-btn svg.ic{width:16px;height:16px}
+
+/* ═══════════ 筛选摘要行（折叠） ═══════════ */
+.filter-summary{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  background:var(--surface);
+  backdrop-filter:blur(20px) saturate(160%);
+  -webkit-backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border);
+  border-radius:12px;padding:10px 14px;margin-bottom:12px;
+  box-shadow:var(--shadow-sm);
+  position:sticky;top:68px;z-index:5;
+  transition:all .18s var(--ease);
+}
+.filter-summary .fs-text{
+  font-size:12.5px;color:var(--text-mid);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  flex:1;min-width:0;
+}
+.filter-summary .fs-text b{color:var(--text);font-weight:600}
+.filter-summary .fs-toggle{
+  background:var(--surface-hover);border:1px solid var(--border);
+  border-radius:8px;padding:6px 12px;cursor:pointer;
+  font-family:inherit;font-size:12px;font-weight:600;color:var(--text-mid);
+  display:flex;align-items:center;gap:5px;white-space:nowrap;
+  transition:all .18s var(--ease);
+}
+.filter-summary .fs-toggle:hover{background:var(--surface-active);color:var(--text)}
+.filter-summary .fs-toggle svg.ic{width:14px;height:14px;transition:transform .2s var(--ease)}
+.filter-summary.open .fs-toggle svg.ic{transform:rotate(180deg)}
+
+#exploreFilters{
+  background:var(--surface);
+  backdrop-filter:blur(20px) saturate(160%);
+  -webkit-backdrop-filter:blur(20px) saturate(160%);
+  border:1px solid var(--border);
+  border-radius:14px;padding:14px;margin-bottom:16px;
+  box-shadow:var(--shadow-sm);
+  animation:panelSlide .28s cubic-bezier(.2,.8,.2,1) both;
+}
+@keyframes panelSlide{
+  from{opacity:0;transform:translateY(-6px)}
+  to  {opacity:1;transform:translateY(0)}
+}
+
+/* ═══════════ 海报网格 ═══════════ */
+.poster-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(148px,1fr));
+  gap:14px;margin-bottom:18px;
+}
+@media(min-width:1400px){.poster-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
+@media(max-width:600px){.poster-grid{grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}}
+
+.poster-card{border-radius:var(--r-lg)}
+.poster-card .poster-wrap{
+  position:relative;width:100%;aspect-ratio:2/3;
+  background:var(--bg-dim);display:flex;align-items:center;justify-content:center;overflow:hidden;
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
+}
+.poster-card .poster-wrap img{width:100%;height:100%;object-fit:cover;display:block}
+.poster-card .poster-wrap .no-img{color:var(--text-dim);font-size:11px;text-align:center;padding:8px}
+.poster-card .badge-type,
+.poster-card .badge-rate,
+.poster-card .badge-status{
+  position:absolute;font-size:10px;font-weight:600;padding:3px 8px;border-radius:6px;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  background:rgba(15,23,42,.6);color:#fff;
+}
+.poster-card .badge-type{left:6px;top:6px}
+.poster-card .badge-rate{right:6px;top:6px;color:#fbbf24;display:flex;align-items:center;gap:3px}
+.poster-card .badge-rate svg.ic{width:10px;height:10px;fill:currentColor;stroke:none}
+.poster-card .badge-status{right:6px;bottom:6px}
+.badge-status.ok{background:rgba(16,185,129,.92)}
+.badge-status.no{background:rgba(100,116,139,.75)}
+.badge-status.local{background:rgba(59,130,246,.92)}
+.badge-status.share{background:rgba(139,92,246,.92)}
+
+.poster-card .info{padding:10px 12px 12px}
+.poster-card .t{font-size:12.5px;font-weight:600;letter-spacing:-.1px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.poster-card .meta{font-size:10.5px;color:var(--text-dim);margin-top:3px;display:flex;justify-content:space-between;align-items:center;gap:4px}
+.poster-card .sub-btn{
+  background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(139,92,246,.12));
+  color:var(--brand);border:none;border-radius:6px;padding:3px 8px;
+  font-size:10px;cursor:pointer;font-weight:600;font-family:inherit;
+  transition:all .15s var(--ease);
+}
+.poster-card .sub-btn:hover{background:var(--grad-brand);color:#fff}
+.poster-card .sub-btn.on{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
+.poster-card:hover{
+  transform:translateY(-4px) scale(1.015);
+  box-shadow:0 8px 24px rgba(15,23,42,.1),0 24px 48px rgba(15,23,42,.12);
+}
+
+.pager{display:flex;align-items:center;justify-content:center;gap:16px;padding:16px 0}
+
+/* ═══════════ Emby 卡 ═══════════ */
+.emby-card{
+  border-left:3px solid var(--border-strong);
+  border-radius:var(--r-md);margin-bottom:12px;
+}
+.emby-card.st-aligned{border-left-color:var(--ok)}
+.emby-card.st-missing{border-left-color:var(--err)}
+.emby-card.st-extra{border-left-color:var(--warn)}
+.emby-card.st-ongoing{border-left-color:var(--info)}
+.emby-card.st-unmatched,.emby-card.st-no_tmdb{border-left-color:var(--text-dim)}
+.emby-head{display:flex;gap:12px;padding:12px;align-items:flex-start}
+.emby-poster{
+  width:64px;height:96px;border-radius:8px;background:var(--bg-dim);
+  flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  overflow:hidden;color:var(--text-dim);font-size:10px;
+}
+.emby-poster img{width:100%;height:100%;object-fit:cover}
+.emby-body{flex:1;min-width:0}
+.emby-title{font-size:14px;font-weight:600;margin-bottom:4px;line-height:1.3;color:var(--text)}
+.emby-meta{font-size:11px;color:var(--text-dim);margin-bottom:6px;display:flex;gap:8px;flex-wrap:wrap}
+.emby-badges{display:flex;gap:6px;flex-wrap:wrap}
+.emby-badge{
+  font-size:10px;padding:2px 8px;border-radius:5px;font-weight:600;
+  display:inline-flex;align-items:center;gap:3px;
+}
+.emby-badge svg.ic{width:10px;height:10px;stroke-width:2.5}
+.emby-badge.loc{background:rgba(59,130,246,.15);color:#2563eb}
+.emby-badge.shr{background:rgba(139,92,246,.15);color:#7c3aed}
+.emby-badge.ok{background:var(--ok-soft);color:#065f46}
+.emby-badge.miss{background:var(--err-soft);color:#991b1b}
+.emby-badge.extra{background:var(--warn-soft);color:#92400e}
+.emby-badge.ongoing{background:var(--info-soft);color:#1e40af}
+.emby-badge.dim{background:var(--surface-hover);color:var(--text-dim)}
+.emby-badge.gen{background:var(--surface-hover);color:var(--text-mid);font-weight:500}
+html[data-theme="dark"] .emby-badge.ok{color:#6ee7b7}
+html[data-theme="dark"] .emby-badge.miss{color:#fca5a5}
+html[data-theme="dark"] .emby-badge.extra{color:#fcd34d}
+html[data-theme="dark"] .emby-badge.loc{color:#93c5fd}
+html[data-theme="dark"] .emby-badge.shr{color:#c4b5fd}
+
+.season-summary{display:flex;gap:16px;font-size:11px;margin:8px 0;flex-wrap:wrap}
+.season-summary .item{display:flex;gap:4px;align-items:baseline}
+.season-summary .item .k{color:var(--text-dim)}
+.season-summary .item .v{font-weight:600;color:var(--text-mid)}
+.season-summary .item.miss .v{color:var(--err)}
+.season-summary .item.ok .v{color:var(--ok)}
+.season-summary .item.extra .v{color:var(--warn)}
+
+.season-list{margin-top:8px}
+.season-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px}
+.season-row:last-child{border-bottom:none}
+.season-row .s{font-family:ui-monospace,Menlo,monospace;font-weight:600;color:var(--text-dim);min-width:32px}
+.season-row .d{flex:1;color:var(--text-mid)}
+.season-row .d b{color:var(--text)}
+.season-row .tag{padding:2px 8px;border-radius:5px;font-weight:600;font-size:10px;white-space:nowrap}
+.season-row.miss  .tag{background:var(--err-soft);color:#991b1b}
+.season-row.extra .tag{background:var(--warn-soft);color:#92400e}
+.season-row.ok    .tag{background:var(--ok-soft);color:#065f46}
+
+/* ═══════════ 列表项 ═══════════ */
+.list-item{padding:12px;border-radius:10px;font-size:12px;margin-bottom:8px;line-height:1.6}
+.list-item.loc{background:var(--err-soft);border:1px solid var(--err-border);color:#991b1b}
+.list-item.shr{background:var(--warn-soft);border:1px solid var(--warn-border);color:#92400e}
+.list-item.keep{background:var(--ok-soft);border:1px solid var(--ok-border);color:#065f46}
+.list-item.exempt{background:var(--info-soft);border:1px solid var(--info-border);color:#1e40af}
+html[data-theme="dark"] .list-item.loc{color:#fca5a5}
+html[data-theme="dark"] .list-item.shr{color:#fcd34d}
+html[data-theme="dark"] .list-item.keep{color:#6ee7b7}
+html[data-theme="dark"] .list-item.exempt{color:#93c5fd}
+.list-item .t{font-weight:600;margin-bottom:3px}
+.list-item .d{color:var(--text-dim);font-size:11px}
+.list-item.clickable{cursor:pointer}
+.list-item.clickable:hover{filter:brightness(.97)}
+
+.list-empty{color:var(--text-dim);font-size:13px;text-align:center;padding:32px 0}
+.list-empty::before{
+  content:"";display:block;width:44px;height:44px;margin:0 auto 12px;
+  border-radius:50%;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(99,102,241,.15), transparent 50%),
+    radial-gradient(circle at 70% 70%, rgba(139,92,246,.15), transparent 50%);
+  animation:auroraPulse 2.4s ease-in-out infinite;
+}
+@keyframes auroraPulse{
+  0%,100%{transform:scale(1);opacity:.6}
+  50%{transform:scale(1.15);opacity:1}
+}
+
+/* ═══════════ 其他组件 ═══════════ */
+.path-row{
+  display:flex;justify-content:space-between;align-items:center;
+  background:var(--surface-hover);padding:10px 12px;border-radius:8px;
+  margin-bottom:8px;font-size:12px;gap:10px;flex-wrap:wrap;
+}
+.path-row .name{color:var(--text-mid)}
+.path-row .path{
+  font-family:ui-monospace,Menlo,monospace;color:var(--text-dim);
+  background:var(--surface-solid);padding:3px 10px;border-radius:6px;
+  border:1px solid var(--border);font-size:11px;word-break:break-all;
+}
+
+pre.out{
+  background:var(--surface-hover);border:1px solid var(--border);
+  border-radius:12px;padding:14px;
+  font:12px/1.6 ui-monospace,Menlo,monospace;
+  white-space:pre-wrap;word-break:break-all;
+  max-height:400px;overflow-y:auto;color:var(--text-mid);
+}
+
+.toast{
+  position:fixed;left:50%;bottom:30px;transform:translateX(-50%);
+  background:rgba(15,23,42,.92);color:#fff;font-size:13px;
+  padding:13px 22px;border-radius:14px;z-index:200;
+  opacity:0;transition:opacity .25s;max-width:90vw;text-align:center;
+  pointer-events:none;display:flex;align-items:center;gap:8px;
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  box-shadow:0 12px 40px rgba(15,23,42,.3);font-weight:500;letter-spacing:.1px;
+}
+.toast.show{opacity:1}
+.toast svg.ic{width:16px;height:16px}
+.toast.success svg.ic{color:#4ade80}
+.toast.error svg.ic{color:#f87171}
+
+.task-hint{
+  position:fixed;top:70px;left:50%;transform:translateX(-50%);
+  background:var(--grad-brand);color:#fff;padding:10px 18px;border-radius:10px;
+  font-size:13px;z-index:150;box-shadow:0 4px 12px rgba(0,0,0,.15);
+  display:none;align-items:center;gap:8px;
+}
+.task-hint.show{display:flex}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin 0.7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.status-badge{display:inline-flex;align-items:center;gap:5px;font-weight:600}
+.status-badge.ok{color:var(--ok)}
+.status-badge.no{color:var(--err)}
+.status-badge.dim{color:var(--text-dim)}
+
+.bot-status{margin-top:8px;font-size:11px;display:flex;align-items:center;gap:6px}
+.bot-status .dot{width:8px;height:8px;border-radius:50%}
+.bot-status .dot.on{background:var(--ok);box-shadow:0 0 0 2px rgba(16,185,129,.2)}
+.bot-status .dot.off{background:var(--text-dim)}
+
+/* ═══════════ Modal ═══════════ */
+.modal-bg{
+  position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:300;
+  display:none;align-items:center;justify-content:center;padding:16px;
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+}
+.modal-bg.show{display:flex}
+.modal{
+  background:var(--surface-solid);border-radius:var(--r-xl);padding:26px;
+  max-width:560px;width:100%;max-height:85vh;overflow-y:auto;
+  box-shadow:0 24px 64px rgba(15,23,42,.28);
+  border:1px solid var(--border);
+  color:var(--text);
+}
+.modal h3{font-size:16px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px;color:var(--text)}
+.modal .meta-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;gap:10px}
+.modal .meta-row:last-child{border-bottom:none}
+.modal .meta-row .k{color:var(--text-dim)}
+.modal .meta-row .v{font-weight:500;text-align:right;word-break:break-all;color:var(--text)}
+
+/* ═══════════ 标签 / 开关 / 策略 ═══════════ */
+.tag{
+  display:inline-flex;align-items:center;gap:4px;
+  background:rgba(99,102,241,.08);color:var(--brand);
+  font-size:12px;padding:5px 11px;border-radius:8px;
+  margin:2px 4px 2px 0;font-family:ui-monospace,Menlo,monospace;font-weight:500;
+}
+.tag .rm{cursor:pointer;opacity:.6;font-weight:bold;padding:0 2px}
+.tag .rm:hover{opacity:1;color:#dc2626}
+.tag-input{display:flex;gap:8px;margin-bottom:10px}
+.tag-list{margin-bottom:14px;min-height:32px}
+
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);gap:12px}
+.toggle-row:last-child{border-bottom:none}
+.toggle-row .lbl{font-size:13px;color:var(--text-mid);flex:1}
+.toggle-row .desc{font-size:11px;color:var(--text-dim);margin-top:2px}
+
+.switch{position:relative;width:44px;height:24px;flex-shrink:0}
+.switch input{opacity:0;width:0;height:0}
+.switch .slider{
+  position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;
+  background:rgba(148,163,184,.4);border-radius:24px;
+  transition:.25s var(--ease);
+}
+.switch .slider:before{
+  content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;
+  background:#fff;border-radius:50%;transition:.2s;
+}
+.switch input:checked + .slider{background:var(--grad-brand);box-shadow:0 2px 8px rgba(99,102,241,.3)}
+.switch input:checked + .slider:before{transform:translateX(20px)}
+
+.strategy-option{
+  border:1px solid var(--border-strong);border-radius:12px;
+  padding:13px 15px;margin-bottom:8px;cursor:pointer;
+  transition:all .18s var(--ease);background:var(--surface-solid);
+}
+.strategy-option:hover{border-color:rgba(99,102,241,.4);background:rgba(99,102,241,.03)}
+.strategy-option.on{
+  border-color:var(--brand);
+  background:linear-gradient(135deg,rgba(99,102,241,.06),rgba(139,92,246,.06));
+  box-shadow:0 4px 14px rgba(99,102,241,.15),inset 0 0 0 1px var(--brand);
+}
+.strategy-option .t{font-size:13px;font-weight:600;color:var(--text)}
+.strategy-option .d{font-size:11px;color:var(--text;color:var(--text-dim);margin-top:6px}
+.progress-info .stage{color:-dim);margin-top:2px}
+
+.check-item{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13px;cursor:pointer;color:var(--text)}
+.check-item input{width:auto;cursor:pointer}
+
+/* ═══════════ 订阅卡片 ═══════════ */
+.sub-item{
+  display:flex;gap:10px;padding:10px;
+  border:1px solid var(--border);border-radius:10px;margin-bottom:8px;align-items:center;
+  background:var(--surface-solid);
+}
+.sub-item .p{width:44px;height:64px;border-radius:6px;background:var(--bg-dim);overflow:hidden;flex-shrink:0}
+.sub-item .p img{width:100%;height:100%;object-fit:cover}
+.sub-item .body{flex:1;min-width:0}
+.sub-item .name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub-item .meta{font-size:11px;color:var(--text-dim);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.sub-item .actions{display:flex;gap:6px;flex-shrink:0}
+
+/* ═══════════ 进度条 ═══════════ */
+.progress-wrap{margin-top:12px}
+.progress-bar{height:8px;background:var(--surface-active);border-radius:4px;overflow:hidden}
+.progress-bar .fill{height:100%;background:linear-gradient(90deg,#3b82f6,#8b5cf6);transition:width .3s}
+.progress-info{display:flex;justify-content:space-between;font-size:11pxvar(--text-mid);font-weight:500}
+
+/* ═══════════ 执行记录 ═══════════ */
+.record-item{display:flex;gap:12px;padding:14px 0;border-bottom:1px solid var(--border);transition:background .15s}
+.record-item:last-child{border-bottom:none}
+.record-item:hover{background:var(--surface-hover);margin:0 -8px;padding-left:8px;padding-right:8px;border-radius:10px}
+.record-time{font-size:11px;color:var(--text-dim);font-family:ui-monospace,Menlo,monospace;flex-shrink:0;min-width:130px;padding-top:2px}
+.record-body{flex:1;min-width:0}
+.record-head{font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;word-break:break-word}
+.record-tag{
+  display:inline-block;font-size:10px;padding:2px 8px;border-radius:5px;
+  background:var(--grad-brand);color:#fff;font-weight:600;
+  letter-spacing:.2px;margin-right:6px;
+}
+.record-details{font-size:11px;color:var(--text-mid);background:var(--surface-hover);border-radius:10px;padding:10px 14px;margin-top:6px;line-height:1.7;max-height:240px;overflow-y:auto}
+.record-details>div{white-space:pre-wrap;word-break:break-all}
+
+/* ═══════════ 滚动条 ═══════════ */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(148,163,184,.3);border-radius:10px;border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(99,102,241,.5);background-clip:padding-box}
+
+/* ═══════════ 响应式 ═══════════ */
+/* 桌面端：侧边栏常驻 */
+@media(min-width:900px){
+  .sidebar{transform:translateX(0);position:relative;height:100vh}
+  .mask{display:none!important}
+  .header .menu-btn{display:none}
+  .app-wrap{display:flex}
+  .main{flex:1;padding:24px;max-width:none}
+}
+
+/* 平板 / 小桌面 */
+@media(max-width:899px){
+  .main{padding:16px;padding-bottom:80px}
+}
+
+/* 手机：紧凑 + 触摸目标加大 */
+@media(max-width:640px){
+  body{font-size:13.5px}
+  .main{padding:14px;padding-bottom:80px}
+  .header{height:56px;padding:0 12px}
+  .header h2{font-size:14px}
+  .panel{padding:16px}
+  .card{padding:14px 16px}
+  .card .value{font-size:22px}
+  .card .label{font-size:11px}
+  .card .sub{font-size:10px}
+
+  /* 按钮加大触摸目标 */
+  .btn{padding:10px 16px;font-size:12.5px;min-height:38px}
+  .btn.sm{padding:7px 12px;font-size:11px;min-height:32px}
+  .chip{padding:8px 14px;font-size:13px;min-height:36px}
+  .segmented button{padding:9px 6px;font-size:13px;min-height:38px}
+
+  /* 筛选行改为竖向堆叠 */
+  .filter-row{flex-direction:column;align-items:flex-start;gap:8px;padding:12px 0}
+  .filter-label{min-width:0}
+
+  /* 卡片网格：手机单列或双列 */
+  .cards{grid-template-columns:repeat(2,1fr);gap:10px}
+  #tab-dashboard .cards{gap:10px;margin-bottom:12px}
+
+  /* 面板内间距 */
+  .panel h3{font-size:14px;margin-bottom:12px}
+  .panel .row-between{margin-bottom:12px}
+  .panel .row-between h3{margin:0}
+
+  /* 输入框加大 */
+  input[type=text],input[type=number],input[type=password]{padding:10px 12px;font-size:14px;min-height:40px}
+
+  /* 搜索框 */
+  .search-hero{padding:5px 5px 5px 12px}
+  .search-hero input{padding:10px 8px;font-size:14px}
+  .search-hero .search-btn{padding:10px 16px;font-size:13px}
+
+  /* 筛选摘要行 */
+  .filter-summary{top:60px;padding:9px 12px}
+  .filter-summary .fs-text{font-size:12px}
+  .filter-summary .fs-toggle{padding:5px 10px;font-size:11.5px}
+
+  /* 执行记录堆叠 */
+  .record-item{flex-direction:column;gap:4px}
+  .record-time{min-width:auto}
+
+  /* modal 全屏边距 */
+  .modal{padding:20px;max-height:90vh}
+  .modal h3{font-size:15px}
+
+  /* 设置页紧凑 */
+  #tab-settings .panel{padding:16px}
+  #tab-settings .strategy-option{padding:11px 13px}
+  #tab-settings .toggle-row{padding:10px 0}
+
+  /* toast 贴底 */
+  .toast{bottom:20px;font-size:12.5px;padding:11px 18px}
+
+  /* 订阅卡片紧凑 */
+  .sub-item .p{width:40px;height:58px}
+}
+
+/* 超小屏（<420px） */
+@media(max-width:420px){
+  .main{padding:12px;padding-bottom:80px}
+  .panel{padding:14px}
+  .card{padding:12px 14px}
+  .card .value{font-size:20px}
+  .header h2{font-size:13.5px}
+}
+
+/* 触摸设备的 hover 反馈去掉（避免粘滞） */
+@media(hover:none){
+  .card.clickable:hover,.poster-card:hover,.emby-card:hover{transform:none;box-shadow:var(--shadow-sm)}
+  .btn:hover{transform:none}
+}
+/* ============================================================
+   Dark mode refinements v2 — appended
+   ============================================================ */
+
+html[data-theme="dark"] body::before,
+html[data-theme="dark"] .panel::before,
+html[data-theme="dark"] .card::before,
+html[data-theme="dark"] .tab.active::before { display: none; }
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) body::before,
+  html:not([data-theme]) .panel::before,
+  html:not([data-theme]) .card::before,
+  html:not([data-theme]) .tab.active::before { display: none; }
+}
+
+html[data-theme="dark"] body {
+  background-image:
+    radial-gradient(1200px 800px at 8% -10%, rgba(99,102,241,.10), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, rgba(139,92,246,.09), transparent 55%),
+    radial-gradient(900px 600px at 60% 100%, rgba(6,182,212,.06), transparent 60%);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) body {
+    background-image:
+      radial-gradient(1200px 800px at 8% -10%, rgba(99,102,241,.10), transparent 60%),
+      radial-gradient(1000px 700px at 100% 0%, rgba(139,92,246,.09), transparent 55%),
+      radial-gradient(900px 600px at 60% 100%, rgba(6,182,212,.06), transparent 60%);
+  }
+}
+
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .poster-card,
+html[data-theme="dark"] .emby-card {
+  background: rgba(30, 41, 59, 0.85);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) .panel,
+  html:not([data-theme]) .card,
+  html:not([data-theme]) .poster-card,
+  html:not([data-theme]) .emby-card {
+    background: rgba(30, 41, 59, 0.85);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+html[data-theme="dark"] .sidebar { background: rgba(20, 28, 45, 0.92); }
+html[data-theme="dark"] .header  { background: rgba(20, 28, 45, 0.9); }
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) .sidebar { background: rgba(20, 28, 45, 0.92); }
+  html:not([data-theme]) .header  { background: rgba(20, 28, 45, 0.9); }
+}
+
+/* ============================================================
+   Mobile perf: kill grid + backdrop-filter on small screens
+   ============================================================ */
+@media (max-width: 899px) {
+  body::before { display: none !important; }
+
+  .panel, .card, .poster-card, .emby-card,
+  .sidebar, .header, .search-hero, .filter-summary {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .panel, .card, .poster-card, .emby-card {
+    background: rgba(255, 255, 255, 0.94);
+  }
+  html[data-theme="dark"] .panel,
+  html[data-theme="dark"] .card,
+  html[data-theme="dark"] .poster-card,
+  html[data-theme="dark"] .emby-card {
+    background: rgba(30, 41, 59, 0.94);
+  }
+
+  .sidebar { background: rgba(255, 255, 255, 0.98); }
+  .header  { background: rgba(255, 255, 255, 0.96); }
+  html[data-theme="dark"] .sidebar { background: rgba(20, 28, 45, 0.98); }
+  html[data-theme="dark"] .header  { background: rgba(20, 28, 45, 0.96); }
+
+  .btn { box-shadow: none; }
+  .btn:hover { transform: none; }
+}
+
+/* ============================================================
+   Final cleanup: remove ALL heavy effects unconditionally
+   ============================================================ */
+
+/* 1. 关掉背景网格纹理 */
+body::before { display: none !important; }
+
+/* 2. 简化背景：去掉多层 radial-gradient 光晕（糊感主因） */
+body {
+  background-image: none !important;
+  background-color: var(--bg) !important;
+}
+
+/* 3. 关掉卡片顶部的白色光边 */
+.panel::before,
+.card::before { display: none !important; }
+
+/* 4. 关掉每个 tab 顶部的紫光晕条 */
+.tab.active::before { display: none !important; }
+
+/* 5. 全局关闭 backdrop-filter（手机 GPU 杀手） */
+.panel,
+.card,
+.poster-card,
+.emby-card,
+.sidebar,
+.header,
+.search-hero,
+.filter-summary,
+.modal,
+.toast {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* ============================================================
+   UI Modal v1 - custom dialogs
+   ============================================================ */
+.ui-modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 400;
+  display: none; align-items: center; justify-content: center; padding: 16px;
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+.ui-modal-bg.show { display: flex; animation: uiModalFade .2s ease; }
+@keyframes uiModalFade { from{opacity:0} to{opacity:1} }
+
+.ui-modal-box {
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 28px 24px 20px;
+  max-width: 440px; width: 100%;
+  box-shadow: 0 24px 64px rgba(15,23,42,.3);
+  text-align: center;
+  animation: uiModalPop .28s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes uiModalPop {
+  from { opacity: 0; transform: scale(.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.ui-modal-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--info-soft); color: var(--info);
+}
+.ui-modal-icon svg.ic { width: 28px; height: 28px; stroke-width: 2.5; }
+.ui-modal-icon-ok  { background: var(--ok-soft); color: var(--ok); }
+.ui-modal-icon-err { background: var(--err-soft); color: var(--err); }
+
+.ui-modal-title {
+  font-size: 17px; font-weight: 700; margin-bottom: 10px;
+  color: var(--text); letter-spacing: -.2px;
+}
+.ui-modal-body {
+  font-size: 13.5px; line-height: 1.65; color: var(--text-mid);
+  margin-bottom: 22px; max-height: 50vh; overflow-y: auto; text-align: left;
+}
+.ui-modal-line { margin-bottom: 6px; word-break: break-word; }
+.ui-modal-line:last-child { margin-bottom: 0; }
+
+.ui-modal-actions { display: flex; gap: 10px; justify-content: center; }
+.ui-modal-actions .btn { min-width: 100px; padding: 10px 20px; }
+
+@media (max-width: 640px) {
+  .ui-modal-box { padding: 24px 20px 18px; }
+  .ui-modal-icon { width: 48px; height: 48px; margin-bottom: 12px; }
+  .ui-modal-icon svg.ic { width: 24px; height: 24px; }
+  .ui-modal-title { font-size: 16px; }
+  .ui-modal-body { font-size: 13px; max-height: 40vh; }
+  .ui-modal-actions { flex-direction: column-reverse; }
+  .ui-modal-actions .btn { width: 100%; }
+}
+
+</style>
+<script>
+/* 尽早设置主题，避免页面闪烁（FOUC） */
+(function(){
+  try {
+    var saved = localStorage.getItem('tdd-theme');
+    if (saved === 'dark' || saved === 'light') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
+  } catch(e){}
+})();
+</script>
+
+
+<script>
+window.onerror = function(msg, url, line){
+  alert('JS ERROR:\n' + msg + '\nLine: ' + line);
+  return false;
+};
+window.addEventListener('unhandledrejection', function(e){
+  var r = e.reason;
+  alert('PROMISE ERROR:\n' + (r && (r.message || r) || r));
+});
+</script>
+</head>
+<body>
+
+<div class="app-wrap">
+  <div class="mask" id="mask" onclick="toggleSidebar(false)"></div>
+  <aside class="sidebar" id="sidebar">
+    <div class="side-title" id="sideTitle">TDD Guard <span class="v">V1.1</span></div>
+    <nav id="menu"></nav>
+    <div class="side-foot">
+      <button data-icon="logout">退出系统</button>
+    </div>
+  </aside>
+
+  <main style="flex:1;min-width:0">
+    <header class="header">
+      <div class="left">
+        <button class="menu-btn" onclick="toggleSidebar(true)" data-icon="menu"></button>
+        <h2 id="tabTitle">治理总览</h2>
+      </div>
+      <div class="right">
+        <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题" aria-label="切换主题">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="main">
+
+      <!-- 治理总览 -->
+      <section class="tab active" id="tab-dashboard">
+        <div class="cards">
+          <div class="card"><div class="label" data-icon="database">网盘影视库</div><div class="value blue" id="stat-local">-</div><div class="sub">115 规范源文件</div></div>
+          <div class="card"><div class="label" data-icon="share">分享影视库</div><div class="value" id="stat-share">-</div><div class="sub">免转存 STRM 资源</div></div>
+        </div>
+        <div class="cards">
+          <div class="card"><div class="label" data-icon="server">Emby 服务</div><div class="value" id="svc-emby" style="font-size:16px;margin-top:6px">检查中…</div><div class="sub" id="svc-emby-host">—</div></div>
+          <div class="card"><div class="label" data-icon="globe">TMDB 配置</div><div class="value" id="svc-tmdb" style="font-size:16px;margin-top:6px">检查中…</div><div class="sub" id="svc-tmdb-sub">—</div></div>
+        </div>
+        <div class="cards">
+          <div class="card clickable" onclick="switchTab('subscribe')">
+            <div class="label" data-icon="bell">追更订阅</div>
+            <div class="value indigo" id="stat-sub" style="font-size:16px;margin-top:6px">0 部</div>
+            <div class="sub" id="stat-sub-sub">点击查看</div>
+          </div>
+          <div class="card clickable" onclick="switchTab('morning')">
+            <div class="label" data-icon="sun">每日晨报</div>
+            <div class="value amber" id="stat-morning" style="font-size:16px;margin-top:6px">未开启</div>
+            <div class="sub" id="stat-morning-sub">点击设置</div>
+          </div>
+        </div>
+        <div class="cards">
+          <div class="card clickable" onclick="switchTab('daily')">
+            <div class="label" data-icon="file">24H 入库</div>
+            <div class="value green" id="stat-ingest-mov" style="font-size:16px;margin-top:6px">-</div>
+            <div class="sub" id="stat-ingest-sub">电影 / 剧集</div>
+          </div>
+          <div class="card"><div class="label" data-icon="clock">入库缓存</div><div class="value indigo" style="font-size:16px;margin-top:6px" id="stat-ingest-age">—</div><div class="sub">后台自动刷新</div></div>
+        </div>
+        <div class="panel">
+          <h3 data-icon="zap">快速操作</h3>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" id="scanBtn" onclick="scanLibrary()" data-icon="refresh">立即扫描双库</button>
+            <button class="btn gray" onclick="switchTab('governance')" data-icon="scale">查看治理清单</button>
+            <button class="btn gray" onclick="switchTab('settings')" data-icon="gear">规则设置</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h3 data-icon="bookmark">策略快照</h3>
+          <div id="strategySnapshot">加载中...</div>
+        </div>
+      </section>
+
+      <!-- 影视探索 -->
+      <section class="tab" id="tab-explore">
+        <div class="search-hero">
+          <input type="text" id="exploreSearch" placeholder="搜索 TMDB 电影/剧集，如「三体」「Oppenheimer」">
+          <button class="search-btn" onclick="doExploreSearch()" data-icon="search">搜索</button>
+        </div>
+
+        <!-- 筛选摘要行（默认收起，点「展开」显示详细筛选） -->
+        <div class="filter-summary" id="filterSummary">
+          <span class="fs-text" id="filterSummaryText">全部地区 · 电影 · 全部年份 · 热度</span>
+          <button class="fs-toggle" onclick="toggleExploreFilters()">
+            <span id="filterToggleText">展开筛选</span>
+            <svg class="ic" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </div>
+
+        <div class="panel hidden" style="padding:14px" id="exploreFilters">
+          <div class="filter-row"><span class="filter-label">地区</span>
+            <div class="filter-chips" id="filterRegion">
+              <button data-v="all" class="chip active">全部</button>
+              <button data-v="cn" class="chip">大陆</button>
+              <button data-v="hk" class="chip">香港</button>
+              <button data-v="tw" class="chip">台湾</button>
+              <button data-v="jp" class="chip">日本</button>
+              <button data-v="kr" class="chip">韩国</button>
+              <button data-v="us" class="chip">欧美</button>
+            </div>
+          </div>
+          <div class="filter-row"><span class="filter-label">类型</span>
+            <div class="filter-chips" id="filterMedia">
+              <button data-v="movie" class="chip active">电影</button>
+              <button data-v="tv" class="chip">剧集</button>
+            </div>
+          </div>
+          <div class="filter-row"><span class="filter-label">年份</span>
+            <div class="filter-chips" id="filterYear">
+              <button data-v="" class="chip active">全部</button>
+              <button data-v="2026" class="chip">2026</button>
+              <button data-v="2025" class="chip">2025</button>
+              <button data-v="2024" class="chip">2024</button>
+              <button data-v="2023" class="chip">2023</button>
+              <button data-v="2022" class="chip">2022</button>
+              <button data-v="2021" class="chip">2021</button>
+              <button data-v="2020" class="chip">2020</button>
+            </div>
+          </div>
+          <div class="filter-row"><span class="filter-label">排序</span>
+            <div class="filter-chips" id="filterSort">
+              <button data-v="popularity" class="chip active">热度</button>
+              <button data-v="release" class="chip">最新</button>
+              <button data-v="rating" class="chip">TMDB 评分</button>
+            </div>
+          </div>
+        </div>
+        <div class="poster-grid" id="exploreGrid"><div class="list-empty">正在加载...</div></div>
+        <div class="pager hidden" id="explorePager">
+          <button class="btn gray" onclick="explorePage(-1)" data-icon="chev-left">上一页</button>
+          <span id="explorePageInfo" style="font-size:12px;color:#6b7280">第 1 页</span>
+          <button class="btn gray" onclick="explorePage(1)" data-icon-right="chev-right">下一页</button>
+        </div>
+      </section>
+
+      <!-- 双库治理 -->
+      <section class="tab" id="tab-governance">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="scale">双库治理</h3>
+            <div style="display:flex;gap:8px">
+              <button class="btn gray" id="govScanBtn" onclick="scanLibrary()" data-icon="refresh">重新扫描</button>
+              <button class="btn red" id="govExecBtn" onclick="runClean()" disabled data-icon="trash">执行清理</button>
+            </div>
+          </div>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7">
+            扫描对双库全量对比，生成待清理清单。执行清理会按清单删除本地 STRM（含 115 云端源）和分享 STRM。
+          </p>
+        </div>
+        <div class="cards" id="govStats" style="display:none">
+          <div class="card clickable" onclick="setGovFilter('keep')">
+            <div class="label" data-icon="shield">受保护项</div>
+            <div class="value green" id="gov-keep">0</div>
+            <div class="sub">点击查看详情</div>
+          </div>
+          <div class="card clickable" onclick="setGovFilter('loc')">
+            <div class="label" data-icon="download">待删本地</div>
+            <div class="value amber" id="gov-loc">0</div>
+            <div class="sub">分享画质达标</div>
+          </div>
+          <div class="card clickable" onclick="setGovFilter('shr')">
+            <div class="label" data-icon="trash">待删分享</div>
+            <div class="value red" id="gov-shr">0</div>
+            <div class="sub">画质次级/落后</div>
+          </div>
+          <div class="card clickable" onclick="setGovFilter('exempt')">
+            <div class="label" data-icon="info">白名单/特别篇豁免</div>
+            <div class="value blue" id="gov-exempt">0</div>
+            <div class="sub">点击查看</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="segmented" id="govFilter" style="margin-bottom:14px">
+            <button class="active" data-f="all" onclick="setGovFilter('all')">全部</button>
+            <button data-f="loc" onclick="setGovFilter('loc')">待删本地</button>
+            <button data-f="shr" onclick="setGovFilter('shr')">待删分享</button>
+            <button data-f="keep" onclick="setGovFilter('keep')">受保护</button>
+            <button data-f="exempt" onclick="setGovFilter('exempt')">白名单</button>
+          </div>
+          <div id="planList"><div class="list-empty">请点击右上角「重新扫描」开始</div></div>
+        </div>
+      </section>
+
+      <!-- 片库映射 -->
+      <section class="tab" id="tab-mapping">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="map">片库映射 · Emby 库总览</h3>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn" onclick="loadEmbyLibrary(false, true)" data-icon="refresh">读缓存</button>
+              <button class="btn gray" onclick="loadEmbyLibrary(true, true)" data-icon="refresh">重新对照</button>
+          </div>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7">
+          <div class="progress-wrap hidden" id="tmdbProgressWrap">
+            <div class="progress-bar"><div class="fill" id="tmdbProgressFill" style="width:0%"></div></div>
+            <div class="progress-info">
+              <span class="stage" id="tmdbProgressStage">准备中...</span>
+              <span id="tmdbProgressEta"></span>
+            </div>
+          </div>
+            以 Emby 为数据源，对照 TMDB 逐部检查季集完整度。
+            <span class="green">绿=对齐</span> · <span class="red">红=缺集</span> ·
+            <span class="amber">黄=超集</span> · <span class="blue">蓝=在更</span> ·
+            <span style="color:#9ca3af">灰=未匹配</span>
+          </p>
+        </div>
+        <div class="cards" id="embyStats" style="display:none">
+          <div class="card"><div class="label" data-icon="film">剧集总数</div><div class="value" id="emby-total">0</div></div>
+          <div class="card"><div class="label" data-icon="check">对齐</div><div class="value green" id="emby-aligned">0</div></div>
+          <div class="card"><div class="label" data-icon="x">缺集</div><div class="value red" id="emby-missing">0</div></div>
+          <div class="card"><div class="label" data-icon="activity">超集</div><div class="value amber" id="emby-extra">0</div></div>
+        </div>
+        <div class="cards" id="embyStats2" style="display:none">
+          <div class="card"><div class="label" data-icon="clock">在更</div><div class="value blue" id="emby-ongoing">0</div></div>
+          <div class="card"><div class="label" data-icon="info">未匹配</div><div class="value gray" id="emby-unmatched">0</div></div>
+          <div class="card"><div class="label" data-icon="film">电影总数</div><div class="value indigo" id="emby-movies">0</div></div>
+          <div class="card"><div class="label" data-icon="alert">TMDB 错误</div><div class="value gray" id="emby-tmdb-errors">0</div></div>
+        </div>
+        <div class="panel">
+          <div class="segmented" id="embyTypeFilter" style="margin-bottom:10px">
+            <button class="active" data-t="series" onclick="setEmbyType('series')">剧集</button>
+            <button data-t="movies" onclick="setEmbyType('movies')">电影</button>
+          </div>
+          <div class="segmented" id="embyFilter" style="margin-bottom:10px">
+            <button class="active" data-f="all" onclick="setEmbyFilter('all')">全部</button>
+            <button data-f="aligned" onclick="setEmbyFilter('aligned')">对齐</button>
+            <button data-f="missing" onclick="setEmbyFilter('missing')">缺集</button>
+            <button data-f="extra" onclick="setEmbyFilter('extra')">超集</button>
+            <button data-f="ongoing" onclick="setEmbyFilter('ongoing')">在更</button>
+            <button data-f="unmatched" onclick="setEmbyFilter('unmatched')">未匹配</button>
+          </div>
+          <input type="text" id="embySearch" placeholder="搜索片名..." style="margin-bottom:12px" oninput="renderEmbyList()">
+          <div id="embyList"><div class="list-empty">点击「TMDB 对照」拉取</div></div>
+        </div>
+      </section>
+
+      <!-- 追更订阅 -->
+      <section class="tab" id="tab-subscribe">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="bell">追更订阅</h3>
+            <div style="display:flex;gap:8px">
+              <button class="btn" onclick="checkSubsNow()" data-icon="refresh">立即检查</button>
+            </div>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">启用订阅轮询</div>
+              <div class="desc">后台定期检查订阅剧集的新集入库</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="subEnabled" onchange="saveSubSettings()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">对照 TMDB 检查缺集</div>
+              <div class="desc">同时报告本地比 TMDB 少的集数</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="subCheckTmdb" onchange="saveSubSettings()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">轮询间隔（分钟）</div>
+              <div class="desc">建议 30-60 分钟</div>
+            </div>
+            <div style="width:100px">
+              <input type="number" id="subInterval" min="5" max="1440" value="30" onchange="saveSubSettings()">
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="list">订阅列表 <span id="subCount" style="font-size:12px;font-weight:400;margin-left:6px;color:#9ca3af">0 部</span></h3>
+            <div style="font-size:11px;color:#9ca3af">从「影视探索」点卡片上的「+ 订阅」</div>
+          </div>
+          <div id="subList"><div class="list-empty">暂无订阅</div></div>
+        </div>
+
+        <div class="panel" id="subUpdatesPanel" style="display:none">
+          <h3 data-icon="bell">上次检查 · 变化</h3>
+          <div id="subUpdates"></div>
+        </div>
+      </section>
+
+      <!-- 每日晨报 -->
+      <section class="tab" id="tab-morning">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="sun">每日晨报</h3>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn gray" onclick="previewMorning(false)" data-icon="info">预览(缓存)</button>
+              <button class="btn gray" onclick="previewMorning(true)" data-icon="refresh">预览(现场扫)</button>
+              <button class="btn" onclick="sendMorningNow()" data-icon="send">立即发送</button>
+            </div>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">启用每日晨报</div>
+              <div class="desc">每天定时推送统计到 Telegram</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="mrEnabled" onchange="saveMorning()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">推送时间</div>
+              <div class="desc">24 小时制</div>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;width:140px">
+              <input type="number" id="mrHour" min="0" max="23" value="9" style="text-align:center" onchange="saveMorning()">
+              <span style="color:#9ca3af">:</span>
+              <input type="number" id="mrMinute" min="0" max="59" value="0" style="text-align:center" onchange="saveMorning()">
+            </div>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">提前预扫（分钟）</div>
+              <div class="desc">晨报时间前 N 分钟静默刷新入库缓存，发送时秒出</div>
+            </div>
+            <div style="width:100px">
+              <input type="number" id="mrPrescan" min="0" max="60" value="5" style="text-align:center" onchange="saveMorning()">
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3 data-icon="list">晨报内容</h3>
+          <label class="check-item"><input type="checkbox" id="mrItemStats" onchange="saveMorning()"> 📊 近 24h 入库统计</label>
+          <label class="check-item"><input type="checkbox" id="mrItemSubs" onchange="saveMorning()"> 🔔 订阅更新（新集 / 缺集）</label>
+          <label class="check-item"><input type="checkbox" id="mrItemGap" onchange="saveMorning()"> 📺 Emby 缺集速览</label>
+        </div>
+
+        <div class="panel" id="mrPreviewPanel" style="display:none">
+          <h3 data-icon="info">预览</h3>
+          <pre class="out" id="mrPreview"></pre>
+        </div>
+      </section>
+
+      <!-- 每日汇报 -->
+      <section class="tab" id="tab-daily">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="file">近 24 小时入库</h3>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn gray" onclick="loadStats(false,false)" data-icon="refresh">读缓存</button>
+              <button class="btn" onclick="loadStats(false,true)" data-icon="refresh">立即扫描</button>
+              <button class="btn gray" onclick="loadStats(true,false)">完整</button>
+            </div>
+          </div>
+          <div style="font-size:11px;color:#9ca3af;margin-bottom:8px" id="statsCacheHint">—</div>
+          <pre class="out" id="statsOut">自动加载中...</pre>
+        </div>
+      </section>
+
+      <!-- 执行记录 -->
+      <section class="tab" id="tab-history">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="list">执行记录</h3>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="number" id="recordN" value="50" style="width:70px;padding:6px 10px">
+              <button class="btn gray" onclick="loadRecords()" data-icon="refresh">刷新</button>
+            </div>
+          </div>
+          <div id="recordsList"><div class="list-empty">加载中...</div></div>
+        </div>
+      </section>
+
+      <!-- 规则设置 -->
+      <section class="tab" id="tab-settings">
+
+        <!-- 治理策略 -->
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="bookmark">治理策略</h3>
+          </div>
+          <p style="font-size:12px;color:#6b7280;margin-bottom:12px">决策模型影响本地/分享两库的保留策略</p>
+
+          <div class="strategy-option" data-v="quality_first" onclick="pickStrategy('quality_first')">
+            <div class="t">画质优先（默认）</div>
+            <div class="d">对比两库画质，画质高者胜出；平局按「平局策略」</div>
+          </div>
+          <div class="strategy-option" data-v="keep_local" onclick="pickStrategy('keep_local')">
+            <div class="t">保留本地</div>
+            <div class="d">本地库永远优先，分享库只做补充</div>
+          </div>
+          <div class="strategy-option" data-v="keep_share" onclick="pickStrategy('keep_share')">
+            <div class="t">保留分享</div>
+            <div class="d">分享库永远优先，省 115 网盘空间</div>
+          </div>
+          <div class="strategy-option" data-v="balanced" onclick="pickStrategy('balanced')">
+            <div class="t">严格画质</div>
+            <div class="d">必须严格优于才替换，画质相同时双向保留</div>
+          </div>
+
+          <div class="toggle-row" style="margin-top:16px">
+            <div>
+              <div class="lbl">多季合集保护</div>
+              <div class="desc">本地拥有多季完整合集时，保护本地不被掏空</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="strMultiProtect" onchange="saveStrategy()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">平局保留本地</div>
+              <div class="desc">仅在「画质优先」模式下生效</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="strTieLocal" onchange="saveStrategy()"><span class="slider"></span></label>
+          </div>
+        </div>
+
+        <!-- 特别篇策略 -->
+        <div class="panel">
+          <h3 data-icon="film">特别篇（S00）策略</h3>
+          <p style="font-size:12px;color:#6b7280;margin-bottom:12px">Emby 中的 S00 / Specials 如何处理</p>
+          <div style="display:flex;gap:8px">
+            <div class="strategy-option" data-sp="keep" onclick="pickSpecial('keep')" style="flex:1;margin:0;padding:10px 8px;text-align:center">
+              <div class="t" style="font-size:12px">保留</div>
+              <div class="d" style="font-size:10px">跳过清理</div>
+            </div>
+            <div class="strategy-option" data-sp="ignore" onclick="pickSpecial('ignore')" style="flex:1;margin:0;padding:10px 8px;text-align:center">
+              <div class="t" style="font-size:12px">忽略</div>
+              <div class="d" style="font-size:10px">不参与治理</div>
+            </div>
+            <div class="strategy-option" data-sp="delete" onclick="pickSpecial('delete')" style="flex:1;margin:0;padding:10px 8px;text-align:center">
+              <div class="t" style="font-size:12px">清理</div>
+              <div class="d" style="font-size:10px">强制删除分享</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 入库监控 -->
+        <div class="panel">
+          <h3 data-icon="activity">入库监控</h3>
+          <p style="font-size:12px;color:#6b7280;margin-bottom:12px">后台定期刷新 Emby 入库缓存，前端秒回</p>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">启用后台入库监控</div>
+              <div class="desc">关闭后需手动点「立即扫描」</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="ingEnabled" onchange="saveIngest()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">刷新间隔（分钟）</div>
+              <div class="desc">建议 5 分钟</div>
+            </div>
+            <div style="width:100px">
+              <input type="number" id="ingInterval" min="1" max="1440" value="5" onchange="saveIngest()">
+            </div>
+          </div>
+          <div id="ingStatus" style="font-size:11px;color:#9ca3af;margin-top:8px">加载中...</div>
+        </div>
+
+        <!-- 白名单 -->
+        <div class="panel">
+          <h3 data-icon="shield">白名单（豁免词）</h3>
+          <p style="font-size:12px;color:#6b7280;margin-bottom:12px">
+            命中白名单的剧集：扫描时跳过清理，标记为「豁免」，显示在治理页
+          </p>
+          <div class="tag-input">
+            <input type="text" id="exemptInput" placeholder="输入关键词，如 百家讲坛" onkeydown="if(event.key==='Enter')addExempt()">
+            <button class="btn" onclick="addExempt()" data-icon="plus">添加</button>
+          </div>
+          <div class="tag-list" id="exemptList"></div>
+          <div style="font-size:12px;color:#6b7280;margin-bottom:8px">命中预览：</div>
+          <div style="display:flex;gap:8px;margin-bottom:12px">
+            <button class="btn gray" onclick="scanExempt()" data-icon="search">扫描双库</button>
+          </div>
+          <div id="exemptMatches"></div>
+        </div>
+
+        <!-- 服务配置 -->
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="gear">服务配置</h3>
+            <button class="btn" onclick="loadConfig()" data-icon="refresh">重新加载</button>
+          </div>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7;margin-bottom:16px">
+            配置保存在 <code>/data/config.json</code>。密钥默认脱敏显示，点右侧 👁 查看完整值。
+          </p>
+
+          <div class="form-row">
+            <label>Emby 服务器地址</label>
+            <input type="text" id="cfg-emby-host" placeholder="http://你的Emby地址:8096">
+          </div>
+          <div class="form-row" id="row-emby-key">
+            <label>Emby API Key</label>
+            <div class="input-row">
+              <input type="text" id="cfg-emby-key">
+              <button class="eye-btn" type="button" onclick="toggleReveal('emby_key')" data-eye="emby_key"><span data-icon="eye">查看</span></button>
+            </div>
+            <div class="masked-hint">⚠️ 当前为脱敏值，保存时会保留原值不变</div>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn gray" onclick="testEmby()" data-icon="flask">测试连接</button>
+            </div>
+          </div>
+          <div class="form-row" id="row-tmdb-key">
+            <label>TMDB API Key</label>
+            <div class="input-row">
+              <input type="text" id="cfg-tmdb-key">
+              <button class="eye-btn" type="button" onclick="toggleReveal('tmdb_key')" data-eye="tmdb_key"><span data-icon="eye">查看</span></button>
+            </div>
+            <div class="masked-hint">⚠️ 当前为脱敏值，保存时会保留原值不变</div>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn gray" onclick="testTmdb()" data-icon="flask">测试连接</button>
+            </div>
+          </div>
+          <div class="form-row" id="row-tg-token">
+            <label>Telegram Bot Token</label>
+            <div class="input-row">
+              <input type="text" id="cfg-tg-token">
+              <button class="eye-btn" type="button" onclick="toggleReveal('telegram_bot_token')" data-eye="telegram_bot_token"><span data-icon="eye">查看</span></button>
+            </div>
+            <div class="masked-hint">⚠️ 当前为脱敏值，保存时会保留原值不变</div>
+          </div>
+          <div class="form-row">
+            <label>Telegram Chat ID</label>
+            <input type="text" id="cfg-tg-chat">
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn gray" onclick="testTelegram()" data-icon="send">发送测试消息</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Telegram 允许用户（白名单）</label>
+            <input type="text" id="cfg-tg-users" placeholder="逗号分隔的 User ID">
+          </div>
+          <div style="display:flex;gap:8px;margin-top:20px">
+            <button class="btn green" onclick="saveConfig()" data-icon="save">保存配置</button>
+            <button class="btn gray" onclick="loadConfig()" data-icon="undo">重置</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3 data-icon="info">Bot 状态</h3>
+          <div id="botStatus" style="font-size:12px;color:#6b7280">加载中...</div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="modal-bg" id="modalBg" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modalBody"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="task-hint" id="taskHint"><span class="spin"></span><span id="taskHintText">任务中...</span></div>
+
+<script>
+/* ═══════════ SVG 图标库 ═══════════ */
+var ICONS = {
+  grid:'<svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>',
+  film:'<svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="3" width="19" height="18" rx="2"/><path d="M7 3v18M17 3v18M2.5 9.5h4.5M2.5 14.5h4.5M17 9.5h4.5M17 14.5h4.5"/></svg>',
+  scale:'<svg class="ic" viewBox="0 0 24 24"><path d="M12 3v18M5 7h14M5 7l-3 6a3 3 0 0 0 6 0l-3-6zM19 7l-3 6a3 3 0 0 0 6 0l-3-6z"/></svg>',
+  map:'<svg class="ic" viewBox="0 0 24 24"><path d="M9 4 3 6v15l6-2 6 2 6-2V4l-6 2zM9 4v15M15 6v15"/></svg>',
+  bell:'<svg class="ic" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21a2 2 0 0 0 4 0"/></svg>',
+  sun:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>',
+  file:'<svg class="ic" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>',
+  list:'<svg class="ic" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  gear:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  refresh:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 12a9 9 0 0 1-15 6.7L3 16M21 3v5h-5M3 21v-5h5"/></svg>',
+  trash:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></svg>',
+  zap:'<svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>',
+  bookmark:'<svg class="ic" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>',
+  server:'<svg class="ic" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/></svg>',
+  globe:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>',
+  send:'<svg class="ic" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>',
+  clock:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+  check:'<svg class="ic" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>',
+  x:'<svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  plus:'<svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  alert:'<svg class="ic" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>',
+  info:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  save:'<svg class="ic" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>',
+  undo:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>',
+  flask:'<svg class="ic" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6L4.5 18a2 2 0 0 0 1.7 3h11.6a2 2 0 0 0 1.7-3L14 9V3M6 15h12"/></svg>',
+  database:'<svg class="ic" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0"/></svg>',
+  share:'<svg class="ic" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>',
+  shield:'<svg class="ic" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  download:'<svg class="ic" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
+  activity:'<svg class="ic" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9-6-18-3 9H2"/></svg>',
+  menu:'<svg class="ic" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>',
+  logout:'<svg class="ic" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
+  'chev-left':'<svg class="ic" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>',
+  'chev-right':'<svg class="ic" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>',
+  live:'<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/></svg>',
+  star:'<svg class="ic" viewBox="0 0 24 24"><path d="M12 2 15 9l7 .8-5.3 4.7 1.6 7-6.3-3.7-6.3 3.7 1.6-7L2 9.8 9 9z"/></svg>',
+  search:'<svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
+  eye:'<svg class="ic" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+  'eye-off':'<svg class="ic" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22"/></svg>'
+};
+function icon(n){ return ICONS[n] || ''; }
+
+/* 图标注入：不破坏有子元素的节点 */
+function injectIcons(root){
+  root = root || document;
+  root.querySelectorAll('[data-icon]:not([data-icon-done])').forEach(function(el){
+    var name = el.getAttribute('data-icon');
+    if (!ICONS[name]) return;
+    el.setAttribute('data-icon-done', '1');
+    var hasChildEl = Array.from(el.childNodes).some(function(n){ return n.nodeType === 1; });
+    if (hasChildEl) {
+      el.insertAdjacentHTML('afterbegin', icon(name));
+    } else {
+      var text = el.textContent.trim();
+      if (text) el.innerHTML = icon(name) + '<span>' + text + '</span>';
+      else el.innerHTML = icon(name);
+    }
+  });
+  root.querySelectorAll('[data-icon-right]:not([data-icon-right-done])').forEach(function(el){
+    var name = el.getAttribute('data-icon-right');
+    if (!ICONS[name]) return;
+    el.setAttribute('data-icon-right-done', '1');
+    var hasChildEl = Array.from(el.childNodes).some(function(n){ return n.nodeType === 1; });
+    if (hasChildEl) {
+      el.insertAdjacentHTML('beforeend', icon(name));
+    } else {
+      var text = el.textContent.trim();
+      if (text) el.innerHTML = '<span>' + text + '</span>' + icon(name);
+      else el.innerHTML = icon(name);
+    }
+  });
+}
+</script>
+<script>
+/* TDD Guard - UI Modal v1 */
+(function(){
+  var overlay = null;
+
+  function ensureOverlay(){
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.className = 'ui-modal-bg';
+    overlay.innerHTML = '<div class="ui-modal-box" id="uiModalBox"></div>';
+    overlay.addEventListener('click', function(e){
+      if (e.target === overlay) {
+        var box = document.getElementById('uiModalBox');
+        if (box && box.dataset.dismissable === '1') overlay.classList.remove('show');
+      }
+    });
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  function show(type, title, message, options){
+    options = options || {};
+    ensureOverlay();
+    var box = document.getElementById('uiModalBox');
+    box.dataset.dismissable = (type === 'alert') ? '1' : '0';
+    box.className = 'ui-modal-box ui-modal-' + type;
+
+    var iconName = options.icon || (type === 'confirm' ? 'alert' : type === 'success' ? 'check' : type === 'error' ? 'x' : 'info');
+    var iconCls = type === 'success' ? ' ui-modal-icon-ok' : type === 'error' ? ' ui-modal-icon-err' : '';
+
+    var okText = options.okText || '\u77e5\u9053\u4e86';
+    var cancelText = options.cancelText || '\u53d6\u6d88';
+    var confirmText = options.confirmText || '\u786e\u8ba4';
+
+    var buttonsHtml;
+    if (type === 'confirm') {
+      buttonsHtml = '<div class="ui-modal-actions">'
+        + '<button class="btn gray" id="uiModalCancel">' + cancelText + '</button>'
+        + '<button class="btn ' + (options.danger ? 'red' : '') + '" id="uiModalOk">' + confirmText + '</button>'
+        + '</div>';
+    } else {
+      buttonsHtml = '<div class="ui-modal-actions">'
+        + '<button class="btn" id="uiModalOk">' + okText + '</button>'
+        + '</div>';
+    }
+
+    var msgHtml;
+    if (Array.isArray(message)) {
+      msgHtml = message.map(function(line){
+        return '<div class="ui-modal-line">' + String(line).replace(/\n/g, '<br>') + '</div>';
+      }).join('');
+    } else {
+      msgHtml = '<div class="ui-modal-line">' + String(message).replace(/\n/g, '<br>') + '</div>';
+    }
+
+    box.innerHTML = '<div class="ui-modal-icon' + iconCls + '">' + icon(iconName) + '</div>'
+      + '<h3 class="ui-modal-title">' + (title || '') + '</h3>'
+      + '<div class="ui-modal-body">' + msgHtml + '</div>'
+      + buttonsHtml;
+
+    overlay.classList.add('show');
+
+    return new Promise(function(resolve){
+      var ok = document.getElementById('uiModalOk');
+      var cancel = document.getElementById('uiModalCancel');
+      function finish(v){ overlay.classList.remove('show'); resolve(v); }
+      if (ok) ok.onclick = function(){ finish(true); };
+      if (cancel) cancel.onclick = function(){ finish(false); };
+    });
+  }
+
+  window.showModalAlert = function(message, options){
+    options = options || {};
+    return show('alert', options.title || '\u63d0\u793a', message, options);
+  };
+  window.showModalConfirm = function(message, options){
+    options = options || {};
+    return show('confirm', options.title || '\u786e\u8ba4\u64cd\u4f5c', message, options);
+  };
+  window.showModalSuccess = function(message, options){
+    options = options || {};
+    return show('success', options.title || '\u64cd\u4f5c\u6210\u529f', message, options);
+  };
+  window.showModalError = function(message, options){
+    options = options || {};
+    return show('error', options.title || '\u64cd\u4f5c\u5931\u8d25', message, options);
+  };
+})();
+
+</script>
+<script>
+/* ═══════════ 状态 ═══════════ */
+var MENU = [
+  { id: 'dashboard',  name: '治理总览', icon: 'grid' },
+  { id: 'explore',    name: '影视探索', icon: 'film' },
+  { id: 'governance', name: '双库治理', icon: 'scale' },
+  { id: 'mapping',    name: '片库映射', icon: 'map' },
+  { id: 'subscribe',  name: '追更订阅', icon: 'bell' },
+  { id: 'morning',    name: '每日晨报', icon: 'sun' },
+  { id: 'daily',      name: '每日汇报', icon: 'file' },
+  { id: 'history',    name: '执行记录', icon: 'bookmark' },
+  { id: 'settings',   name: '规则设置', icon: 'gear' }
+];
+
+var currentPlan = null;
+var govData = { loc: [], shr: [], keep: [], exempt: [] };
+var currentGovFilter = 'all';
+var statsAutoLoaded = false;
+var revealed = {};
+var currentStrategy = { decision: 'quality_first', multi_season_protect: true, tie_keep_local: false, exempt_keywords: [], special_action: 'keep' };
+var currentSubs = [];
+var currentGovItems = [];
+
+/* 缓存 Emby 主机地址（由 /api/dashboard 或 /api/emby/library 填充） */
+window.__embyHost = '';
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+function toast(msg, type, ms){
+  if (typeof type === 'number'){ ms = type; type = ''; }
+  ms = ms || 2600;
+  var t = $('toast');
+  var prefix = type === 'success' ? icon('check') : (type === 'error' ? icon('x') : '');
+  t.className = 'toast ' + (type || '');
+  t.innerHTML = prefix + '<span>' + msg + '</span>';
+  t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove('show'); }, ms);
+}
+function showTaskHint(text){ $('taskHintText').textContent = text || '任务中...'; $('taskHint').classList.add('show'); }
+function hideTaskHint(){ $('taskHint').classList.remove('show'); }
+function toggleSidebar(open){ var sb = $('sidebar'); if(open){ sb.classList.add('open'); $('mask').classList.add('show'); } else { sb.classList.remove('open'); $('mask').classList.remove('show'); } }
+function openModal(html){ $('modalBody').innerHTML = html; $('modalBg').classList.add('show'); }
+function closeModal(){ $('modalBg').classList.remove('show'); }
+
+function getHeaders(){
+  return { 'Content-Type': 'application/json' };
+}
+async function api(path, opts){
+  opts = opts || {};
+  var headers = Object.assign(getHeaders(), opts.headers || {});
+  var r = await fetch(path, Object.assign({}, opts, { headers: headers }));
+  if (r.status === 401) {
+    // 浏览器在收到 401 + WWW-Authenticate 时会自动弹原生登录框并重试；
+    // 走到这里说明用户取消了登录框或凭证仍然错误。
+    throw new Error('未授权：用户名或密码错误');
+  }
+  var j = await r.json().catch(function(){ return { detail: '响应解析失败' }; });
+  if (!r.ok) throw new Error(j.detail || j.message || ('HTTP ' + r.status));
+  return j;
+}
+async function pollTask(taskId, hintText){
+  showTaskHint(hintText || '任务中...');
+  for(;;){
+    var t = await api('/api/task/' + taskId);
+    if (t.status !== 'running') { hideTaskHint(); return t; }
+    await new Promise(function(r){ setTimeout(r, 1200); });
+  }
+}
+function statusOk(txt){ return '<span class="status-badge ok">' + icon('check') + txt + '</span>'; }
+function statusNo(txt){ return '<span class="status-badge no">' + icon('x') + txt + '</span>'; }
+function statusDim(txt){ return '<span class="status-badge dim">' + txt + '</span>'; }
+
+/* ═══════════ 主题切换 ═══════════ */
+var THEME_KEY = 'tdd-theme';
+
+function getCurrentTheme(){
+  var saved = '';
+  try { saved = localStorage.getItem(THEME_KEY) || ''; } catch(e){}
+  if (saved === 'dark' || saved === 'light') return saved;
+  // 未设置：跟随系统
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function updateThemeIcon(){
+  var btn = $('themeBtn');
+  if (!btn) return;
+  var isDark = getCurrentTheme() === 'dark';
+  // 月亮图标：当前是深色时，按钮显示太阳（点了变亮）
+  btn.innerHTML = isDark
+    ? '<svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>'
+    : '<svg class="ic" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  btn.title = isDark ? '切换到浅色模式' : '切换到深色模式';
+}
+
+function toggleTheme(){
+  var cur = getCurrentTheme();
+  var next = cur === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem(THEME_KEY, next); } catch(e){}
+  document.documentElement.setAttribute('data-theme', next);
+  updateThemeIcon();
+  toast(next === 'dark' ? '已切换到深色模式' : '已切换到浅色模式', 'success', 1500);
+}
+
+function initTheme(){
+  // <head> 里的内联脚本已经设了 data-theme（防闪烁），这里只更新图标
+  updateThemeIcon();
+  // 监听系统主题变化（仅在用户未手动选择时生效）
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
+      var saved = '';
+      try { saved = localStorage.getItem(THEME_KEY) || ''; } catch(e){}
+      if (!saved) {
+        document.documentElement.removeAttribute('data-theme');
+        updateThemeIcon();
+      }
+    });
+  }
+}
+
+/* ═══════════ 带鉴权的海报加载 ═══════════ */
+/* <img src> 不会自动带 Basic Auth 头，必须走 fetch 拿 blob 再赋值。
+   HTML 里统一用 data-emby-src 标记需要鉴权加载的图片。 */
+async function hydratePosters(root){
+  var scope = root || document;
+  var imgs = scope.querySelectorAll('img[data-emby-src]:not([data-loaded])');
+  for (var i = 0; i < imgs.length; i++) {
+    var img = imgs[i];
+    img.setAttribute('data-loaded', '1');
+    try {
+      var r = await fetch(img.getAttribute('data-emby-src'));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var blob = await r.blob();
+      img.src = URL.createObjectURL(blob);
+    } catch (e) {
+      var ph = document.createElement('div');
+      ph.className = 'no-img';
+      ph.textContent = '无图';
+      if (img.parentNode) img.parentNode.replaceChild(ph, img);
+    }
+  }
+}
+
+function renderMenu(){
+  var nav = $('menu');
+  nav.innerHTML = MENU.map(function(m){
+    var active = m.id === 'dashboard' ? 'active' : '';
+    return '<a class="'+active+'" data-tab="'+m.id+'" onclick="switchTab(\''+m.id+'\')">' +
+           '<span class="icon">'+icon(m.icon)+'</span>' + m.name + '</a>';
+  }).join('');
+}
+function switchTab(id){
+  document.querySelectorAll('.sidebar nav a').forEach(function(a){ a.classList.toggle('active', a.dataset.tab === id); });
+  document.querySelectorAll('.tab').forEach(function(s){ s.classList.remove('active'); });
+  var tab = $('tab-' + id); if(tab) tab.classList.add('active');
+  var m = MENU.find(function(x){ return x.id === id; });
+  $('tabTitle').textContent = m ? m.name : 'TDD Guard';
+  toggleSidebar(false);
+
+  if (id === 'dashboard')  loadDashboard();
+  if (id === 'explore')    loadExplore();
+  if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); }
+  if (id === 'mapping')    ensureEmbyLoaded();
+  if (id === 'subscribe')  loadSubscriptions();
+  if (id === 'morning')    loadMorning();
+  if (id === 'history')    loadRecords();
+  if (id === 'daily' && !statsAutoLoaded) { statsAutoLoaded = true; loadStats(false, false); }
+}
+
+/* ═══════════ 治理总览 ═══════════ */
+async function loadDashboard(){
+  try {
+    var d = await api('/api/dashboard');
+    $('stat-local').textContent = d.localCount || '-';
+    $('stat-share').textContent = d.shareCount || '-';
+    var embyOk = d.services && d.services.emby && d.services.emby.ok;
+    $('svc-emby').innerHTML = embyOk ? statusOk('在线') : statusNo('离线');
+    $('svc-emby-host').textContent = (d.services && d.services.emby && d.services.emby.host) || '—';
+    /* 缓存 Emby 主机地址，供 showEmbyDetailById 里的"在 Emby 中打开"链接使用 */
+    if (d.services && d.services.emby && d.services.emby.host) {
+      window.__embyHost = d.services.emby.host;
+    }
+    var tmdbOk = d.services && d.services.tmdb && d.services.tmdb.ok;
+    $('svc-tmdb').innerHTML = tmdbOk ? statusOk('已配置') : statusNo('未配置');
+    $('svc-tmdb-sub').textContent = tmdbOk ? '影视探索可用' : '去「规则设置」配置';
+
+    if (d.subscriptions) {
+      var ss = d.subscriptions;
+      $('stat-sub').textContent = (ss.enabled || 0) + ' / ' + (ss.total || 0) + ' 部';
+      $('stat-sub-sub').textContent = (ss.enabled || 0) > 0 ? '轮询中' : '点击查看';
+    }
+    if (d.morningReport) {
+      var mr = d.morningReport;
+      $('stat-morning').textContent = mr.enabled ? mr.time : '未开启';
+      $('stat-morning-sub').textContent = mr.last_date ? ('上次 ' + mr.last_date) : ('预扫 ' + (mr.prescan_min || 5) + ' 分钟');
+    }
+    if (d.ingest) {
+      var ing = d.ingest;
+      $('stat-ingest-mov').textContent = (ing.movies || 0) + ' / ' + (ing.series || 0) + ' 部';
+      var age = ing.cache_age_sec;
+      if (age == null) $('stat-ingest-age').textContent = '无缓存';
+      else if (age < 60) $('stat-ingest-age').textContent = age + ' 秒前';
+      else if (age < 3600) $('stat-ingest-age').textContent = Math.floor(age/60) + ' 分钟前';
+      else $('stat-ingest-age').textContent = Math.floor(age/3600) + ' 小时前';
+    }
+
+    // 策略快照
+    var st = await api('/api/strategy');
+    var s = st.strategy || {};
+    var decisionLabel = { quality_first: '画质优先', keep_local: '保留本地', keep_share: '保留分享', balanced: '严格画质' }[s.decision] || s.decision;
+    var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
+    $('strategySnapshot').innerHTML =
+      '<div class="path-row"><span class="name">决策模型</span><span class="path" style="color:#10b981;border:none">' + decisionLabel + '</span></div>' +
+      '<div class="path-row"><span class="name">多季合集保护</span><span class="path" style="color:' + (s.multi_season_protect ? '#3b82f6' : '#9ca3af') + ';border:none">' + (s.multi_season_protect ? '已开启' : '已关闭') + '</span></div>' +
+      '<div class="path-row"><span class="name">特别篇策略</span><span class="path" style="color:#8b5cf6;border:none">' + spLabel + '</span></div>' +
+      '<div class="path-row"><span class="name">平局策略</span><span class="path" style="color:#6b7280;border:none">' + (s.tie_keep_local ? '保留本地' : '保留分享') + '</span></div>' +
+      '<div class="path-row"><span class="name">白名单</span><span class="path" style="border:none;color:#6b7280">' + (s.exempt_keywords || []).join(', ') + '</span></div>';
+  } catch(e){ console.warn('dashboard 失败', e); }
+}
+
+/* ═══════════ 扫描 ═══════════ */
+async function scanLibrary(){
+  var btn1 = $('scanBtn'), btn2 = $('govScanBtn');
+  [btn1, btn2].forEach(function(b){ if(b) b.disabled = true; });
+  if (btn1) btn1.innerHTML = '<span class="spin"></span><span>扫描中...</span>';
+  if (btn2) btn2.innerHTML = '<span class="spin"></span><span>扫描中...</span>';
+  try {
+    var res = await api('/api/check', { method: 'POST' });
+    var t = await pollTask(res.task_id, '扫描双库中...');
+    if (t.status !== 'success') throw new Error(t.error || '诊断失败');
+    var r = t.result;
+    currentPlan = r.plan_id;
+    if ($('govExecBtn')) $('govExecBtn').disabled = !currentPlan;
+    govData = {
+      loc: r.del_local_items || [],
+      shr: r.del_share_items || [],
+      keep: r.protected_items || [],
+      exempt: r.exempted_items || []
+    };
+    $('govStats').style.display = '';
+    $('gov-keep').textContent  = govData.keep.length;
+    $('gov-loc').textContent   = govData.loc.length;
+    $('gov-shr').textContent   = govData.shr.length;
+    $('gov-exempt').textContent = govData.exempt.length;
+    renderGovList();
+    toast('扫描完成：待处理 ' + (r.total_clean_cnt || 0) + ' 项', 'success');
+  } catch(e){ toast(e.message, 'error', 4000); }
+  finally {
+    [btn1, btn2].forEach(function(b){ if(b) b.disabled = false; });
+    if (btn1){ btn1.removeAttribute('data-icon-done'); btn1.innerHTML = '立即扫描双库'; btn1.setAttribute('data-icon','refresh'); }
+    if (btn2){ btn2.removeAttribute('data-icon-done'); btn2.innerHTML = '重新扫描';   btn2.setAttribute('data-icon','refresh'); }
+    injectIcons();
+  }
+}
+function setGovFilter(f){
+  currentGovFilter = f;
+  document.querySelectorAll('#govFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.f === f); });
+  renderGovList();
+}
+function renderGovList(){
+  var items = [];
+  if (currentGovFilter === 'all' || currentGovFilter === 'loc')
+    govData.loc.forEach(function(t){ items.push({type:'loc', data:t}); });
+  if (currentGovFilter === 'all' || currentGovFilter === 'shr')
+    govData.shr.forEach(function(t){ items.push({type:'shr', data:t}); });
+  if (currentGovFilter === 'all' || currentGovFilter === 'keep')
+    govData.keep.forEach(function(t){ items.push({type:'keep', data:t}); });
+  if (currentGovFilter === 'all' || currentGovFilter === 'exempt')
+    govData.exempt.forEach(function(t){ items.push({type:'exempt', data:t}); });
+  currentGovItems = items;
+  var list = $('planList');
+  if (!items.length) {
+    list.innerHTML = '<div class="list-empty">' + ((govData.loc.length + govData.shr.length + govData.keep.length + govData.exempt.length) ? '当前筛选下无匹配项' : '无待治理项') + '</div>';
+    return;
+  }
+  list.innerHTML = items.map(function(it, i){
+    return '<div class="list-item '+it.type+' clickable" onclick="showGovDetailAt('+i+')">' +
+           '<div class="t">' + esc(it.data.text) + '</div>' +
+           '<div class="d">' + esc(it.data.detail) + '</div>' +
+           '</div>';
+  }).join('');
+}
+function showGovDetailAt(i){
+  var it = currentGovItems[i];
+  if (!it) return;
+  showGovDetail(it.data);
+}
+function showGovDetail(d){
+  var meta = d.meta || {};
+  var rows = [];
+  rows.push('<div class="meta-row"><span class="k">标题</span><span class="v">' + esc(d.text) + '</span></div>');
+  if (d.reason_label) rows.push('<div class="meta-row"><span class="k">原因</span><span class="v">' + esc(d.reason_label) + '</span></div>');
+  if (meta.title) rows.push('<div class="meta-row"><span class="k">剧名</span><span class="v">' + esc(meta.title) + '</span></div>');
+  if (meta.season != null) rows.push('<div class="meta-row"><span class="k">季</span><span class="v">S' + String(meta.season).padStart(2,'0') + '</span></div>');
+  if (meta.local_seasons != null) rows.push('<div class="meta-row"><span class="k">本地季数</span><span class="v">' + meta.local_seasons + '</span></div>');
+  if (meta.share_seasons != null) rows.push('<div class="meta-row"><span class="k">分享季数</span><span class="v">' + meta.share_seasons + '</span></div>');
+  if (meta.local_quality != null) rows.push('<div class="meta-row"><span class="k">本地画质分</span><span class="v">' + meta.local_quality + '</span></div>');
+  if (meta.share_quality != null) rows.push('<div class="meta-row"><span class="k">分享画质分</span><span class="v">' + meta.share_quality + '</span></div>');
+  if (meta.keywords) rows.push('<div class="meta-row"><span class="k">命中关键词</span><span class="v">' + esc((meta.keywords || []).join(', ')) + '</span></div>');
+  rows.push('<div class="meta-row"><span class="k">涉及文件数</span><span class="v">' + (d.files_count || 0) + '</span></div>');
+  var html = '<h3>' + icon('info') + '详情</h3>' + rows.join('') +
+             '<div style="margin-top:16px;text-align:right"><button class="btn gray" onclick="closeModal()">关闭</button></div>';
+  openModal(html);
+}
+async function runClean(){
+  if (!currentPlan) return toast('请先扫描双库', 'error');
+  if (!(confirm('确认执行清理？将按清单删除文件'))) return;
+  if ($('govExecBtn')) $('govExecBtn').disabled = true;
+  try {
+    var res = await api('/api/clean', { method: 'POST', body: JSON.stringify({ plan_id: currentPlan, dry_run: false }) });
+    var t = await pollTask(res.task_id, '执行清理中...');
+    if (t.status !== 'success') throw new Error(t.error || '执行失败');
+    var lines = (t.result.detail || []).join('\n');
+    alert('【执行结果】\n\n' + lines + '\n\n释放本地: ' + t.result.loc_cnt + '  淘汰分享: ' + t.result.sh_cnt);
+    currentPlan = null;
+    if ($('govExecBtn')) $('govExecBtn').disabled = true;
+    govData = { loc: [], shr: [], keep: [], exempt: [] };
+    $('govStats').style.display = 'none';
+    $('planList').innerHTML = '<div class="list-empty">已执行完毕</div>';
+    loadDashboard();
+  } catch(e){ toast(e.message, 'error', 4000); }
+}
+
+/* ═══════════ 影视探索 ═══════════ */
+var exploreState = { region: 'all', media: 'movie', year: '', sort: 'popularity', page: 1, totalPages: 1, q: '' };
+var exploreLoading = false;
+var exploreFiltersOpen = false;
+
+var REGION_LABEL = { all: '全部地区', cn: '大陆', hk: '香港', tw: '台湾', jp: '日本', kr: '韩国', us: '欧美' };
+var MEDIA_LABEL  = { movie: '电影', tv: '剧集' };
+var SORT_LABEL   = { popularity: '热度', release: '最新', rating: 'TMDB 评分' };
+
+function updateFilterSummaryText(){
+  var parts = [
+    REGION_LABEL[exploreState.region] || '全部地区',
+    MEDIA_LABEL[exploreState.media]   || '电影',
+    exploreState.year ? (exploreState.year + ' 年') : '全部年份',
+    SORT_LABEL[exploreState.sort]     || '热度'
+  ];
+  var el = $('filterSummaryText');
+  if (el) el.textContent = parts.join(' · ');
+}
+
+function toggleExploreFilters(){
+  exploreFiltersOpen = !exploreFiltersOpen;
+  var panel = $('exploreFilters');
+  var summary = $('filterSummary');
+  var toggleText = $('filterToggleText');
+  if (!panel) return;
+  if (exploreFiltersOpen) {
+    panel.classList.remove('hidden');
+    if (summary) summary.classList.add('open');
+    if (toggleText) toggleText.textContent = '收起筛选';
+  } else {
+    panel.classList.add('hidden');
+    if (summary) summary.classList.remove('open');
+    if (toggleText) toggleText.textContent = '展开筛选';
+  }
+}
+
+function setupChipGroup(id, key){
+  var el = $(id);
+  if (!el) return;
+  el.addEventListener('click', function(e){
+    var btn = e.target.closest('.chip');
+    if (!btn) return;
+    el.querySelectorAll('.chip').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    exploreState[key] = btn.dataset.v;
+    exploreState.page = 1;
+    exploreState.q = '';
+    $('exploreSearch').value = '';
+    updateFilterSummaryText();
+    // 选完自动收起（移动端体验好；桌面端也一致）
+    if (exploreFiltersOpen) toggleExploreFilters();
+    loadExplore();
+  });
+}
+function doExploreSearch(){
+  var q = $('exploreSearch').value.trim();
+  exploreState.q = q; exploreState.page = 1;
+  // 搜索时始终收起筛选栏
+  if (exploreFiltersOpen) toggleExploreFilters();
+  loadExplore();
+}
+async function loadExplore(){
+  if (exploreLoading) return;
+  exploreLoading = true;
+  var grid = $('exploreGrid');
+  grid.innerHTML = '<div class="list-empty">加载中...</div>';
+  try {
+    var qs = 'region=' + encodeURIComponent(exploreState.region)
+           + '&year=' + encodeURIComponent(exploreState.year)
+           + '&sort=' + encodeURIComponent(exploreState.sort)
+           + '&media=' + encodeURIComponent(exploreState.media)
+           + '&page=' + exploreState.page
+           + '&q=' + encodeURIComponent(exploreState.q);
+    var r = await api('/api/explore?' + qs);
+    if (r.status !== 'success') throw new Error(r.message || '加载失败');
+    exploreState.totalPages = r.total_pages || 1;
+    renderExploreCards(r.cards || []);
+    if (r.cards && r.cards.length) {
+      $('explorePager').classList.remove('hidden');
+      var label = r.is_search ? '搜索结果' : '第 ' + exploreState.page + ' / ' + exploreState.totalPages + ' 页';
+      $('explorePageInfo').textContent = label + ' · 共 ' + (r.total_results || 0) + ' 条';
+    } else { $('explorePager').classList.add('hidden'); }
+  } catch(e){
+    grid.innerHTML = '<div class="list-empty">' + esc(e.message) + '</div>';
+  } finally { exploreLoading = false; }
+}
+function _subscribedTmdbIds(){
+  var set = {};
+  currentSubs.forEach(function(s){ if (s.tmdb_id) set[String(s.tmdb_id)] = true; });
+  return set;
+}
+function renderExploreCards(cards){
+  var grid = $('exploreGrid');
+  if (!cards.length) { grid.innerHTML = '<div class="list-empty">无结果</div>'; return; }
+  var subSet = _subscribedTmdbIds();
+  grid.innerHTML = cards.map(function(c){
+    var status, cls;
+    if (c.in_local && c.in_share) { status = '两库全入库'; cls = 'ok'; }
+    else if (c.in_local) { status = '仅本地'; cls = 'local'; }
+    else if (c.in_share) { status = '仅分享'; cls = 'share'; }
+    else { status = '未入库'; cls = 'no'; }
+    var typeLabel = c.type === 'tv' ? '剧集' : '电影';
+    /* poster 有两种来源：
+       1) TMDB 图片 → 直接 <img src>
+       2) /api/emby/poster/... → 需要 Basic Auth，走 data-emby-src，由 hydratePosters() 拉 blob */
+    var posterHtml;
+    if (!c.poster) {
+      posterHtml = '<div class="no-img">暂无海报</div>';
+    } else if (c.poster.indexOf('/api/emby/poster/') === 0) {
+      posterHtml = '<img data-emby-src="' + esc(c.poster) + '" alt="" loading="lazy">';
+    } else {
+      posterHtml = '<img src="' + esc(c.poster) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.innerHTML=\'<div class=&quot;no-img&quot;>暂无海报</div>\'">';
+    }
+    var isSub = subSet[String(c.tmdb_id)];
+    var subBtn = c.type === 'tv'
+      ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" onclick="event.stopPropagation();toggleSubscribe(\'' + esc(c.tmdb_id) + '\',\'' + esc(c.title).replace(/'/g, '&#39;') + '\',\'' + esc(c.poster || '').replace(/'/g, '&#39;') + '\')">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
+      : '';
+    return '<div class="poster-card">'
+      + '<div class="poster-wrap">' + posterHtml
+      + '<span class="badge-type">' + typeLabel + '</span>'
+      + (c.rating ? '<span class="badge-rate">' + icon('star') + c.rating + '</span>' : '')
+      + '<span class="badge-status ' + cls + '">' + status + '</span>'
+      + '</div>'
+      + '<div class="info">'
+      + '<div class="t" title="' + esc(c.title) + '">' + esc(c.title) + '</div>'
+      + '<div class="meta"><span>' + (c.year || '—') + ' · TMDB</span>' + subBtn + '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+  hydratePosters(grid);
+}
+async function toggleSubscribe(tmdbId, title, poster){
+  var idx = currentSubs.findIndex(function(s){ return String(s.tmdb_id) === String(tmdbId); });
+  if (idx >= 0) {
+    if (!(confirm('取消订阅《' + title + '》？'))) return;
+    currentSubs.splice(idx, 1);
+  } else {
+    currentSubs.push({ id: tmdbId, tmdb_id: tmdbId, name: title, poster: poster || '', enabled: true });
+    toast('已订阅《' + title + '》', 'success');
+  }
+  try {
+    await api('/api/subscriptions', { method: 'POST', body: JSON.stringify({ subscriptions: currentSubs }) });
+    loadExplore();
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+function explorePage(delta){
+  var p = exploreState.page + delta;
+  if (p < 1 || p > exploreState.totalPages) return;
+  exploreState.page = p;
+  loadExplore();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+function switchExploreTab_init(){
+  setupChipGroup('filterRegion', 'region');
+  setupChipGroup('filterMedia', 'media');
+  setupChipGroup('filterYear', 'year');
+  setupChipGroup('filterSort', 'sort');
+  $('exploreSearch').addEventListener('keydown', function(e){ if (e.key === 'Enter') doExploreSearch(); });
+  updateFilterSummaryText();
+}
+
+/* ═══════════ 片库映射 ═══════════ */
+var embyData = { series: [], movies: [], stats: {} };
+var embyFilterState = { type: 'series', filter: 'all' };
+var embyLoaded = false;
+function ensureEmbyLoaded(){ if (!embyLoaded) loadEmbyLibrary(false, false); }
+var tmdbProgressTimer = null;
+
+async function pollTmdbProgress(){
+  try {
+    var r = await api('/api/tmdb/progress');
+    var p = r.progress || {};
+    if (p.running) {
+      document.getElementById('tmdbProgressWrap').classList.remove('hidden');
+      document.getElementById('tmdbProgressFill').style.width = p.percent + '%';
+      var stage = p.stage || '对照中...';
+      if (p.total > 0) stage += ' (' + p.done + '/' + p.total + ')';
+      document.getElementById('tmdbProgressStage').textContent = stage;
+      var etaText = '';
+      if (p.elapsed_sec) {
+        etaText = '已用 ' + p.elapsed_sec + 's';
+        if (p.eta_sec != null && p.eta_sec > 0) etaText += ' · 预计还需 ' + p.eta_sec + 's';
+      }
+      document.getElementById('tmdbProgressEta').textContent = etaText;
+    } else {
+      document.getElementById('tmdbProgressWrap').classList.add('hidden');
+      if (tmdbProgressTimer) { clearInterval(tmdbProgressTimer); tmdbProgressTimer = null; }
+      if (p.finished_at && !p.error) loadEmbyLibrary(false, true);
+      else if (p.error) toast('TMDB 对照失败: ' + p.error, 'error', 5000);
+    }
+  } catch(e) {}
+}
+
+function startTmdbProgressWatch(){
+  if (tmdbProgressTimer) return;
+  tmdbProgressTimer = setInterval(pollTmdbProgress, 2000);
+  pollTmdbProgress();
+}
+
+async function loadEmbyLibrary(force, withTmdb){
+  if (force && withTmdb) {
+    startTmdbProgressWatch();
+    try {
+      var r0 = await api('/api/emby/library?force=1&with_tmdb=1');
+      if (r0 && (r0.status === 'started' || r0.status === 'running')) {
+        $('embyList').innerHTML = '<div class="list-empty">TMDB 对照进行中，请稍候...</div>';
+        return;
+      }
+    } catch(e) {}
+  }
+  var msg = withTmdb ? '正在拉取 Emby + TMDB（首次可能较慢）...' : '正在拉取 Emby 库...';
+  $('embyList').innerHTML = '<div class="list-empty">' + msg + '</div>';
+  try {
+    var url = '/api/emby/library?force=' + (force ? 1 : 0) + '&with_tmdb=' + (withTmdb ? 1 : 0);
+    var r = await api(url);
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    embyData.series = r.series || [];
+    embyData.movies = r.movies || [];
+    embyData.stats = r.stats || {};
+    /* 缓存 Emby 主机地址（后端在返回里带了 emby_host），供"在 Emby 中打开"链接使用 */
+    if (r.emby_host) window.__embyHost = r.emby_host;
+    window.__embySeriesMap = {};
+    embyData.series.forEach(function(x){ if (x.id) window.__embySeriesMap[x.id] = x; });
+    embyLoaded = true;
+    var st = embyData.stats;
+    $('embyStats').style.display = '';
+    $('embyStats2').style.display = '';
+    $('emby-total').textContent      = st.total_series || 0;
+    $('emby-aligned').textContent    = st.aligned || 0;
+    $('emby-missing').textContent    = st.missing || 0;
+    $('emby-extra').textContent      = st.extra || 0;
+    $('emby-ongoing').textContent    = st.ongoing || 0;
+    $('emby-unmatched').textContent  = (st.unmatched || 0) + (st.no_tmdb || 0);
+    $('emby-movies').textContent     = st.total_movies || 0;
+    $('emby-tmdb-errors').textContent = r.tmdb_errors || 0;
+    renderEmbyList();
+  } catch(e){ $('embyList').innerHTML = '<div class="list-empty">' + esc(e.message) + '</div>'; }
+}
+function setEmbyType(t){
+  embyFilterState.type = t;
+  document.querySelectorAll('#embyTypeFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.t === t); });
+  var f = $('embyFilter');
+  if (t === 'movies') {
+    for (var i = 1; i <= 4; i++) f.children[i].style.display = 'none';
+    if (embyFilterState.filter !== 'all') {
+      embyFilterState.filter = 'all';
+      document.querySelectorAll('#embyFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.f === 'all'); });
+    }
+  } else {
+    for (var i = 1; i <= 4; i++) f.children[i].style.display = '';
+  }
+  renderEmbyList();
+}
+function setEmbyFilter(f){
+  embyFilterState.filter = f;
+  document.querySelectorAll('#embyFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.f === f); });
+  renderEmbyList();
+}
+function renderEmbyList(){
+  var list = $('embyList');
+  var keyword = ($('embySearch').value || '').trim().toLowerCase();
+  var arr;
+  if (embyFilterState.type === 'movies') {
+    arr = embyData.movies.slice();
+    if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
+    if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
+    list.innerHTML = arr.slice(0, 500).map(renderMovieCard).join('');
+    hydratePosters(list);
+    return;
+  }
+  arr = embyData.series.slice();
+  if (embyFilterState.filter === 'unmatched') {
+    arr = arr.filter(function(x){
+      var st = (x.tmdb_info || {}).match_status;
+      return st === 'unmatched' || st === 'no_tmdb';
+    });
+  } else if (embyFilterState.filter !== 'all') {
+    arr = arr.filter(function(x){ return (x.tmdb_info || {}).match_status === embyFilterState.filter; });
+  }
+  if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
+  if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
+  var prio = { missing: 0, extra: 1, unmatched: 2, no_tmdb: 2, ongoing: 3, aligned: 4 };
+  arr.sort(function(a, b){
+    var sa = (a.tmdb_info || {}).match_status || 'unmatched';
+    var sb = (b.tmdb_info || {}).match_status || 'unmatched';
+    var pa = prio[sa] != null ? prio[sa] : 9;
+    var pb = prio[sb] != null ? prio[sb] : 9;
+    if (pa !== pb) return pa - pb;
+    var da = Math.abs((a.tmdb_info || {}).diff || 0);
+    var db = Math.abs((b.tmdb_info || {}).diff || 0);
+    if (da !== db) return db - da;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  list.innerHTML = arr.slice(0, 500).map(renderSeriesCard).join('');
+  hydratePosters(list);
+}
+function renderSeriesCard(s){
+  var ti = s.tmdb_info || {};
+  var mst = ti.match_status || 'unmatched';
+  var stCls = 'st-' + mst;
+  var badges = '';
+  if (s.in_local && s.in_share) badges += '<span class="emby-badge loc">本地+分享</span>';
+  else if (s.in_local) badges += '<span class="emby-badge loc">本地</span>';
+  else if (s.in_share) badges += '<span class="emby-badge shr">分享</span>';
+
+  var tsl = ti.tmdb_status || '';
+  if (mst === 'aligned') badges += '<span class="emby-badge ok">' + icon('check') + ' 对齐</span>';
+  else if (mst === 'missing') badges += '<span class="emby-badge miss">' + icon('x') + ' 缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
+  else if (mst === 'extra') badges += '<span class="emby-badge extra">' + icon('alert') + ' 超 ' + (ti.diff || 0) + ' 集</span>';
+  else if (mst === 'ongoing') badges += '<span class="emby-badge ongoing">' + icon('clock') + ' 在更</span>';
+  else if (mst === 'unmatched') badges += '<span class="emby-badge dim">' + icon('info') + ' 未匹配</span>';
+  else if (mst === 'no_tmdb') badges += '<span class="emby-badge dim">' + icon('info') + ' 无 TMDB ID</span>';
+  else if (mst === 'pending') badges += '<span class="emby-badge gen">' + icon('info') + ' 待对照</span>';
+  if (tsl === 'Ended') badges += '<span class="emby-badge gen">已完结</span>';
+  else if (tsl === 'Returning Series') badges += '<span class="emby-badge gen">连载中</span>';
+  if (s.year) badges += '<span class="emby-badge gen">' + s.year + '</span>';
+
+  // ── 顶部对比摘要 ──
+  var summary = '';
+  if (ti.tmdb_total != null) {
+    var localSeasons = (ti.seasons || []).filter(function(x){ return x.local > 0; }).length;
+    var tmdbSeasons = (ti.seasons || []).filter(function(x){ return x.tmdb > 0; }).length;
+    var diffCls = ti.diff < 0 ? 'miss' : (ti.diff > 0 ? 'extra' : 'ok');
+    var diffTxt = ti.diff < 0 ? ('缺 ' + Math.abs(ti.diff) + ' 集')
+                : (ti.diff > 0 ? ('超 ' + ti.diff + ' 集') : '完全对齐');
+    summary = '<div class="season-summary">'
+      + '<div class="item"><span class="k">本地</span><span class="v">' + localSeasons + ' 季 · ' + ti.local_total + ' 集</span></div>'
+      + '<div class="item"><span class="k">TMDB</span><span class="v">' + tmdbSeasons + ' 季 · ' + ti.tmdb_total + ' 集</span></div>'
+      + '<div class="item ' + diffCls + '"><span class="k">差异</span><span class="v">' + diffTxt + '</span></div>'
+      + '</div>';
+  } else if (mst === 'pending') {
+    summary = '<div class="season-summary"><div class="item"><span class="k">本地</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div><div class="item"><span class="k">TMDB</span><span class="v" style="color:#9ca3af">点击「重新对照」拉取</span></div></div>';
+  } else {
+    summary = '<div class="season-summary"><div class="item"><span class="k">本地</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div></div>';
+  }
+
+  // ── 季详情列表 ──
+  var seasonList = '';
+  if (ti.seasons && ti.seasons.length) {
+    seasonList = '<div class="season-list">' + ti.seasons.map(function(se){
+      var cls = se.status === 'aligned' ? 'ok' : (se.status === 'missing' ? 'miss' : (se.status === 'extra' ? 'extra' : 'ok'));
+      var tag = '';
+      if (se.tmdb == null) {
+        tag = '<span class="tag" style="background:#f3f4f6;color:#6b7280">—</span>';
+        se.tmdb = '?';
+      } else if (se.diff === 0) {
+        tag = '<span class="tag">✓ 完整</span>';
+      } else if (se.diff > 0) {
+        tag = '<span class="tag">超 ' + se.diff + '</span>';
+      } else {
+        tag = '<span class="tag">缺 ' + Math.abs(se.diff) + '</span>';
+      }
+      return '<div class="season-row ' + cls + '">'
+        + '<span class="s">S' + String(se.season).padStart(2,'0') + '</span>'
+        + '<span class="d">本地 <b>' + se.local + '</b> 集 / TMDB <b>' + se.tmdb + '</b> 集</span>'
+        + tag
+        + '</div>';
+    }).join('') + '</div>';
+  }
+
+  /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
+  var poster = s.has_image
+    ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" loading="lazy">'
+    : '无图';
+
+  return '<div class="emby-card ' + stCls + '" onclick="showEmbyDetailById(\'' + s.id + '\')" style="cursor:pointer">'
+    + '<div class="emby-head">'
+    + '<div class="emby-poster">' + poster + '</div>'
+    + '<div class="emby-body">'
+    + '<div class="emby-title">' + esc(s.name || '?') + '</div>'
+    + '<div class="emby-badges">' + badges + '</div>'
+    + summary
+    + seasonList
+    + '</div>'
+    + '</div>'
+    + '</div>';
+}
+
+function showEmbyDetailById(id){
+  var s = (window.__embySeriesMap || {})[id];
+  if (!s) return;
+  var ti = s.tmdb_info || {};
+  var mst = ti.match_status || 'unmatched';
+  var html = '';
+
+  html += '<div style="display:flex;gap:16px;margin-bottom:16px">';
+  html += '<div style="width:110px;height:165px;border-radius:8px;background:#f3f4f6;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">';
+  /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
+  html += s.has_image
+    ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" style="width:100%;height:100%;object-fit:cover">'
+    : '无图';
+  html += '</div>';
+  html += '<div style="flex:1;min-width:0">';
+  html += '<h3 style="margin:0 0 8px;font-size:16px;line-height:1.3;word-break:break-word">' + esc(s.name || '?') + '</h3>';
+  html += '<div class="emby-badges">';
+  if (s.in_local && s.in_share) html += '<span class="emby-badge loc">本地+分享</span>';
+  else if (s.in_local) html += '<span class="emby-badge loc">本地</span>';
+  else if (s.in_share) html += '<span class="emby-badge shr">分享</span>';
+  if (mst === 'aligned') html += '<span class="emby-badge ok">✓ 对齐</span>';
+  else if (mst === 'missing') html += '<span class="emby-badge miss">缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
+  else if (mst === 'extra') html += '<span class="emby-badge extra">超 ' + (ti.diff || 0) + ' 集</span>';
+  else if (mst === 'ongoing') html += '<span class="emby-badge ongoing">在更</span>';
+  else if (mst === 'unmatched') html += '<span class="emby-badge dim">未匹配</span>';
+  else if (mst === 'no_tmdb') html += '<span class="emby-badge dim">无 TMDB</span>';
+  else if (mst === 'pending') html += '<span class="emby-badge gen">待对照</span>';
+  if (s.year) html += '<span class="emby-badge gen">' + s.year + '</span>';
+  html += '</div>';
+  html += '<div style="margin-top:8px;font-size:12px;color:#6b7280">';
+  html += '本地 ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+  if (ti.tmdb_total != null) html += '　|　TMDB ' + ti.tmdb_total + ' 集';
+  html += '</div>';
+  html += '</div></div>';
+
+  if (ti.seasons && ti.seasons.length) {
+    html += '<h4 style="margin:16px 0 8px;font-size:13px;color:#374151">季集对比</h4>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<thead><tr style="color:#6b7280"><th style="text-align:left;padding:6px 4px">季</th><th style="text-align:right;padding:6px 4px">本地</th><th style="text-align:right;padding:6px 4px">TMDB</th><th style="text-align:right;padding:6px 4px">差异</th><th style="text-align:left;padding:6px 4px">状态</th></tr></thead><tbody>';
+    ti.seasons.forEach(function(se){
+      var cls = se.status === 'aligned' ? '#10b981' : (se.status === 'missing' ? '#ef4444' : '#f59e0b');
+      var statusTxt = '';
+      if (se.tmdb == null) statusTxt = '—';
+      else if (se.diff === 0) statusTxt = '✓ 完整';
+      else if (se.diff > 0) statusTxt = '超 ' + se.diff;
+      else statusTxt = '缺 ' + Math.abs(se.diff);
+      var diffTxt = (se.diff == null) ? '—' : (se.diff > 0 ? '+' + se.diff : '' + se.diff);
+      html += '<tr style="border-top:1px solid #f3f4f6">';
+      html += '<td style="padding:6px 4px;font-weight:600">S' + String(se.season).padStart(2, '0') + '</td>';
+      html += '<td style="text-align:right;padding:6px 4px">' + se.local + '</td>';
+      html += '<td style="text-align:right;padding:6px 4px">' + (se.tmdb != null ? se.tmdb : '?') + '</td>';
+      html += '<td style="text-align:right;padding:6px 4px;color:' + cls + '">' + diffTxt + '</td>';
+      html += '<td style="padding:6px 4px;color:' + cls + '">' + statusTxt + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+  }
+
+  if (ti.seasons && ti.seasons.length) {
+    var missingHtml = '';
+    ti.seasons.forEach(function(se){
+      if (se.missing && se.missing.length) {
+        missingHtml += '<div style="font-size:12px;color:#991b1b;margin:4px 0">S' + String(se.season).padStart(2,'0') + ' 缺 ' + se.missing.map(function(n){return 'E' + String(n).padStart(2,'0')}).join(', ') + '</div>';
+      }
+    });
+    if (missingHtml) {
+      html += '<h4 style="margin:16px 0 8px;font-size:13px;color:#374151">缺集详情</h4>';
+      html += '<div style="background:#fef2f2;border:1px solid #fee2e2;border-radius:8px;padding:10px">' + missingHtml + '</div>';
+    }
+  }
+
+  /* "在 Emby 中打开"链接改为读配置，不再硬编码 IP */
+  var embyHost = (window.__embyHost || '').replace(/\/+$/, '');
+  html += '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">';
+  if (s.id && embyHost) {
+    html += '<a href="' + esc(embyHost) + '/web/index.html#!/item?id=' + esc(s.id) + '" target="_blank" rel="noopener" style="text-decoration:none" class="btn gray">在 Emby 中打开</a>';
+  }
+  html += '<button class="btn gray" onclick="closeModal()">关闭</button>';
+  html += '</div>';
+
+  openModal(html);
+  hydratePosters($('modalBody'));
+}
+
+function renderMovieCard(m){
+  var badges = '';
+  if (m.in_local && m.in_share) badges += '<span class="emby-badge loc">本地+分享</span>';
+  else if (m.in_local) badges += '<span class="emby-badge loc">本地</span>';
+  else if (m.in_share) badges += '<span class="emby-badge shr">分享</span>';
+  if (m.year) badges += '<span class="emby-badge gen">' + m.year + '</span>';
+  /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
+  var poster = m.has_image
+    ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" loading="lazy">'
+    : '无图';
+  return '<div class="emby-card"><div class="emby-head">'
+    + '<div class="emby-poster">' + poster + '</div>'
+    + '<div class="emby-body">'
+    + '<div class="emby-title">' + esc(m.name || '?') + '</div>'
+    + '<div class="emby-meta">电影</div>'
+    + '<div class="emby-badges">' + badges + '</div>'
+    + '</div></div></div>';
+}
+
+/* ═══════════ 追更订阅 ═══════════ */
+async function loadSubscriptions(){
+  try {
+    var r = await api('/api/subscriptions');
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    currentSubs = r.subscriptions || [];
+    $('subEnabled').checked = !!r.enabled;
+    $('subCheckTmdb').checked = !!r.check_tmdb;
+    $('subInterval').value = r.interval_min || 30;
+    $('subCount').textContent = currentSubs.length + ' 部';
+
+    if (!currentSubs.length) {
+      $('subList').innerHTML = '<div class="list-empty">暂无订阅。去「影视探索」搜索剧集，点「+ 订阅」</div>';
+    } else {
+      $('subList').innerHTML = currentSubs.map(function(s, i){
+        /* 订阅卡的海报也可能是 Emby poster URL，走 data-emby-src；TMDB 图片直接 src */
+        var poster;
+        if (!s.poster) {
+          poster = '';
+        } else if (s.poster.indexOf('/api/emby/poster/') === 0) {
+          poster = '<img data-emby-src="' + esc(s.poster) + '" loading="lazy">';
+        } else {
+          poster = '<img src="' + esc(s.poster) + '" loading="lazy" onerror="this.style.display=\'none\'">';
+        }
+        var tmdbExtra = s.tmdb_total ? ' · TMDB ' + s.tmdb_total + ' 集' : '';
+        var st = s.tmdb_status ? ' · ' + s.tmdb_status : '';
+        return '<div class="sub-item">'
+          + '<div class="p">' + poster + '</div>'
+          + '<div class="body">'
+          + '<div class="name">' + esc(s.name) + '</div>'
+          + '<div class="meta">最新集: <code>' + (s.latest_ep || '未检查') + '</code>' + tmdbExtra + st + '</div>'
+          + '</div>'
+          + '<div class="actions">'
+          + '<button class="btn sm ' + (s.enabled ? 'green' : 'gray') + '" onclick="toggleSubEnabled(' + i + ')">' + (s.enabled ? '启用' : '暂停') + '</button>'
+          + '<button class="btn sm red" onclick="removeSub(' + i + ')">删</button>'
+          + '</div>'
+          + '</div>';
+      }).join('');
+      hydratePosters($('subList'));
+    }
+  } catch(e){ toast('加载订阅失败: ' + e.message, 'error', 4000); }
+}
+async function saveSubSettings(){
+  try {
+    await api('/api/subscriptions/settings', { method: 'POST', body: JSON.stringify({
+      enabled: $('subEnabled').checked,
+      check_tmdb: $('subCheckTmdb').checked,
+      interval_min: parseInt($('subInterval').value) || 30,
+    })});
+    toast('设置已保存', 'success');
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+async function toggleSubEnabled(i){
+  currentSubs[i].enabled = !currentSubs[i].enabled;
+  try {
+    await api('/api/subscriptions', { method: 'POST', body: JSON.stringify({ subscriptions: currentSubs }) });
+    loadSubscriptions();
+  } catch(e){ toast(e.message, 'error'); }
+}
+async function removeSub(i){
+  if (!(confirm('删除订阅《' + currentSubs[i].name + '》？'))) return;
+  currentSubs.splice(i, 1);
+  try {
+    await api('/api/subscriptions', { method: 'POST', body: JSON.stringify({ subscriptions: currentSubs }) });
+    loadSubscriptions();
+  } catch(e){ toast(e.message, 'error'); }
+}
+async function checkSubsNow(){
+  toast('正在检查...');
+  try {
+    var r = await api('/api/subscriptions/check', { method: 'POST' });
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    var ups = r.updates || [];
+    if (!ups.length) {
+      toast('检查完成：暂无变化', 'success');
+      $('subUpdatesPanel').style.display = 'none';
+    } else {
+      toast('发现 ' + ups.length + ' 部变化', 'success');
+      $('subUpdatesPanel').style.display = '';
+      $('subUpdates').innerHTML = ups.map(function(u){
+        var parts = ['📺 《' + esc(u.name) + '》'];
+        if (u.new_ep) parts.push('🆕 ' + esc(u.new_ep.old) + ' → <b>' + esc(u.new_ep.new) + '</b>');
+        if (u.missing) parts.push('⚠️ 缺 ' + u.missing.diff + ' 集（TMDB 已播 ' + u.missing.tmdb_total + '）');
+        return '<div class="list-item exempt"><div class="t">' + parts[0] + '</div>'
+          + '<div class="d">' + parts.slice(1).join(' · ') + '</div></div>';
+      }).join('');
+    }
+    loadSubscriptions();
+  } catch(e){ toast('检查失败: ' + e.message, 'error'); }
+}
+
+/* ═══════════ 每日晨报 ═══════════ */
+async function loadMorning(){
+  try {
+    var r = await api('/api/morning');
+    var mr = r.morning || {};
+    $('mrEnabled').checked = !!mr.enabled;
+    $('mrHour').value = mr.hour != null ? mr.hour : 9;
+    $('mrMinute').value = mr.minute != null ? mr.minute : 0;
+    $('mrPrescan').value = mr.prescan_min != null ? mr.prescan_min : 5;
+    var items = mr.items || [];
+    $('mrItemStats').checked = items.indexOf('stats') >= 0;
+    $('mrItemSubs').checked = items.indexOf('subscriptions') >= 0;
+    $('mrItemGap').checked = items.indexOf('emby_gap') >= 0;
+  } catch(e){ toast('加载晨报设置失败: ' + e.message, 'error'); }
+}
+async function saveMorning(){
+  var items = [];
+  if ($('mrItemStats').checked) items.push('stats');
+  if ($('mrItemSubs').checked)  items.push('subscriptions');
+  if ($('mrItemGap').checked)   items.push('emby_gap');
+  try {
+    await api('/api/morning', { method: 'POST', body: JSON.stringify({
+      enabled: $('mrEnabled').checked,
+      hour: parseInt($('mrHour').value) || 0,
+      minute: parseInt($('mrMinute').value) || 0,
+      prescan_min: parseInt($('mrPrescan').value) || 0,
+      items: items,
+    })});
+    toast('已保存', 'success');
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+async function previewMorning(force){
+  var items = [];
+  if ($('mrItemStats').checked) items.push('stats');
+  if ($('mrItemSubs').checked)  items.push('subscriptions');
+  if ($('mrItemGap').checked)   items.push('emby_gap');
+  try {
+    if (force) toast('现场扫描中，可能稍慢...');
+    var r = await api('/api/morning/preview', { method: 'POST', body: JSON.stringify({ items: items, force: force }) });
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    $('mrPreviewPanel').style.display = '';
+    $('mrPreview').textContent = r.text || '(空)';
+  } catch(e){ toast(e.message, 'error'); }
+}
+async function sendMorningNow(){
+  if (!(confirm('立即发送晨报到 Telegram？（会现场扫描 Emby）'))) return;
+  toast('生成并发送中...');
+  try {
+    var r = await api('/api/morning/send', { method: 'POST', body: JSON.stringify({ force: true }) });
+    toast(r.message || '完成', r.status === 'success' ? 'success' : 'error');
+  } catch(e){ toast(e.message, 'error'); }
+}
+
+/* ═══════════ 每日汇报 ═══════════ */
+
+async function loadRecords(){
+  var n = parseInt($('recordN').value) || 50;
+  $('recordsList').innerHTML = '<div class="list-empty">加载中...</div>';
+  try {
+    var r = await api('/api/records?n=' + n);
+    var list = r.records || [];
+    if (!list.length) {
+      $('recordsList').innerHTML = '<div class="list-empty">暂无记录</div>';
+      return;
+    }
+    var html = '';
+    list.forEach(function(rec){
+      var cat = rec.category || '';
+      var cls = '';
+      if (cat.indexOf('清理') >= 0) cls = 'record-clean';
+      else if (cat.indexOf('巡检') >= 0 || cat.indexOf('扫描') >= 0) cls = 'record-scan';
+      else if (cat.indexOf('配置') >= 0) cls = 'record-config';
+      else if (cat.indexOf('搜片') >= 0) cls = 'record-search';
+
+      html += '<div class="record-item ' + cls + '">';
+      html += '<div class="record-time">' + esc(rec.ts) + '</div>';
+      html += '<div class="record-body">';
+      html += '<div class="record-head"><span class="record-tag">' + esc(cat) + '</span>' + esc(rec.title) + '</div>';
+      if (rec.details && rec.details.length) {
+        html += '<div class="record-details">';
+        rec.details.slice(0, 15).forEach(function(d){
+          html += '<div>' + esc(d) + '</div>';
+        });
+        if (rec.details.length > 15) {
+          html += '<div class="dim">… 共 ' + rec.details.length + ' 条详情</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div></div>';
+    });
+    $('recordsList').innerHTML = html;
+  } catch(e) {
+    $('recordsList').innerHTML = '<div class="list-empty">加载失败: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function loadStats(full, force){
+  var kw = (full ? 'full ' : '') + (force ? 'force' : '');
+  var url = '/api/ingest?full=' + (full?1:0) + '&force=' + (force?1:0);
+  $('statsOut').textContent = force ? '正在现场扫描 Emby（约 10-30 秒）...' : '读取缓存中...';
+  $('statsCacheHint').textContent = '';
+  try {
+    var r = await api(url);
+    $('statsOut').textContent = r.text || JSON.stringify(r, null, 2);
+    var age = r.cache_ts ? Math.round((Date.now()/1000) - r.cache_ts) : null;
+    var ageStr = age == null ? '—' : (age < 60 ? age + ' 秒前' : (age < 3600 ? Math.floor(age/60) + ' 分钟前' : Math.floor(age/3600) + ' 小时前'));
+    $('statsCacheHint').textContent = (r.from_cache ? '📦 来自缓存' : '🔄 现场扫描') + ' · ' + ageStr;
+  } catch(e){ $('statsOut').textContent = '错误: ' + e.message; }
+}
+
+/* ═══════════ 治理策略 ═══════════ */
+async function loadStrategy(){
+  try {
+    var r = await api('/api/strategy');
+    currentStrategy = r.strategy || currentStrategy;
+    applyStrategyUI();
+  } catch(e){ console.warn(e); }
+}
+function applyStrategyUI(){
+  document.querySelectorAll('.strategy-option[data-v]').forEach(function(el){
+    el.classList.toggle('on', el.dataset.v === currentStrategy.decision);
+  });
+  document.querySelectorAll('.strategy-option[data-sp]').forEach(function(el){
+    el.classList.toggle('on', el.dataset.sp === (currentStrategy.special_action || 'keep'));
+  });
+  $('strMultiProtect').checked = !!currentStrategy.multi_season_protect;
+  $('strTieLocal').checked = !!currentStrategy.tie_keep_local;
+  renderExempt();
+}
+function pickStrategy(v){
+  currentStrategy.decision = v;
+  applyStrategyUI();
+  saveStrategy();
+}
+function pickSpecial(v){
+  currentStrategy.special_action = v;
+  applyStrategyUI();
+  saveStrategy();
+}
+async function saveStrategy(){
+  try {
+    var body = {
+      decision: currentStrategy.decision,
+      multi_season_protect: $('strMultiProtect').checked,
+      tie_keep_local: $('strTieLocal').checked,
+      special_action: currentStrategy.special_action || 'keep',
+      exempt_keywords: currentStrategy.exempt_keywords || [],
+    };
+    var r = await api('/api/strategy', { method: 'POST', body: JSON.stringify(body) });
+    currentStrategy = r.strategy || currentStrategy;
+    applyStrategyUI();
+    toast('策略已保存', 'success');
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+
+/* ═══════════ 白名单 ═══════════ */
+function renderExempt(){
+  var kws = currentStrategy.exempt_keywords || [];
+  $('exemptList').innerHTML = kws.length
+    ? kws.map(function(k){
+        return '<span class="tag">' + esc(k) + '<span class="rm" onclick="removeExempt(\'' + esc(k).replace(/'/g, '&#39;') + '\')">×</span></span>';
+      }).join('')
+    : '<span style="color:#9ca3af;font-size:12px">暂无关键词</span>';
+}
+function addExempt(){
+  var v = $('exemptInput').value.trim();
+  if (!v) return;
+  var kws = currentStrategy.exempt_keywords || [];
+  if (kws.indexOf(v) < 0) kws.push(v);
+  currentStrategy.exempt_keywords = kws;
+  $('exemptInput').value = '';
+  saveStrategyExempt();
+}
+function removeExempt(k){
+  var kws = currentStrategy.exempt_keywords || [];
+  var i = kws.indexOf(k);
+  if (i >= 0) kws.splice(i, 1);
+  currentStrategy.exempt_keywords = kws;
+  saveStrategyExempt();
+}
+async function saveStrategyExempt(){
+  try {
+    await api('/api/strategy', { method: 'POST', body: JSON.stringify({ exempt_keywords: currentStrategy.exempt_keywords }) });
+    renderExempt();
+    toast('白名单已更新', 'success');
+  } catch(e){ toast(e.message, 'error'); }
+}
+async function scanExempt(){
+  $('exemptMatches').innerHTML = '<div class="list-empty">扫描中...</div>';
+  try {
+    var r = await api('/api/exempt/scan');
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    var m = r.matches || [];
+    if (!m.length) {
+      $('exemptMatches').innerHTML = '<div class="list-empty">双库中未命中白名单</div>';
+    } else {
+      $('exemptMatches').innerHTML = m.map(function(x){
+        var seasons = (x.seasons || []).map(function(s){
+          return s === 0 ? 'S00(特别篇)' : 'S' + String(s).padStart(2,'0');
+        }).join(', ');
+        return '<div class="list-item exempt">'
+          + '<div class="t">🛡️ 《' + esc(x.title) + '》</div>'
+          + '<div class="d">命中「' + esc(x.keyword) + '」 · 库: ' + (x.libs || []).join('/') + (seasons ? ' · 季: ' + seasons : '') + '</div>'
+          + '</div>';
+      }).join('');
+    }
+  } catch(e){ $('exemptMatches').innerHTML = '<div class="list-empty">扫描失败: ' + esc(e.message) + '</div>'; }
+}
+
+/* ═══════════ 入库监控 ═══════════ */
+async function loadIngest(){
+  try {
+    var r = await api('/api/ingest/settings');
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    var s = r.settings || {};
+    $('ingEnabled').checked = !!s.enabled;
+    $('ingInterval').value = s.interval_min || 5;
+    // 显示缓存状态
+    try {
+      var st = await api('/api/ingest/status');
+      if (st.has_cache) {
+        var age = st.age_sec;
+        var ageStr = age < 60 ? age + ' 秒前' : (age < 3600 ? Math.floor(age/60) + ' 分钟前' : Math.floor(age/3600) + ' 小时前');
+        var stats = st.stats || {};
+        $('ingStatus').textContent = '📦 缓存于 ' + ageStr + ' · 电影 ' + (stats.movies||0) + ' / 剧集 ' + (stats.series||0) + ' 部 / ' + (stats.episodes||0) + ' 集';
+      } else {
+        $('ingStatus').textContent = '⚪ 暂无缓存，等待后台首次刷新';
+      }
+    } catch(e){ $('ingStatus').textContent = ''; }
+  } catch(e){ toast('加载入库设置失败: ' + e.message, 'error'); }
+}
+async function saveIngest(){
+  try {
+    await api('/api/ingest/settings', { method: 'POST', body: JSON.stringify({
+      enabled: $('ingEnabled').checked,
+      interval_min: parseInt($('ingInterval').value) || 5,
+    })});
+    toast('已保存', 'success');
+    loadIngest();
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+
+/* ═══════════ 服务配置 ═══════════ */
+async function loadConfig(){
+  try {
+    revealed = {};
+    var r = await api('/api/config');
+    var c = r.config || {};
+    $('cfg-emby-host').value = c.emby_host || '';
+    $('cfg-emby-key').value  = c.emby_key || '';
+    $('cfg-tmdb-key').value  = c.tmdb_key || '';
+    $('cfg-tg-token').value  = c.telegram_bot_token || '';
+    $('cfg-tg-chat').value   = c.telegram_chat_id || '';
+    $('cfg-tg-users').value  = c.telegram_allowed_users || '';
+    ['emby_key','tmdb_key','telegram_bot_token'].forEach(function(k){
+      var btn = document.querySelector('.eye-btn[data-eye="' + k + '"]');
+      if (btn) { btn.classList.remove('on'); btn.innerHTML = icon('eye') + '<span>查看</span>'; }
+      var row = document.getElementById('row-' + k.replace('_key','-key').replace('telegram_bot_token','tg-token'));
+      if (row) row.classList.remove('revealed');
+    });
+  } catch(e){ toast('加载配置失败: ' + e.message, 'error', 4000); }
+}
+async function toggleReveal(key){
+  var btn = document.querySelector('.eye-btn[data-eye="' + key + '"]');
+  var inputId = { emby_key:'cfg-emby-key', tmdb_key:'cfg-tmdb-key', telegram_bot_token:'cfg-tg-token' }[key];
+  var rowId = { emby_key:'row-emby-key', tmdb_key:'row-tmdb-key', telegram_bot_token:'row-tg-token' }[key];
+  var input = $(inputId);
+  if (!input) return;
+  if (revealed[key]) {
+    revealed[key] = false;
+    try { var r = await api('/api/config'); input.value = (r.config || {})[key] || ''; } catch(e){}
+    if (btn) { btn.classList.remove('on'); btn.innerHTML = icon('eye') + '<span>查看</span>'; }
+    if (rowId && $(rowId)) $(rowId).classList.remove('revealed');
+  } else {
+    if (!(confirm('⚠️ 即将显示完整密钥，请确保周围环境安全。继续？'))) return;
+    try {
+      var r = await api('/api/config?reveal=1');
+      input.value = (r.config || {})[key] || '';
+      revealed[key] = true;
+      if (btn) { btn.classList.add('on'); btn.innerHTML = icon('eye-off') + '<span>隐藏</span>'; }
+      if (rowId && $(rowId)) $(rowId).classList.add('revealed');
+      toast('已显示，60 秒后自动重新脱敏', 'success');
+      setTimeout(function(){ if (revealed[key]) toggleReveal(key); }, 60000);
+    } catch(e){ toast('加载失败: ' + e.message, 'error'); }
+  }
+}
+async function loadBotStatus(){
+  try {
+    var r = await api('/api/bot/status');
+    var b = r.bot || {};
+    var running = b.running;
+    var uname = b.bot_username ? '@' + b.bot_username : '未连接';
+    var lastAgo = b.last_poll_ago != null ? (b.last_poll_ago + ' 秒前') : '—';
+    var err = b.last_error ? ('\n⚠️ ' + b.last_error) : '';
+    $('botStatus').innerHTML =
+      '<div class="bot-status"><span class="dot ' + (running ? 'on' : 'off') + '"></span>' +
+      (running ? 'Bot 运行中 ' + uname : 'Bot 未运行') +
+      '</div>' +
+      '<div style="margin-top:6px;color:#9ca3af">上次轮询: ' + lastAgo + err + '</div>';
+  } catch(e){ $('botStatus').textContent = '加载失败: ' + e.message; }
+}
+async function saveConfig(){
+  var body = {
+    emby_host: $('cfg-emby-host').value.trim(),
+    emby_key:  $('cfg-emby-key').value.trim(),
+    tmdb_key:  $('cfg-tmdb-key').value.trim(),
+    telegram_bot_token:     $('cfg-tg-token').value.trim(),
+    telegram_chat_id:       $('cfg-tg-chat').value.trim(),
+    telegram_allowed_users: $('cfg-tg-users').value.trim(),
+  };
+  try {
+    var r = await api('/api/config', { method: 'POST', body: JSON.stringify(body) });
+    if (r.status === 'success') {
+      toast('配置已保存并生效', 'success');
+      loadDashboard(); embyLoaded = false; loadConfig();
+      setTimeout(loadBotStatus, 1500);
+    } else toast('保存失败: ' + (r.message || ''), 'error', 4000);
+  } catch(e){ toast(e.message, 'error', 4000); }
+}
+async function testEmby(){
+  toast('测试中...');
+  try {
+    var r = await api('/api/config/test/emby', { method: 'POST', body: JSON.stringify({ emby_host: $('cfg-emby-host').value.trim(), emby_key: $('cfg-emby-key').value.trim() }) });
+    alert(r.message);
+  } catch(e){ alert(e.message); }
+}
+async function testTmdb(){
+  toast('测试中...');
+  try {
+    var r = await api('/api/config/test/tmdb', { method: 'POST', body: JSON.stringify({ tmdb_key: $('cfg-tmdb-key').value.trim() }) });
+    alert(r.message);
+  } catch(e){ alert(e.message); }
+}
+async function testTelegram(){
+  toast('发送中...');
+  try {
+    var r = await api('/api/config/test/telegram', { method: 'POST', body: JSON.stringify({ telegram_bot_token: $('cfg-tg-token').value.trim(), telegram_chat_id: $('cfg-tg-chat').value.trim() }) });
+    alert(r.message);
+  } catch(e){ alert(e.message); }
+}
+
+/* ═══════════ 初始化 ═══════════ */
+document.addEventListener('DOMContentLoaded', async function(){
+  initTheme();
+  var st = $('sideTitle');
+  if (st && !st.querySelector('svg')) st.insertAdjacentHTML('afterbegin', icon('shield'));
+  injectIcons();
+  renderMenu();
+  switchExploreTab_init();
+  // 预加载订阅列表（供探索页订阅按钮用）
+  try { var r = await api('/api/subscriptions'); currentSubs = r.subscriptions || []; } catch(e){}
+  loadDashboard();
+  pollTmdbProgress();
+});
+</script>
+</body>
+</html>

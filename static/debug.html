@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Debug</title></head>
+<body style="font:16px monospace;padding:20px">
+<h2>Function Check</h2>
+<pre id="out">Loading...</pre>
+<script src="/static/icons.js"></script>
+<script src="/static/ui-modal.js"></script>
+<script src="/static/app.js"></script>
+<script>
+var lines = [
+  'icon: ' + typeof icon,
+  'showModalAlert: ' + typeof showModalAlert,
+  'showModalConfirm: ' + typeof showModalConfirm,
+  'showModalSuccess: ' + typeof showModalSuccess,
+  'showModalError: ' + typeof showModalError
+];
+document.getElementById('out').textContent = lines.join('\n');
+setTimeout(function(){
+  if (typeof showModalConfirm === 'function') {
+    showModalConfirm('Test message', {title:'Test OK'})
+      .then(function(v){ alert('choice: ' + v); });
+  }
+}, 500);
+</script>
+</body></html>

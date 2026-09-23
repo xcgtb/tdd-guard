@@ -1,0 +1,33 @@
+version: '3'
+
+services:
+  tdd-guard:
+    build: .
+    image: tdd-guard:latest
+    container_name: tdd-guard
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      - TZ=Asia/Shanghai
+      - AGENT_DATA=/data
+      - L_ROOT=/media/ttd/影视媒体库
+      - S_ROOT=/media/ttd/分享影视库
+      - CLOUD_L_ROOT=/media/cd2
+    volumes:
+      - /vol1/1000/docker/media-agent/data:/data
+      - /vol1/1000/TgtoDrive/strm/115网盘/影视媒体库:/media/ttd/影视媒体库
+      - /vol1/1000/TgtoDrive/strm/115网盘/分享影视库:/media/ttd/分享影视库
+      - /vol1/1000/docker/clouddrive2/CloudDrive/影视媒体库:/media/cd2:rslave
+      - /vol1/1000/docker/media-agent/static:/app/static
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
