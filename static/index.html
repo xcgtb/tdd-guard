@@ -3519,36 +3519,10 @@ html body #exploreLoadMore { display: none !important; }
 
 
 
-<script id="tdd-diag">
-(function(){
-  function apply(){
-    var w = window.innerWidth || document.documentElement.clientWidth;
-    var cols = w >= 1200 ? 4 : (w >= 600 ? 3 : 2);
-    document.querySelectorAll('.cards').forEach(function(el){
-      el.style.setProperty('grid-template-columns', 'repeat(' + cols + ', 1fr)', 'important');
-    });
-    var tag = document.getElementById('tdd-diag-tag');
-    if (!tag) {
-      tag = document.createElement('div');
-      tag.id = 'tdd-diag-tag';
-      tag.style.cssText = 'position:fixed;top:4px;right:4px;z-index:99999;background:#ef4444;color:#fff;font:11px/1.2 monospace;padding:4px 8px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:none';
-      document.body.appendChild(tag);
-    }
-    var cards = document.querySelector('.cards');
-    var real = cards ? getComputedStyle(cards).gridTemplateColumns : '?';
-    tag.textContent = 'W=' + w + ' cols=' + cols + ' real=' + real;
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', apply);
-  } else {
-    apply();
-  }
-  window.addEventListener('resize', apply);
-  window.addEventListener('orientationchange', function(){ setTimeout(apply, 300); });
-  setTimeout(apply, 500);
-  setTimeout(apply, 1500);
-})();
-</script>
+
+
+
+
 <script id="cards-merge">
 (function(){
   function mergeCards(){
@@ -3582,6 +3556,7 @@ html body #exploreLoadMore { display: none !important; }
   window.addEventListener('resize', applyCols);
   window.addEventListener('orientationchange', function(){ setTimeout(applyCols, 300); });
   setTimeout(run, 500);
+  setTimeout(run, 1500);
 })();
 </script>
 </body>
