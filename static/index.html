@@ -2511,6 +2511,8 @@ async function loadEmbyLibrary(force, withTmdb){
     if (r.emby_host) window.__embyHost = r.emby_host;
     window.__embySeriesMap = {};
     embyData.series.forEach(function(x){ if (x.id) window.__embySeriesMap[x.id] = x; });
+    window.__embyMovieMap = {};
+    embyData.movies.forEach(function(x){ if (x.id) window.__embyMovieMap[x.id] = x; });
     embyLoaded = true;
     var st = embyData.stats;
     $('embyStats').style.display = '';
