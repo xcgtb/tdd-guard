@@ -2266,11 +2266,13 @@ function doExploreSearch(){
   if (exploreFiltersOpen) toggleExploreFilters();
   loadExplore();
 }
-async function loadExplore(){
+async function loadExplore(append){
   if (exploreLoading) return;
   exploreLoading = true;
   var grid = $('exploreGrid');
-  grid.innerHTML = '<div class="list-empty">加载中...</div>';
+  if (!append) {
+    grid.innerHTML = '<div class="list-empty">加载中...</div>';
+  }
   try {
     var qs = 'region=' + encodeURIComponent(exploreState.region)
            + '&year=' + encodeURIComponent(exploreState.year)
@@ -2282,16 +2284,77 @@ async function loadExplore(){
     var r = await api('/api/explore?' + qs);
     if (r.status !== 'success') throw new Error(r.message || '加载失败');
     exploreState.totalPages = r.total_pages || 1;
-    renderExploreCards(r.cards || []);
+    if (append) {
+      appendExploreCards(r.cards || []);
+    } else {
+      renderExploreCards(r.cards || []);
+    }
     if (r.cards && r.cards.length) {
-      $('explorePager').classList.remove('hidden');
       var label = r.is_search ? '搜索结果' : '第 ' + exploreState.page + ' / ' + exploreState.totalPages + ' 页';
       $('explorePageInfo').textContent = label + ' · 共 ' + (r.total_results || 0) + ' 条';
-    } else { $('explorePager').classList.add('hidden'); }
+    }
   } catch(e){
-    grid.innerHTML = '<div class="list-empty">' + esc(e.message) + '</div>';
+    if (!append) {
+      grid.innerHTML = '<div class="list-empty">' + esc(e.message) + '</div>';
+    }
   } finally { exploreLoading = false; }
 }
+
+function appendExploreCards(cards){
+  var grid = $('exploreGrid');
+  var subSet = _subscribedTmdbIds();
+  var html = cards.map(function(c){
+    var status, cls;
+    if (c.in_local && c.in_share) { status = '两库全入库'; cls = 'ok'; }
+    else if (c.in_local) { status = '仅本地'; cls = 'local'; }
+    else if (c.in_share) { status = '仅分享'; cls = 'share'; }
+    else { status = '未入库'; cls = 'no'; }
+    var typeLabel = c.type === 'tv' ? '剧集' : '电影';
+    var posterHtml;
+    if (!c.poster) {
+      posterHtml = '<div class="no-img">暂无海报</div>';
+    } else if (c.poster.indexOf('/api/emby/poster/') === 0) {
+      posterHtml = '<img data-emby-src="' + esc(c.poster) + '" alt="" loading="lazy">';
+    } else {
+      posterHtml = '<img src="' + esc(c.poster) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.innerHTML=\'<div class=&quot;no-img&quot;>暂无海报</div>\'">';
+    }
+    var isSub = subSet[String(c.tmdb_id)];
+    var subBtn = c.type === 'tv'
+      ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" onclick="event.stopPropagation();toggleSubscribe(\'' + esc(c.tmdb_id) + '\',\'' + esc(c.title).replace(/'/g, '&#39;') + '\',\'' + esc(c.poster || '').replace(/'/g, '&#39;') + '\')">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
+      : '';
+    return '<div class="poster-card">'
+      + '<div class="poster-wrap">' + posterHtml
+      + '<span class="badge-type">' + typeLabel + '</span>'
+      + (c.rating ? '<span class="badge-rate">' + icon('star') + c.rating + '</span>' : '')
+      + '<span class="badge-status ' + cls + '">' + status + '</span>'
+      + '</div>'
+      + '<div class="info">'
+      + '<div class="t" title="' + esc(c.title) + '">' + esc(c.title) + '</div>'
+      + '<div class="meta"><span>' + (c.year || '—') + ' · TMDB</span>' + subBtn + '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+  grid.insertAdjacentHTML('beforeend', html);
+  hydratePosters(grid);
+}
+
+function setupInfiniteScroll(){
+  if (window.__infiniteScrollReady) return;
+  window.__infiniteScrollReady = true;
+  window.addEventListener('scroll', function(){
+    if (exploreLoading) return;
+    if (exploreState.q) return;
+    if (exploreState.page >= exploreState.totalPages) return;
+    var scrollTop = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+    var windowHeight = window.innerHeight || document.documentElement.clientHeight;
+    var docHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
+    if (scrollTop + windowHeight >= docHeight - 500) {
+      exploreState.page += 1;
+      loadExplore(true);
+    }
+  }, { passive: true });
+}
+
 function _subscribedTmdbIds(){
   var set = {};
   currentSubs.forEach(function(s){ if (s.tmdb_id) set[String(s.tmdb_id)] = true; });
@@ -3142,6 +3205,7 @@ document.addEventListener('DOMContentLoaded', async function(){
   injectIcons();
   renderMenu();
   switchExploreTab_init();
+  setupInfiniteScroll();
   // 预加载订阅列表（供探索页订阅按钮用）
   try { var r = await api('/api/subscriptions'); currentSubs = r.subscriptions || []; } catch(e){}
   loadDashboard();
@@ -3160,6 +3224,53 @@ body::before { display: none !important; }
 .cat-card .cat-name { font-size: 12px !important; margin-bottom: 6px !important; }
 .cat-card .cat-sub { font-size: 10px !important; margin-top: 4px !important; }
 .cat-card.cat-all { background: linear-gradient(135deg, rgba(99,102,241,.1), rgba(139,92,246,.1)) !important; }
+</style>
+
+
+
+
+
+
+
+
+
+
+
+<style id="poster-clean">
+html body .poster-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)) !important;
+  gap: 12px !important;
+}
+html body .poster-card {
+  width: auto !important;
+  min-width: 0 !important;
+}
+html body .poster-card .poster-wrap {
+  aspect-ratio: 2 / 3 !important;
+  width: 100% !important;
+  overflow: hidden !important;
+}
+html body .poster-card .poster-wrap img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+html body #explorePager {
+  display: flex !important;
+}
+html body #exploreLoadMore {
+  display: none !important;
+}
+@media (max-width: 640px) {
+  html body .poster-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)) !important; gap: 8px !important; }
+}
+</style>
+
+<style id="infinite-v2">
+html body #explorePager { display: none !important; }
+html body #exploreLoadMore { display: none !important; }
 </style>
 </body>
 </html>

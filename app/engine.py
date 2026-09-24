@@ -775,8 +775,19 @@ def action_explore(args):
             if gid:
                 params['with_genres'] = str(gid)
 
+    # 一次请求 TMDB 2 页，合并为 40 张卡片
     try:
-        res = t.get(tmdb_path, **params) or {}
+        params1 = dict(params); params1['page'] = page * 2 - 1
+        params2 = dict(params); params2['page'] = page * 2
+        res1 = t.get(tmdb_path, **params1) or {}
+        res2 = t.get(tmdb_path, **params2) or {}
+        results = (res1.get('results') or []) + (res2.get('results') or [])
+        total_pages_raw = res1.get('total_pages') or 1
+        res = {
+            'results': results,
+            'total_pages': max(1, total_pages_raw // 2),
+            'total_results': res1.get('total_results', 0),
+        }
     except TmdbError as e:
         return {'status': 'error', 'message': str(e)}
 
