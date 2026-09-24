@@ -758,6 +758,38 @@ def _gc():
 threading.Thread(target=_gc, daemon=True).start()
 
 
+
+
+@app.get('/api/emby/series/{series_id}/episodes', dependencies=[Depends(auth)])
+def api_emby_series_episodes(series_id: str):
+    """返回某剧所有分集（含 Path），前端可自行分库统计"""
+    try:
+        data = engine.emby_request('/Items', {
+            'ParentId': series_id,
+            'Recursive': 'true',
+            'IncludeItemTypes': 'Episode',
+            'Fields': 'Path,ParentIndexNumber,IndexNumber',
+            'Limit': 5000,
+        }) or {}
+        episodes = []
+        for ep in data.get('Items', []):
+            path = ep.get('Path', '') or ''
+            if '\u5206\u4eab\u5f71\u89c6\u5e93' in path:
+                lib = 'share'
+            elif '\u5f71\u89c6\u5a92\u4f53\u5e93' in path:
+                lib = 'local'
+            else:
+                lib = 'other'
+            episodes.append({
+                'season': ep.get('ParentIndexNumber'),
+                'episode': ep.get('IndexNumber'),
+                'lib': lib,
+                'path': path,
+            })
+        return {'status': 'success', 'episodes': episodes}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host='0.0.0.0', port=8321)
