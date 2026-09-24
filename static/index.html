@@ -2722,7 +2722,7 @@ function showEmbyDetailById(id){
   html += '</div>';
   html += '</div></div>';
 
-  if (ti.seasons && ti.seasons.length) {
+  if (false) {
     html += '<h4 style="margin:16px 0 8px;font-size:13px;color:#374151">季集对比</h4>';
     html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
     html += '<thead><tr style="color:#6b7280"><th style="text-align:left;padding:6px 4px">季</th><th style="text-align:right;padding:6px 4px">本地</th><th style="text-align:right;padding:6px 4px">TMDB</th><th style="text-align:right;padding:6px 4px">差异</th><th style="text-align:left;padding:6px 4px">状态</th></tr></thead><tbody>';
@@ -2745,7 +2745,7 @@ function showEmbyDetailById(id){
     html += '</tbody></table>';
   }
 
-  if (ti.seasons && ti.seasons.length) {
+  if (false) {
     var missingHtml = '';
     ti.seasons.forEach(function(se){
       if (se.missing && se.missing.length) {
