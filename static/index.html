@@ -1984,7 +1984,9 @@ async function hydratePosters(root){
       var r = await fetch(img.getAttribute('data-emby-src'));
       if (!r.ok) throw new Error('HTTP ' + r.status);
       var blob = await r.blob();
-      img.src = URL.createObjectURL(blob);
+      var objUrl = URL.createObjectURL(blob);
+      img.src = objUrl;
+      img.onload = function(){ URL.revokeObjectURL(objUrl); };
     } catch (e) {
       var ph = document.createElement('div');
       ph.className = 'no-img';
@@ -2550,7 +2552,7 @@ function renderEmbyList(){
     arr = embyData.movies.slice();
     if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
     if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
-    list.innerHTML = arr.slice(0, 500).map(renderMovieCard).join('');
+    list.innerHTML = arr.slice(0, 30).map(renderMovieCard).join('');
     hydratePosters(list);
     return;
   }
@@ -2577,7 +2579,7 @@ function renderEmbyList(){
     if (da !== db) return db - da;
     return (a.name || '').localeCompare(b.name || '');
   });
-  list.innerHTML = arr.slice(0, 500).map(renderSeriesCard).join('');
+  list.innerHTML = arr.slice(0, 30).map(renderSeriesCard).join('');
   hydratePosters(list);
 }
 function renderSeriesCard(s){
