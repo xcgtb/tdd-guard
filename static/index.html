@@ -2758,6 +2758,8 @@ function showEmbyDetailById(id){
     }
   }
 
+  html += '<div id="libBreakdown" style="margin-top:16px;padding:12px;background:var(--surface-hover);border-radius:10px;font-size:12px;color:var(--text-dim)">正在分析两库分集...</div>';
+
   /* "在 Emby 中打开"链接改为读配置，不再硬编码 IP */
   var embyHost = (window.__embyHost || '').replace(/\/+$/, '');
   html += '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">';
@@ -2769,6 +2771,69 @@ function showEmbyDetailById(id){
 
   openModal(html);
   hydratePosters($('modalBody'));
+  loadLibBreakdown(s.id, ti);
+}
+
+async function loadLibBreakdown(seriesId, ti){
+  var box = $('libBreakdown');
+  if (!box) return;
+  try {
+    var r = await api('/api/emby/series/' + seriesId + '/episodes');
+    if (r.status !== 'success') throw new Error(r.message || '\u5931\u8d25');
+    var eps = r.episodes || [];
+
+    var bySeason = {};
+    eps.forEach(function(e){
+      if (e.season == null || e.season <= 0) return;
+      if (e.lib === 'other') return;
+      if (!bySeason[e.season]) bySeason[e.season] = { local: {}, share: {} };
+      if (e.lib === 'local') bySeason[e.season].local[e.episode] = 1;
+      if (e.lib === 'share') bySeason[e.season].share[e.episode] = 1;
+    });
+
+    var tmdbMap = {};
+    (ti.seasons || []).forEach(function(se){ tmdbMap[se.season] = se.tmdb; });
+
+    var allSeasons = Array.from(new Set(
+      Object.keys(bySeason).map(Number).concat(Object.keys(tmdbMap).map(Number))
+    )).sort(function(a,b){ return a - b; });
+
+    if (!allSeasons.length) {
+      box.innerHTML = '<span>\u65e0\u5206\u96c6\u6570\u636e</span>';
+      return;
+    }
+
+    var html = '<div style="font-weight:600;margin-bottom:8px;color:var(--text)">\ud83d\udcda \u4e24\u5e93\u5206\u96c6\u660e\u7ec6</div>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:11.5px">';
+    html += '<thead><tr style="color:var(--text-dim);text-align:left"><th style="padding:4px">\u5b63</th><th style="padding:4px">TMDB</th><th style="padding:4px">\u672c\u5730\u5e93</th><th style="padding:4px">\u5206\u4eab\u5e93</th></tr></thead><tbody>';
+
+    allSeasons.forEach(function(sn){
+      var tmdbTotal = tmdbMap[sn] || 0;
+      var loc = bySeason[sn] ? Object.keys(bySeason[sn].local).length : 0;
+      var shr = bySeason[sn] ? Object.keys(bySeason[sn].share).length : 0;
+      var locTxt = String(loc);
+      var shrTxt = String(shr);
+      var locColor = 'var(--text-mid)';
+      var shrColor = 'var(--text-mid)';
+      if (tmdbTotal > 0) {
+        if (loc >= tmdbTotal) { locTxt += ' \u2705'; locColor = 'var(--ok)'; }
+        else { locTxt += ' \u7f3a' + (tmdbTotal - loc); locColor = 'var(--err)'; }
+        if (shr >= tmdbTotal) { shrTxt += ' \u2705'; shrColor = 'var(--ok)'; }
+        else { shrTxt += ' \u7f3a' + (tmdbTotal - shr); shrColor = 'var(--err)'; }
+      }
+      html += '<tr style="border-top:1px solid var(--border)">';
+      html += '<td style="padding:4px;font-weight:600">S' + String(sn).padStart(2,'0') + '</td>';
+      html += '<td style="padding:4px;color:var(--text-dim)">' + (tmdbTotal || '?') + '</td>';
+      html += '<td style="padding:4px;color:' + locColor + '">' + locTxt + '</td>';
+      html += '<td style="padding:4px;color:' + shrColor + '">' + shrTxt + '</td>';
+      html += '</tr>';
+    });
+
+    html += '</tbody></table>';
+    box.innerHTML = html;
+  } catch(e){
+    box.innerHTML = '<span style="color:var(--err)">\u5206\u6790\u5931\u8d25: ' + esc(e.message) + '</span>';
+  }
 }
 
 function renderMovieCard(m){
