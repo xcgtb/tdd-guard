@@ -1367,8 +1367,9 @@ window.addEventListener('unhandledrejection', function(e){
             <button data-f="ongoing" onclick="setEmbyFilter('ongoing')">在更</button>
             <button data-f="unmatched" onclick="setEmbyFilter('unmatched')">未匹配</button>
           </div>
-          <input type="text" id="embySearch" placeholder="搜索片名..." style="margin-bottom:12px" oninput="renderEmbyList()">
+          <input type="text" id="embySearch" placeholder="搜索片名..." style="margin-bottom:12px" oninput="embyPage = 1; renderEmbyList()">
           <div id="embyList"><div class="list-empty">点击「TMDB 对照」拉取</div></div>
+          <div id="embyLoadMoreWrap" style="text-align:center;padding:20px 0;display:none"><button class="btn gray" onclick="loadMoreEmby()">加载更多</button></div>
         </div>
       </section>
 
@@ -2450,6 +2451,7 @@ function switchExploreTab_init(){
 /* ═══════════ 片库映射 ═══════════ */
 var embyData = { series: [], movies: [], stats: {} };
 var embyFilterState = { type: 'series', filter: 'all' };
+var embyPage = 1;
 var embyLoaded = false;
 function ensureEmbyLoaded(){ if (!embyLoaded) loadEmbyLibrary(false, false); }
 var tmdbProgressTimer = null;
@@ -2524,7 +2526,25 @@ async function loadEmbyLibrary(force, withTmdb){
     renderEmbyList();
   } catch(e){ $('embyList').innerHTML = '<div class="list-empty">' + esc(e.message) + '</div>'; }
 }
+function loadMoreEmby(){
+  embyPage += 1;
+  renderEmbyList();
+}
+
+function updateEmbyLoadMore(total){
+  var wrap = $('embyLoadMoreWrap');
+  if (!wrap) return;
+  if (total > embyPage * 30) {
+    wrap.style.display = '';
+    var btn = wrap.querySelector('button');
+    if (btn) btn.textContent = '加载更多（已显示 ' + (embyPage * 30) + ' / ' + total + '）';
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
 function setEmbyType(t){
+  embyPage = 1;
   embyFilterState.type = t;
   document.querySelectorAll('#embyTypeFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.t === t); });
   var f = $('embyFilter');
@@ -2540,6 +2560,7 @@ function setEmbyType(t){
   renderEmbyList();
 }
 function setEmbyFilter(f){
+  embyPage = 1;
   embyFilterState.filter = f;
   document.querySelectorAll('#embyFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.f === f); });
   renderEmbyList();
@@ -2552,8 +2573,9 @@ function renderEmbyList(){
     arr = embyData.movies.slice();
     if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
     if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
-    list.innerHTML = arr.slice(0, 30).map(renderMovieCard).join('');
+    list.innerHTML = arr.slice(0, embyPage * 30).map(renderMovieCard).join('');
     hydratePosters(list);
+    updateEmbyLoadMore(arr.length);
     return;
   }
   arr = embyData.series.slice();
@@ -2579,8 +2601,9 @@ function renderEmbyList(){
     if (da !== db) return db - da;
     return (a.name || '').localeCompare(b.name || '');
   });
-  list.innerHTML = arr.slice(0, 30).map(renderSeriesCard).join('');
+  list.innerHTML = arr.slice(0, embyPage * 30).map(renderSeriesCard).join('');
   hydratePosters(list);
+  updateEmbyLoadMore(arr.length);
 }
 function renderSeriesCard(s){
   var ti = s.tmdb_info || {};
