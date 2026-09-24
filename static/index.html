@@ -2643,14 +2643,14 @@ function renderSeriesCard(s){
     var diffTxt = ti.diff < 0 ? ('缺 ' + Math.abs(ti.diff) + ' 集')
                 : (ti.diff > 0 ? ('超 ' + ti.diff + ' 集') : '完全对齐');
     summary = '<div class="season-summary">'
-      + '<div class="item"><span class="k">本地</span><span class="v">' + localSeasons + ' 季 · ' + ti.local_total + ' 集</span></div>'
+      + '<div class="item"><span class="k">Emby</span><span class="v">' + localSeasons + ' 季 · ' + ti.local_total + ' 集</span></div>'
       + '<div class="item"><span class="k">TMDB</span><span class="v">' + tmdbSeasons + ' 季 · ' + ti.tmdb_total + ' 集</span></div>'
       + '<div class="item ' + diffCls + '"><span class="k">差异</span><span class="v">' + diffTxt + '</span></div>'
       + '</div>';
   } else if (mst === 'pending') {
-    summary = '<div class="season-summary"><div class="item"><span class="k">本地</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div><div class="item"><span class="k">TMDB</span><span class="v" style="color:#9ca3af">点击「重新对照」拉取</span></div></div>';
+    summary = '<div class="season-summary"><div class="item"><span class="k">Emby</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div><div class="item"><span class="k">TMDB</span><span class="v" style="color:#9ca3af">点击「重新对照」拉取</span></div></div>';
   } else {
-    summary = '<div class="season-summary"><div class="item"><span class="k">本地</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div></div>';
+    summary = '<div class="season-summary"><div class="item"><span class="k">Emby</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div></div>';
   }
 
   // ── 季详情列表 ──
@@ -2786,7 +2786,7 @@ function showEmbyDetailById(id){
   html += '<h3 style="margin:0 0 8px;font-size:16px;line-height:1.3;word-break:break-word">' + esc(s.name || '?') + '</h3>';
   html += '<div class="emby-badges">';
   if (s.in_local && s.in_share) html += '<span class="emby-badge loc">本地+分享</span>';
-  else if (s.in_local) html += '<span class="emby-badge loc">本地</span>';
+  else if (s.in_local) html += '<span class="emby-badge loc">Emby</span>';
   else if (s.in_share) html += '<span class="emby-badge shr">分享</span>';
   if (mst === 'aligned') html += '<span class="emby-badge ok">✓ 对齐</span>';
   else if (mst === 'missing') html += '<span class="emby-badge miss">缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
@@ -2798,7 +2798,7 @@ function showEmbyDetailById(id){
   if (s.year) html += '<span class="emby-badge gen">' + s.year + '</span>';
   html += '</div>';
   html += '<div style="margin-top:8px;font-size:12px;color:#6b7280">';
-  html += '本地 ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+  html += 'Emby ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
   if (ti.tmdb_total != null) html += '　|　TMDB ' + ti.tmdb_total + ' 集';
   html += '</div>';
   html += '</div></div>';
