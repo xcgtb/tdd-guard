@@ -174,8 +174,10 @@ class Lib:
         self.tv = defaultdict(lambda: defaultdict(list))
         self.meta = {}
         self.by_base = defaultdict(set)
+        self.strm_count = 0
         if not root.exists(): return
         for f in root.rglob('*.strm'):
+            self.strm_count += 1
             folder = f.parent.parent.name if parse_season_dir(f.parent.name) is not None else f.parent.name
             key, disp, base, year = title_key(folder)
             self.meta[key] = (disp, base, year)
@@ -565,6 +567,16 @@ def save_plan(acts):
 
 def action_inter_check(args):
     acts = build_plan()
+
+    # 扫描完成后顺便刷新 STRM 计数缓存（一次遍历，两份数据）
+    try:
+        _invalidate_lib_cache()
+        S_now = Lib(S_ROOT)
+        L_now = Lib(L_ROOT)
+        _strm_count_cache.update({'ts': time.time(), 'local': L_now.strm_count, 'share': S_now.strm_count})
+        log.info('扫描后刷新 STRM 计数: local=%d share=%d', L_now.strm_count, S_now.strm_count)
+    except Exception as e:
+        log.warning('刷新 STRM 计数缓存失败: %s', e)
     loc = [a for a in acts if a.kind == 'loc']
     shr = [a for a in acts if a.kind == 'shr']
     keep = [a for a in acts if a.kind == 'keep']
@@ -622,6 +634,10 @@ def action_inter_clean(args):
         refreshed = notify_emby_refresh()
         # 文件已变动，主动失效 Lib 缓存，避免下次 build_plan 用到陈旧数据
         _invalidate_lib_cache()
+        # 同时失效统计缓存（总览页下次重算）
+        _strm_count_cache['ts'] = 0
+        _lib_stats_cache['ts'] = 0
+        _lib_stats_cache['data'] = None
     if skipped: detail.append(f'├─ ⏭ 有 {skipped} 项自诊断后状态已变化，已跳过')
     if not args.dry_run:
         purge_old()
