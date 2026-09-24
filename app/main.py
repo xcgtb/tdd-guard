@@ -895,6 +895,86 @@ def api_emby_series_delete(series_id: str, body: dict = None):
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
+
+
+@app.post('/api/emby/movie/delete_by_tmdb', dependencies=[Depends(auth)])
+def api_movie_delete(body: dict = None):
+    """按 tmdb_id 删除电影（扫目录名，不依赖 Emby 索引）"""
+    body = body or {}
+    tmdb_id = str(body.get('tmdb_id', '')).strip()
+    target = str(body.get('target', '')).lower()
+    dry_run = bool(body.get('dry_run', True))
+    movie_name = str(body.get('name', '')).strip() or '(未命名)'
+
+    if not tmdb_id:
+        return {'status': 'error', 'message': '缺少 tmdb_id'}
+    if target not in ('local', 'share'):
+        return {'status': 'error', 'message': 'target 必须是 local 或 share'}
+
+    root = engine.L_ROOT if target == 'local' else engine.S_ROOT
+    cloud = engine.CLOUD_L_ROOT if target == 'local' else None
+
+    if not root.exists():
+        return {'status': 'success', 'count': 0, 'target': target}
+
+    # 匹配 {tmdb-xxx} / {tmdb_xxx} / tmdb-xxx 三种格式
+    marks = ['{tmdb-%s}' % tmdb_id, '{tmdb_%s}' % tmdb_id, 'tmdb-%s' % tmdb_id]
+    files = []
+    for entry in root.rglob('*'):
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if any(m in name for m in marks):
+            for f in entry.rglob('*.strm'):
+                files.append(f)
+
+    if not files:
+        return {'status': 'success', 'count': 0, 'target': target}
+
+    if dry_run:
+        return {'status': 'success', 'dry_run': True, 'count': len(files), 'target': target}
+
+    result = engine.safe_delete_files(files, root, cloud, dry_run=False)
+
+    try:
+        engine.notify_emby_refresh()
+    except Exception:
+        pass
+
+    try:
+        engine._ep_cache['ts'] = 0
+        engine._ep_cache['data'] = None
+        engine._emby_lib_cache['ts'] = 0
+        engine._emby_lib_cache['data'] = None
+        engine._emby_index_cache['ts'] = 0
+        engine._emby_index_cache['data'] = None
+        engine._invalidate_lib_cache()
+        engine.invalidate_stats_cache()
+    except Exception:
+        pass
+
+    target_cn = '本地库' if target == 'local' else '分享库'
+    cloud_note = '未处理云端源文件' if target == 'share' else ('删除 %d 个云端源文件' % result['cloud_removed'])
+
+    engine.write_audit_log(
+        '单剧删除',
+        '《%s》删除%s：%d 个 strm' % (movie_name, target_cn, result['strm_removed']),
+        [
+            '类型：电影',
+            '目标：%s' % target_cn,
+            'strm 删除：%d 个' % result['strm_removed'],
+            '云端源文件：%s' % cloud_note,
+        ] + (['错误：%s' % e for e in result.get('errors', [])[:3]])
+    )
+
+    return {
+        'status': 'success', 'dry_run': False, 'target': target,
+        'count': len(files),
+        'strm_removed': result['strm_removed'],
+        'cloud_removed': result['cloud_removed'],
+        'errors': result.get('errors', []),
+    }
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host='0.0.0.0', port=8321)

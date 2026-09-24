@@ -2687,6 +2687,79 @@ function renderSeriesCard(s){
     + '</div>';
 }
 
+function showMovieDetailById(id){
+  var m = (window.__embyMovieMap || {})[id];
+  if (!m) return;
+  var html = '';
+  html += '<div style="display:flex;gap:16px;margin-bottom:16px">';
+  html += '<div style="width:110px;height:165px;border-radius:8px;background:#f3f4f6;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">';
+  html += m.has_image ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" style="width:100%;height:100%;object-fit:cover">' : '\u65e0\u56fe';
+  html += '</div>';
+  html += '<div style="flex:1;min-width:0">';
+  html += '<h3 style="margin:0 0 8px;font-size:16px;line-height:1.3;word-break:break-word">' + esc(m.name || '?') + '</h3>';
+  html += '<div class="emby-badges">';
+  if (m.in_local && m.in_share) html += '<span class="emby-badge loc">\u672c\u5730+\u5206\u4eab</span>';
+  else if (m.in_local) html += '<span class="emby-badge loc">\u672c\u5730</span>';
+  else if (m.in_share) html += '<span class="emby-badge shr">\u5206\u4eab</span>';
+  if (m.year) html += '<span class="emby-badge gen">' + m.year + '</span>';
+  html += '</div>';
+  html += '<div style="margin-top:8px;font-size:12px;color:#6b7280">\u7535\u5f71</div>';
+  html += '</div></div>';
+
+  var embyHost = (window.__embyHost || '').replace(/\/+$/, '');
+  html += '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">';
+  if (m.tmdb_id) {
+    html += '<button class="btn red" onclick="deleteMovieByTmdb(\'' + esc(m.tmdb_id) + '\',\'local\',\'' + esc(m.name || '').replace(/'/g, '&#39;') + '\')">\u5220\u9664\u672c\u5730\u5e93</button>';
+    html += '<button class="btn red" onclick="deleteMovieByTmdb(\'' + esc(m.tmdb_id) + '\',\'share\',\'' + esc(m.name || '').replace(/'/g, '&#39;') + '\')">\u5220\u9664\u5206\u4eab\u5e93</button>';
+  }
+  if (m.id && embyHost) {
+    html += '<a href="' + esc(embyHost) + '/web/index.html#!/item?id=' + esc(m.id) + '" target="_blank" rel="noopener" style="text-decoration:none" class="btn gray">\u5728 Emby \u4e2d\u6253\u5f00</a>';
+  }
+  html += '<button class="btn gray" onclick="closeModal()">\u5173\u95ed</button>';
+  html += '</div>';
+
+  openModal(html);
+  hydratePosters($('modalBody'));
+}
+
+async function deleteMovieByTmdb(tmdbId, target, movieName){
+  var targetName = target === 'local' ? '\u672c\u5730\u5e93\uff08\u542b 115 \u6e90\u6587\u4ef6\uff09' : '\u5206\u4eab\u5e93';
+  try {
+    var r1 = await api('/api/emby/movie/delete_by_tmdb', {
+      method: 'POST',
+      body: JSON.stringify({ tmdb_id: tmdbId, target: target, dry_run: true, name: movieName })
+    });
+    if (r1.status !== 'success') throw new Error(r1.message || '\u5931\u8d25');
+    var count = r1.count || 0;
+    if (count === 0) {
+      alert('\u8be5\u5e93\u65e0\u6b64\u7535\u5f71\u6587\u4ef6');
+      return;
+    }
+    var msg = '\u26a0\ufe0f \u786e\u8ba4\u5220\u9664\u3010' + targetName + '\u3011\uff1f\n\n' +
+              '\u7535\u5f71\uff1a' + (movieName || '') + '\n' +
+              '\u5c06\u5220\u9664 ' + count + ' \u4e2a\u6587\u4ef6' +
+              (target === 'local' ? '\uff0c\u5e76\u8054\u52a8\u5220\u9664 115 \u7f51\u76d8\u4e0a\u7684\u6e90\u6587\u4ef6' : '') +
+              '\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff01';
+    if (!confirm(msg)) return;
+
+    var r2 = await api('/api/emby/movie/delete_by_tmdb', {
+      method: 'POST',
+      body: JSON.stringify({ tmdb_id: tmdbId, target: target, dry_run: false, name: movieName })
+    });
+    if (r2.status !== 'success') throw new Error(r2.message || '\u5931\u8d25');
+
+    var doneMsg = '\u2705 \u5df2\u5220\u9664\n\nstrm\uff1a' + (r2.strm_removed || 0) + ' \u4e2a\n\u4e91\u7aef\uff1a' + (r2.cloud_removed || 0) + ' \u4e2a';
+    if (r2.errors && r2.errors.length) doneMsg += '\n\n\u26a0\ufe0f \u90e8\u5206\u9519\u8bef\uff1a\n' + r2.errors.slice(0, 3).join('\n');
+    alert(doneMsg);
+
+    embyLoaded = false;
+    loadEmbyLibrary(false, false);
+    closeModal();
+  } catch(e){
+    alert('\u5220\u9664\u5931\u8d25\uff1a' + e.message);
+  }
+}
+
 function showEmbyDetailById(id){
   var s = (window.__embySeriesMap || {})[id];
   if (!s) return;
@@ -2895,7 +2968,7 @@ function renderMovieCard(m){
   var poster = m.has_image
     ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" loading="lazy">'
     : '无图';
-  return '<div class="emby-card"><div class="emby-head">'
+  return '<div class="emby-card" onclick="showMovieDetailById(\'' + esc(m.id) + '\')" style="cursor:pointer"><div class="emby-head">'
     + '<div class="emby-poster">' + poster + '</div>'
     + '<div class="emby-body">'
     + '<div class="emby-title">' + esc(m.name || '?') + '</div>'
