@@ -2782,7 +2782,7 @@ async function deleteSeriesFromLib(seriesId, target, seriesName){
     // 1. dry_run 先拿数量
     var r1 = await api('/api/emby/series/' + seriesId + '/delete', {
       method: 'POST',
-      body: JSON.stringify({ target: target, dry_run: true })
+      body: JSON.stringify({ target: target, dry_run: true, series_name: seriesName })
     });
     if (r1.status !== 'success') throw new Error(r1.message || '\u5931\u8d25');
     var count = r1.count || 0;
@@ -2802,7 +2802,7 @@ async function deleteSeriesFromLib(seriesId, target, seriesName){
     // 3. 真\u5220
     var r2 = await api('/api/emby/series/' + seriesId + '/delete', {
       method: 'POST',
-      body: JSON.stringify({ target: target, dry_run: false })
+      body: JSON.stringify({ target: target, dry_run: false, series_name: seriesName })
     });
     if (r2.status !== 'success') throw new Error(r2.message || '\u5931\u8d25');
 

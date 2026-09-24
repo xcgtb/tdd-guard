@@ -808,6 +808,8 @@ def api_emby_series_delete(series_id: str, body: dict = None):
     body = body or {}
     target = str(body.get('target', '')).lower()
     dry_run = bool(body.get('dry_run', True))
+    series_name = str(body.get('series_name', '')).strip() or '(未命名)'
+    media_type = str(body.get('media_type', '')).strip() or '剧集'
 
     if target not in ('local', 'share'):
         return {'status': 'error', 'message': 'target 必须是 local 或 share'}
@@ -870,11 +872,17 @@ def api_emby_series_delete(series_id: str, body: dict = None):
         except Exception:
             pass
 
+        target_cn = '本地库' if target == 'local' else '分享库'
+        cloud_note = '未处理云端源文件' if target == 'share' else ('删除 %d 个云端源文件' % result['cloud_removed'])
         engine.write_audit_log(
             '单剧删除',
-            '删除【%s】库 %d 个文件' % (target, len(files)),
-            ['strm: %d' % result['strm_removed'],
-             'cloud: %d' % result['cloud_removed']] + result.get('errors', [])[:5]
+            '《%s》删除%s：%d 个 strm' % (series_name, target_cn, result['strm_removed']),
+            [
+                '类型：%s' % media_type,
+                '目标：%s' % target_cn,
+                'strm 删除：%d 个' % result['strm_removed'],
+                '云端源文件：%s' % cloud_note,
+            ] + (['错误：%s' % e for e in result.get('errors', [])[:3]])
         )
 
         return {
