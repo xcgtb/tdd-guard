@@ -1675,6 +1675,21 @@ def action_library_stats(args):
     }
 
 
+
+def emby_path_to_container(emby_path):
+    """将 Emby 返回的 Path 转成容器内路径"""
+    if not emby_path:
+        return None
+    p = str(emby_path)
+    pre_l = '/strm/115网盘/影视媒体库/'
+    pre_s = '/strm/115网盘/分享影视库/'
+    if p.startswith(pre_l):
+        return L_ROOT / p[len(pre_l):]
+    if p.startswith(pre_s):
+        return S_ROOT / p[len(pre_s):]
+    return None
+
+
 ACTIONS = {
     'inter_check':  action_inter_check,
     'inter_clean':  action_inter_clean,

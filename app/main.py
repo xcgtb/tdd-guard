@@ -790,6 +790,77 @@ def api_emby_series_episodes(series_id: str):
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
+
+
+@app.post('/api/emby/series/{series_id}/delete', dependencies=[Depends(auth)])
+def api_emby_series_delete(series_id: str, body: dict = None):
+    """删除某剧的全部文件
+    target: local | share
+    dry_run: True -> 只返回数量，不真删
+    """
+    body = body or {}
+    target = str(body.get('target', '')).lower()
+    dry_run = bool(body.get('dry_run', True))
+
+    if target not in ('local', 'share'):
+        return {'status': 'error', 'message': 'target 必须是 local 或 share'}
+
+    try:
+        data = engine.emby_request('/Items', {
+            'ParentId': series_id,
+            'Recursive': 'true',
+            'IncludeItemTypes': 'Episode',
+            'Fields': 'Path',
+            'Limit': 5000,
+        }) or {}
+        items = data.get('Items') or []
+        files = []
+        for ep in items:
+            conv = engine.emby_path_to_container(ep.get('Path') or '')
+            if not conv:
+                continue
+            in_local = str(conv).startswith(str(engine.L_ROOT))
+            in_share = str(conv).startswith(str(engine.S_ROOT))
+            if target == 'local' and not in_local:
+                continue
+            if target == 'share' and not in_share:
+                continue
+            if conv.exists():
+                files.append(conv)
+
+        if not files:
+            return {'status': 'success', 'count': 0, 'target': target,
+                    'message': '该库无此剧文件'}
+
+        if dry_run:
+            return {
+                'status': 'success', 'dry_run': True,
+                'count': len(files), 'target': target,
+            }
+
+        # 真删
+        if target == 'local':
+            result = engine.safe_delete_files(files, engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
+        else:
+            result = engine.safe_delete_files(files, engine.S_ROOT, None, dry_run=False)
+
+        engine.write_audit_log(
+            '单剧删除',
+            '删除【%s】库 %d 个文件' % (target, len(files)),
+            ['strm: %d' % result['strm_removed'],
+             'cloud: %d' % result['cloud_removed']] + result.get('errors', [])[:5]
+        )
+
+        return {
+            'status': 'success', 'dry_run': False, 'target': target,
+            'count': len(files),
+            'strm_removed': result['strm_removed'],
+            'cloud_removed': result['cloud_removed'],
+            'errors': result.get('errors', []),
+        }
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host='0.0.0.0', port=8321)
