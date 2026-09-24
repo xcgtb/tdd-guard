@@ -1342,17 +1342,19 @@ window.addEventListener('unhandledrejection', function(e){
             <span style="color:#9ca3af">灰=未匹配</span>
           </p>
         </div>
+        <div class="stat-group" id="embyTitle1" style="display:none">📺 剧集统计 <span class="count" id="emby-title-count">0</span></div>
         <div class="cards" id="embyStats" style="display:none">
           <div class="card"><div class="label" data-icon="film">剧集总数</div><div class="value" id="emby-total">0</div></div>
           <div class="card"><div class="label" data-icon="check">对齐</div><div class="value green" id="emby-aligned">0</div></div>
           <div class="card"><div class="label" data-icon="x">缺集</div><div class="value red" id="emby-missing">0</div></div>
           <div class="card"><div class="label" data-icon="activity">超集</div><div class="value amber" id="emby-extra">0</div></div>
-        </div>
-        <div class="cards" id="embyStats2" style="display:none">
           <div class="card"><div class="label" data-icon="clock">在更</div><div class="value blue" id="emby-ongoing">0</div></div>
           <div class="card"><div class="label" data-icon="info">未匹配</div><div class="value gray" id="emby-unmatched">0</div></div>
-          <div class="card"><div class="label" data-icon="film">电影总数</div><div class="value indigo" id="emby-movies">0</div></div>
           <div class="card"><div class="label" data-icon="alert">TMDB 错误</div><div class="value gray" id="emby-tmdb-errors">0</div></div>
+        </div>
+        <div class="stat-group" id="embyTitle2" style="display:none">🎬 电影统计 <span class="count" id="emby-title-movies">0</span></div>
+        <div class="cards" id="embyStats2" style="display:none">
+          <div class="card"><div class="label" data-icon="film">电影总数</div><div class="value indigo" id="emby-movies">0</div></div>
         </div>
         <div class="panel">
           <div class="segmented" id="embyTypeFilter" style="margin-bottom:10px">
@@ -2517,6 +2519,10 @@ async function loadEmbyLibrary(force, withTmdb){
     var st = embyData.stats;
     $('embyStats').style.display = '';
     $('embyStats2').style.display = '';
+    $('embyTitle1').style.display = '';
+    $('embyTitle2').style.display = '';
+    $('emby-title-count').textContent = st.total_series || 0;
+    $('emby-title-movies').textContent = st.total_movies || 0;
     $('emby-total').textContent      = st.total_series || 0;
     $('emby-aligned').textContent    = st.aligned || 0;
     $('emby-missing').textContent    = st.missing || 0;
@@ -3485,6 +3491,29 @@ html body #exploreLoadMore {
 <style id="infinite-v2">
 html body #explorePager { display: none !important; }
 html body #exploreLoadMore { display: none !important; }
+</style>
+
+<style id="stat-group-style">
+.stat-group {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 22px 0 10px;
+  padding: 0 6px;
+  letter-spacing: -0.2px;
+}
+.stat-group:first-child { margin-top: 0; }
+.stat-group .count {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  background: var(--surface-hover);
+  color: var(--brand);
+  letter-spacing: 0;
+}
 </style>
 </body>
 </html>
