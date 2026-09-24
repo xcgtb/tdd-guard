@@ -1605,6 +1605,10 @@ def scan_exempt_matches():
 
 
 def action_library_stats(args):
+    # 缓存命中则直接返回
+    now = time.time()
+    if _lib_stats_cache['data'] is not None and (now - _lib_stats_cache['ts']) < _CACHE_TTL:
+        return _lib_stats_cache['data']
     """统计双库各分类的 STRM 数量（按实际目录名匹配）"""
     CATS = [
         ('\U0001F476 儿童节目', ['儿童']),
@@ -1665,7 +1669,7 @@ def action_library_stats(args):
             'share': out['share'][cat],
             'total': out['local'][cat] + out['share'][cat],
         })
-    return {
+    result = {
         'status': 'success',
         'rows': rows,
         'local_total': out['local_total'],
@@ -1673,6 +1677,9 @@ def action_library_stats(args):
         'local_other': out['local_other'],
         'share_other': out['share_other'],
     }
+    _lib_stats_cache['ts'] = time.time()
+    _lib_stats_cache['data'] = result
+    return result
 
 
 
@@ -1688,6 +1695,32 @@ def emby_path_to_container(emby_path):
     if p.startswith(pre_s):
         return S_ROOT / p[len(pre_s):]
     return None
+
+
+
+# ============ 性能缓存（5 分钟 TTL）============
+_strm_count_cache = {'ts': 0, 'local': 0, 'share': 0}
+_lib_stats_cache = {'ts': 0, 'data': None}
+_CACHE_TTL = 300
+
+
+def _get_strm_counts():
+    """缓存 STRM 总数（5 分钟）"""
+    now = time.time()
+    if now - _strm_count_cache['ts'] < _CACHE_TTL and _strm_count_cache['ts'] > 0:
+        return _strm_count_cache['local'], _strm_count_cache['share']
+    l = sum(1 for _ in L_ROOT.rglob('*.strm')) if L_ROOT.exists() else 0
+    s_ = sum(1 for _ in S_ROOT.rglob('*.strm')) if S_ROOT.exists() else 0
+    _strm_count_cache.update({'ts': now, 'local': l, 'share': s_})
+    log.info('缓存刷新 STRM 计数: local=%d share=%d', l, s_)
+    return l, s_
+
+
+def invalidate_stats_cache():
+    """清空统计缓存（删除后调用）"""
+    _strm_count_cache['ts'] = 0
+    _lib_stats_cache['ts'] = 0
+    _lib_stats_cache['data'] = None
 
 
 ACTIONS = {

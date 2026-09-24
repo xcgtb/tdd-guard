@@ -273,11 +273,18 @@ def health():
 @app.get('/api/dashboard', dependencies=[Depends(auth)])
 def dashboard():
     try:
-        l_count = sum(1 for _ in engine.L_ROOT.rglob('*.strm')) if engine.L_ROOT.exists() else 0
-        s_count = sum(1 for _ in engine.S_ROOT.rglob('*.strm')) if engine.S_ROOT.exists() else 0
-        emby_ok = False
-        try: emby_ok = bool(engine.emby_request('/System/Info', timeout=3))
-        except Exception: pass
+        l_count, s_count = engine._get_strm_counts()
+        # Emby 探测缓存 30 秒
+        now_ts = time.time()
+        if not hasattr(dashboard, '_emby_cache'):
+            dashboard._emby_cache = {'ts': 0, 'ok': False, 'host': ''}
+        if now_ts - dashboard._emby_cache['ts'] > 30:
+            try:
+                emby_ok = bool(engine.emby_request('/System/Info', timeout=3))
+            except Exception:
+                emby_ok = False
+            dashboard._emby_cache = {'ts': now_ts, 'ok': emby_ok, 'host': engine.EMBY_HOST}
+        emby_ok = dashboard._emby_cache['ok']
         tmdb_ok = bool(engine.RUNTIME_CFG.get('tmdb_key'))
         tg_ok = bool(engine.RUNTIME_CFG.get('telegram_bot_token')) and bool(engine.RUNTIME_CFG.get('telegram_chat_id'))
         subs = get_subscriptions()
@@ -859,6 +866,7 @@ def api_emby_series_delete(series_id: str, body: dict = None):
             engine._emby_index_cache['ts'] = 0
             engine._emby_index_cache['data'] = None
             engine._invalidate_lib_cache()
+            engine.invalidate_stats_cache()
         except Exception:
             pass
 
