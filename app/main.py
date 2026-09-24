@@ -844,6 +844,24 @@ def api_emby_series_delete(series_id: str, body: dict = None):
         else:
             result = engine.safe_delete_files(files, engine.S_ROOT, None, dry_run=False)
 
+        # 通知 Emby 刷新媒体库
+        try:
+            engine.notify_emby_refresh()
+        except Exception:
+            pass
+
+        # 清空内存缓存，下次对照立即拿最新数据
+        try:
+            engine._ep_cache['ts'] = 0
+            engine._ep_cache['data'] = None
+            engine._emby_lib_cache['ts'] = 0
+            engine._emby_lib_cache['data'] = None
+            engine._emby_index_cache['ts'] = 0
+            engine._emby_index_cache['data'] = None
+            engine._invalidate_lib_cache()
+        except Exception:
+            pass
+
         engine.write_audit_log(
             '单剧删除',
             '删除【%s】库 %d 个文件' % (target, len(files)),

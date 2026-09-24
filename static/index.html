@@ -2762,7 +2762,9 @@ function showEmbyDetailById(id){
 
   /* "在 Emby 中打开"链接改为读配置，不再硬编码 IP */
   var embyHost = (window.__embyHost || '').replace(/\/+$/, '');
-  html += '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">';
+  html += '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">';
+  html += '<button class="btn red" onclick="deleteSeriesFromLib(\'' + esc(s.id) + '\',\'local\',\'' + esc(s.name || '').replace(/'/g, '&#39;') + '\')">删除本地库</button>';
+  html += '<button class="btn red" onclick="deleteSeriesFromLib(\'' + esc(s.id) + '\',\'share\',\'' + esc(s.name || '').replace(/'/g, '&#39;') + '\')">删除分享库</button>';
   if (s.id && embyHost) {
     html += '<a href="' + esc(embyHost) + '/web/index.html#!/item?id=' + esc(s.id) + '" target="_blank" rel="noopener" style="text-decoration:none" class="btn gray">在 Emby 中打开</a>';
   }
@@ -2772,6 +2774,53 @@ function showEmbyDetailById(id){
   openModal(html);
   hydratePosters($('modalBody'));
   loadLibBreakdown(s.id, ti);
+}
+
+async function deleteSeriesFromLib(seriesId, target, seriesName){
+  var targetName = target === 'local' ? '\u672c\u5730\u5e93\uff08\u542b 115 \u6e90\u6587\u4ef6\uff09' : '\u5206\u4eab\u5e93';
+  try {
+    // 1. dry_run 先拿数量
+    var r1 = await api('/api/emby/series/' + seriesId + '/delete', {
+      method: 'POST',
+      body: JSON.stringify({ target: target, dry_run: true })
+    });
+    if (r1.status !== 'success') throw new Error(r1.message || '\u5931\u8d25');
+    var count = r1.count || 0;
+    if (count === 0) {
+      alert('\u8be5\u5e93\u65e0\u6b64\u5267\u6587\u4ef6');
+      return;
+    }
+
+    // 2. 原\u751f confirm \u4e8c\u6b21\u786e\u8ba4
+    var msg = '\u26a0\ufe0f \u786e\u8ba4\u5220\u9664\u3010' + targetName + '\u3011\uff1f\n\n' +
+              '\u5267\u540d\uff1a' + (seriesName || '') + '\n' +
+              '\u5c06\u5220\u9664 ' + count + ' \u4e2a\u6587\u4ef6' +
+              (target === 'local' ? '\uff0c\u5e76\u8054\u52a8\u5220\u9664 115 \u7f51\u76d8\u4e0a\u7684\u6e90\u6587\u4ef6' : '') +
+              '\n\n\u6b64\u64cd\u4f5c\u4e0d\u53ef\u6062\u590d\uff01';
+    if (!confirm(msg)) return;
+
+    // 3. 真\u5220
+    var r2 = await api('/api/emby/series/' + seriesId + '/delete', {
+      method: 'POST',
+      body: JSON.stringify({ target: target, dry_run: false })
+    });
+    if (r2.status !== 'success') throw new Error(r2.message || '\u5931\u8d25');
+
+    var doneMsg = '\u2705 \u5df2\u5220\u9664\n\n' +
+                  'strm\uff1a' + (r2.strm_removed || 0) + ' \u4e2a\n' +
+                  '\u4e91\u7aef\uff1a' + (r2.cloud_removed || 0) + ' \u4e2a';
+    if (r2.errors && r2.errors.length) {
+      doneMsg += '\n\n\u26a0\ufe0f \u90e8\u5206\u9519\u8bef\uff1a\n' + r2.errors.slice(0, 3).join('\n');
+    }
+    alert(doneMsg);
+
+    // 4. 刷\u65b0
+    embyLoaded = false;
+    loadEmbyLibrary(false, false);
+    closeModal();
+  } catch(e){
+    alert('\u5220\u9664\u5931\u8d25\uff1a' + e.message);
+  }
 }
 
 async function loadLibBreakdown(seriesId, ti){
