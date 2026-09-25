@@ -548,8 +548,10 @@ def api_set_strategy(body: dict = None):
     kwargs = {}
     if 'decision' in body:
         d = str(body['decision'])
-        if d not in ('quality_first', 'keep_local', 'keep_share', 'balanced'):
-            raise HTTPException(400, 'decision 必须是 quality_first / keep_local / keep_share / balanced')
+        if d == 'balanced':
+            d = 'quality_first'
+        if d not in ('quality_first', 'keep_local', 'keep_share'):
+            raise HTTPException(400, 'decision 必须是 quality_first / keep_local / keep_share')
         kwargs['decision'] = d
     if 'multi_season_protect' in body:
         kwargs['multi_season_protect'] = bool(body['multi_season_protect'])

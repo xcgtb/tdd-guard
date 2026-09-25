@@ -106,7 +106,6 @@ def _share_wins(s_q, l_q):
     decision = s['decision']
     if decision == 'keep_local': return False
     if decision == 'keep_share': return True
-    if decision == 'balanced':   return s_q > l_q
     return s_q > l_q if s['tie_keep_local'] else s_q >= l_q
 
 

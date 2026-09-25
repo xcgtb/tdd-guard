@@ -105,13 +105,18 @@ def save_config(cfg: dict) -> dict:
 # ═══════════════════ 结构化访问 ═══════════════════
 def get_strategy() -> dict:
     cfg = load_config()
+    dec = cfg.get('strategy_decision', 'quality_first')
+    if dec == 'balanced':
+        dec = 'quality_first'
+    if dec not in ('quality_first', 'keep_local', 'keep_share'):
+        dec = 'quality_first'
     sa = cfg.get('strategy_special_action', 'compare')
     if sa == 'keep':
         sa = 'ignore'
     if sa not in ('compare', 'ignore', 'delete'):
         sa = 'compare'
     return {
-        'decision': cfg.get('strategy_decision', 'quality_first'),
+        'decision': dec,
         'multi_season_protect': cfg.get('strategy_multi_season_protect', '1') == '1',
         'tie_keep_local': cfg.get('strategy_tie_keep_local', '0') == '1',
         'exempt_keywords': [x.strip() for x in (cfg.get('strategy_exempt_keywords') or '').split(',') if x.strip()],
@@ -121,7 +126,13 @@ def get_strategy() -> dict:
 
 def update_strategy(**kwargs) -> dict:
     cfg = load_config()
-    if 'decision' in kwargs: cfg['strategy_decision'] = str(kwargs['decision'])
+    if 'decision' in kwargs:
+        d = str(kwargs['decision'])
+        if d == 'balanced':
+            d = 'quality_first'
+        if d not in ('quality_first', 'keep_local', 'keep_share'):
+            d = 'quality_first'
+        cfg['strategy_decision'] = d
     if 'multi_season_protect' in kwargs:
         cfg['strategy_multi_season_protect'] = '1' if kwargs['multi_season_protect'] else '0'
     if 'tie_keep_local' in kwargs:
