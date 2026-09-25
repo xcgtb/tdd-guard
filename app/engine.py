@@ -358,6 +358,22 @@ def _prune_up(d, base_root, cloud_root):
         d = d.parent
 
 
+
+def _unlink_with_timeout(v, timeout=15):
+    """删文件，最多等 timeout 秒。超时 kill 子进程并返回 False。
+    CD2 删 115 大文件很慢（几分钟），不能让它阻塞主任务"""
+    import subprocess
+    try:
+        r = subprocess.run(['rm', '-f', str(v)], timeout=timeout, capture_output=True)
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        log.warning('删除超时(%d秒)，跳过: %s', timeout, v)
+        return False
+    except Exception as e:
+        log.warning('删除失败 %s: %s', v, e)
+        return False
+
+
 def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     st = {'strm_removed': 0, 'cloud_removed': 0, 'cloud_missing': 0, 'errors': []}
     parents = set()
@@ -374,10 +390,10 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
             continue
         ok = True
         for v in vids:
-            try:
-                v.unlink(); st['cloud_removed'] += 1
-            except OSError as e:
-                ok = False; st['errors'].append(f'{v.name}: {e}')
+            if _unlink_with_timeout(v):
+                st['cloud_removed'] += 1
+            else:
+                st['errors'].append(f'{v.name}: 删除超时或失败')
         if not ok: continue
         try:
             _remove_strm(f, base_root); st['strm_removed'] += 1
