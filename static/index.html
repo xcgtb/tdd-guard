@@ -3128,7 +3128,25 @@ async function sendMorningNow(){
 
 /* ═══════════ 每日汇报 ═══════════ */
 
+function toggleRecordDetails(idx, showCount){
+  var box = document.getElementById('rec-details-' + idx);
+  var btn = document.getElementById('rec-toggle-' + idx);
+  if (!box || !btn || !window.__recCache) return;
+  var all = window.__recCache[idx] || [];
+  var expanded = btn.dataset.expanded === '1';
+  if (expanded) {
+    box.innerHTML = all.slice(0, showCount).map(function(d){ return '<div>' + esc(d) + '</div>'; }).join('');
+    btn.textContent = '展开全部 ' + all.length + ' 条 ▾';
+    btn.dataset.expanded = '0';
+  } else {
+    box.innerHTML = all.map(function(d){ return '<div>' + esc(d) + '</div>'; }).join('');
+    btn.textContent = '收起 ▴';
+    btn.dataset.expanded = '1';
+  }
+}
+
 async function loadRecords(){
+  window.__recCache = [];
   var n = parseInt($('recordN').value) || 50;
   $('recordsList').innerHTML = '<div class="list-empty">加载中...</div>';
   try {
@@ -3152,14 +3170,19 @@ async function loadRecords(){
       html += '<div class="record-body">';
       html += '<div class="record-head"><span class="record-tag">' + esc(cat) + '</span>' + esc(rec.title) + '</div>';
       if (rec.details && rec.details.length) {
-        html += '<div class="record-details">';
-        rec.details.slice(0, 15).forEach(function(d){
+        window.__recCache = window.__recCache || [];
+        var _idx = window.__recCache.length;
+        window.__recCache.push(rec.details);
+        var _showCount = 15;
+        var _hasMore = rec.details.length > _showCount;
+        html += '<div class="record-details" id="rec-details-' + _idx + '">';
+        rec.details.slice(0, _showCount).forEach(function(d){
           html += '<div>' + esc(d) + '</div>';
         });
-        if (rec.details.length > 15) {
-          html += '<div class="dim">… 共 ' + rec.details.length + ' 条详情</div>';
-        }
         html += '</div>';
+        if (_hasMore) {
+          html += '<button class="record-toggle" id="rec-toggle-' + _idx + '" data-expanded="0" onclick="toggleRecordDetails(' + _idx + ',' + _showCount + ')">展开全部 ' + rec.details.length + ' 条 ▾</button>';
+        }
       }
       html += '</div></div>';
     });
@@ -3556,5 +3579,20 @@ html body #exploreLoadMore { display: none !important; }
   setTimeout(run, 1500);
 })();
 </script>
+
+<style id="record-toggle-style">
+.record-toggle {
+  background: none;
+  border: none;
+  color: #6366f1;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 0;
+  font-family: inherit;
+  font-weight: 500;
+  margin-top: 4px;
+}
+.record-toggle:hover { text-decoration: underline; }
+</style>
 </body>
 </html>
