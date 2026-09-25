@@ -1873,7 +1873,7 @@ var govData = { loc: [], shr: [], keep: [], exempt: [] };
 var currentGovFilter = 'all';
 var statsAutoLoaded = false;
 var revealed = {};
-var currentStrategy = { decision: 'quality_first', multi_season_protect: true, tie_keep_local: false, exempt_keywords: [], special_action: 'keep' };
+var currentStrategy = { decision: 'quality_first', multi_season_protect: true, tie_keep_local: false, exempt_keywords: [], special_action: 'compare' };
 var currentSubs = [];
 var currentGovItems = [];
 
@@ -3199,7 +3199,7 @@ function applyStrategyUI(){
     el.classList.toggle('on', el.dataset.v === currentStrategy.decision);
   });
   document.querySelectorAll('.strategy-option[data-sp]').forEach(function(el){
-    el.classList.toggle('on', el.dataset.sp === (currentStrategy.special_action || 'keep'));
+    el.classList.toggle('on', el.dataset.sp === (currentStrategy.special_action || 'compare'));
   });
   $('strMultiProtect').checked = !!currentStrategy.multi_season_protect;
   $('strTieLocal').checked = !!currentStrategy.tie_keep_local;
@@ -3221,7 +3221,7 @@ async function saveStrategy(){
       decision: currentStrategy.decision,
       multi_season_protect: $('strMultiProtect').checked,
       tie_keep_local: $('strTieLocal').checked,
-      special_action: currentStrategy.special_action || 'keep',
+      special_action: currentStrategy.special_action || 'compare',
       exempt_keywords: currentStrategy.exempt_keywords || [],
     };
     var r = await api('/api/strategy', { method: 'POST', body: JSON.stringify(body) });
