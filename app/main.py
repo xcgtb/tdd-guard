@@ -48,41 +48,64 @@ CURRENT = {'task': None}
 
 
 
-def wait_for_cd2(max_wait=90):
-    """启动时等 CD2 挂载就绪。
-    判断标准：目录存在 + 至少有 1 个预期的子目录。
-    不就绪就等，最多等 max_wait 秒。
-    """
+
+def _cd2_ready():
+    """检查 CD2 是否就绪"""
+    check_dirs = {'电影', '剧集', '儿童节目', '综艺', '动漫', '纪录片', '演唱会'}
+    try:
+        cd2 = engine.CLOUD_L_ROOT
+        if not cd2.exists():
+            return False
+        dirs = {i.name for i in cd2.iterdir() if i.is_dir()}
+        return bool(dirs & check_dirs)
+    except OSError:
+        return False
+
+
+def _cd2_watchdog(max_wait=60, max_retries=5):
+    """CD2 启动守门员：未就绪则退出容器让 Docker 重启"""
     import time as _t
+    from pathlib import Path as _P
     _logger = logging.getLogger('media_agent')
-    cd2 = engine.CLOUD_L_ROOT
+    counter_file = _P('/data/.cd2_retry_count')
 
-    if not cd2.exists():
-        _logger.warning('CD2 挂载点不存在: %s', cd2)
-        return
-
-    expected = {'电影', '剧集', '儿童节目', '综艺', '动漫', '纪录片', '演唱会'}
-    start = _t.time()
-    last_count = -1
-
-    while _t.time() - start < max_wait:
+    count = 0
+    if counter_file.exists():
         try:
-            items = list(cd2.iterdir())
-            dirs = {i.name for i in items if i.is_dir()}
-            hit = dirs & expected
-            if hit:
-                _logger.info('CD2 挂载就绪（等 %.1f 秒，找到 %d 个预期目录）',
-                             _t.time() - start, len(hit))
-                return
-            cur = len(items)
-            if cur != last_count:
-                _logger.info('CD2 挂载检测：%d 项，等 %.1f 秒', cur, _t.time() - start)
-                last_count = cur
-        except OSError as e:
-            _logger.warning('CD2 目录访问失败: %s', e)
+            parts = counter_file.read_text().strip().split(':')
+            if len(parts) == 2 and _t.time() - float(parts[0]) < 300:
+                count = int(parts[1])
+        except (ValueError, OSError):
+            count = 0
+
+    start = _t.time()
+    while _t.time() - start < max_wait:
+        if _cd2_ready():
+            _logger.info('CD2 挂载就绪（等 %.1f 秒，重试次数 %d）', _t.time() - start, count)
+            try:
+                counter_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
         _t.sleep(2)
 
-    _logger.warning('CD2 挂载 %d 秒后仍未就绪，继续启动', max_wait)
+    count += 1
+    if count >= max_retries:
+        _logger.error('CD2 挂载 %d 秒内未就绪，已重试 %d 次，放弃等待', max_wait, count)
+        try:
+            counter_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+
+    try:
+        counter_file.write_text('%f:%d' % (_t.time(), count))
+    except OSError:
+        pass
+
+    _logger.warning('CD2 挂载未就绪，第 %d/%d 次重试，退出容器让 Docker 重启', count, max_retries)
+    _t.sleep(2)
+    os._exit(42)
 
 
 bot.set_current_ref(CURRENT)
@@ -90,6 +113,9 @@ try:
     bot.start()
 except Exception as _e:
     logging.getLogger('media_agent').warning('Bot 启动失败: %s', _e)
+
+# CD2 启动守门员（非 daemon，失败时可强退进程）
+threading.Thread(target=_cd2_watchdog, daemon=False, name='cd2-watchdog').start()
 
 try:
     _n = logger.migrate_legacy()
@@ -207,7 +233,6 @@ _bg_state = {
 
 
 def _bg_loop():
-    wait_for_cd2()
 
     """每 30 秒检查一次，决定是否触发：入库缓存刷新 / 订阅检查 / 晨报预扫 / 晨报发送"""
     time.sleep(15)      # 启动后缓 15 秒，等 Emby 就绪
