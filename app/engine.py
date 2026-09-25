@@ -393,6 +393,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
             if _unlink_with_timeout(v):
                 st['cloud_removed'] += 1
             else:
+                ok = False
                 st['errors'].append(f'{v.name}: 删除超时或失败')
         if not ok: continue
         try:

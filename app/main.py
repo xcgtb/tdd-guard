@@ -894,8 +894,8 @@ def api_emby_series_delete(series_id: str, body: dict = None):
             conv = engine.emby_path_to_container(ep.get('Path') or '')
             if not conv:
                 continue
-            in_local = str(conv).startswith(str(engine.L_ROOT))
-            in_share = str(conv).startswith(str(engine.S_ROOT))
+            in_local = engine._inside(conv, engine.L_ROOT)
+            in_share = engine._inside(conv, engine.S_ROOT)
             if target == 'local' and not in_local:
                 continue
             if target == 'share' and not in_share:
