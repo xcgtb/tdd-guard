@@ -493,11 +493,11 @@ def api_emby_poster(item_id: str):
 
 @app.get('/api/explore', dependencies=[Depends(auth)])
 def api_explore(region: str = 'all', year: str = '', sort: str = 'popularity',
-                media: str = 'movie', page: int = 1, q: str = ''):
+                media: str = 'movie', page: int = 1, q: str = '', genre: str = ''):
     try:
         return engine.ACTIONS['explore'](Args(region=region, year=year,
                                               sort=sort, media=media,
-                                              page=page, q=q))
+                                              page=page, q=q, genre=genre))
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 

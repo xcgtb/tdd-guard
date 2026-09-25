@@ -126,7 +126,8 @@ def is_seq(eps: Iterable[int], name: str = '', exempt_keywords: Optional[Sequenc
 def parse_emby_library(item: dict, is_movie: bool = False, categories: Sequence[str] = DEFAULT_CATEGORIES, kids_keywords: Sequence[str] = DEFAULT_KIDS_KW) -> str:
     path = item.get('Path', '') or ''
     for c in categories:
-        if c.split(' ', 1)[1] in path: return c
+        parts = c.split(' ', 1)
+        if len(parts) > 1 and parts[1] in path: return c
     name = item.get('SeriesName') or item.get('Name') or ''
     text = f"{path} {name} {' '.join(item.get('Genres', []))}".lower()
     if any(k in text for k in kids_keywords): return categories[0]

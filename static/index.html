@@ -1110,12 +1110,11 @@ body::before { display: none !important; }
 
 <script>
 window.onerror = function(msg, url, line){
-  alert('JS ERROR:\n' + msg + '\nLine: ' + line);
+  console.error('JS ERROR:', msg, 'Line:', line);
   return false;
 };
 window.addEventListener('unhandledrejection', function(e){
-  var r = e.reason;
-  alert('PROMISE ERROR:\n' + (r && (r.message || r) || r));
+  console.error('PROMISE ERROR:', e.reason);
 });
 </script>
 </head>
@@ -2322,7 +2321,7 @@ function appendExploreCards(cards){
     }
     var isSub = subSet[String(c.tmdb_id)];
     var subBtn = c.type === 'tv'
-      ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" onclick="event.stopPropagation();toggleSubscribe(\'' + esc(c.tmdb_id) + '\',\'' + esc(c.title).replace(/'/g, '&#39;') + '\',\'' + esc(c.poster || '').replace(/'/g, '&#39;') + '\')">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
+      ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" data-tmdb="' + esc(c.tmdb_id) + '" data-title="' + esc(c.title) + '" data-poster="' + esc(c.poster || '') + '">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
       : '';
     return '<div class="poster-card">'
       + '<div class="poster-wrap">' + posterHtml
@@ -2386,7 +2385,7 @@ function renderExploreCards(cards){
     }
     var isSub = subSet[String(c.tmdb_id)];
     var subBtn = c.type === 'tv'
-      ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" onclick="event.stopPropagation();toggleSubscribe(\'' + esc(c.tmdb_id) + '\',\'' + esc(c.title).replace(/'/g, '&#39;') + '\',\'' + esc(c.poster || '').replace(/'/g, '&#39;') + '\')">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
+      ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" data-tmdb="' + esc(c.tmdb_id) + '" data-title="' + esc(c.title) + '" data-poster="' + esc(c.poster || '') + '">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
       : '';
     return '<div class="poster-card">'
       + '<div class="poster-wrap">' + posterHtml
@@ -3438,6 +3437,18 @@ async function testTelegram(){
 }
 
 /* ═══════════ 初始化 ═══════════ */
+
+// 接管订阅按钮点击事件，避免内联 onclick 的注入风险
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.sub-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  var tmdbId = btn.getAttribute('data-tmdb');
+  var title = btn.getAttribute('data-title');
+  var poster = btn.getAttribute('data-poster') || '';
+  toggleSubscribe(tmdbId, title, poster);
+});
+
 document.addEventListener('DOMContentLoaded', async function(){
   initTheme();
   var st = $('sideTitle');
