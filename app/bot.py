@@ -145,7 +145,7 @@ def _edit(token, chat_id, message_id, text, keyboard=None):
 
 def _is_allowed(user_id, chat_id):
     raw = (load_config().get('telegram_allowed_users') or '').strip()
-    if not raw: return True
+    if not raw: return False
     allowed = set(x.strip() for x in raw.split(',') if x.strip())
     return str(user_id) in allowed or str(chat_id) in allowed
 
