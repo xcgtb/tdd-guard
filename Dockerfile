@@ -19,6 +19,7 @@ RUN pip install -r requirements.txt
 COPY app/ ./app/
 COPY static/ ./static/
 COPY scripts/ ./scripts/
+COPY tests/ ./tests/
 
 RUN mkdir -p /data
 

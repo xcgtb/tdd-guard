@@ -12,7 +12,6 @@ records
 *.jsonl
 .env
 .env.*
-tests
 docs
 *.md
 !README.md
