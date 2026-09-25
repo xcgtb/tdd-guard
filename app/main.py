@@ -559,8 +559,10 @@ def api_set_strategy(body: dict = None):
         kwargs['exempt_keywords'] = body['exempt_keywords']
     if 'special_action' in body:
         sa = str(body['special_action'])
-        if sa not in ('keep', 'ignore', 'delete'):
-            raise HTTPException(400, 'special_action 必须是 keep / ignore / delete')
+        if sa == 'keep':
+            sa = 'ignore'
+        if sa not in ('compare', 'ignore', 'delete'):
+            raise HTTPException(400, 'special_action 必须是 compare / ignore / delete')
         kwargs['special_action'] = sa
     result = update_strategy(**kwargs)
     engine.reload_config()

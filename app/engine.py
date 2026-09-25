@@ -79,7 +79,7 @@ def _exempt_keywords():
     return _strategy()['exempt_keywords']
 
 def _special_action():
-    return _strategy().get('special_action', 'keep')
+    return _strategy().get('special_action', 'compare')
 
 def _ep(p: Path):
     return get_ep(p.name, p.parent.name)
@@ -490,7 +490,27 @@ def build_plan():
 
         s00_files = s_seasons.get(0)
         l00_files = l_seasons.get(0)
-        if s00_files and l00_files:
+        special_action = s.get('special_action', 'compare')
+
+        if special_action == 'delete':
+            # 清理档：本地+分享都删
+            tag = f'《{disp}》S00'
+            if l00_files:
+                acts.append(Act('loc', f'🎬 {tag} (特别篇清理 → 删本地)',
+                                f'├─ 🎬 {tag}: 特别篇清理 ➔ CD2联动删除115网盘旧源',
+                                l00_files,
+                                meta={'reason': 'special_delete_local',
+                                      'reason_label': '特别篇清理-删本地',
+                                      'title': disp, 'season': 0}))
+            if s00_files:
+                acts.append(Act('shr', f'🎬 {tag} (特别篇清理 → 删分享)',
+                                f'├─ 🎬 {tag}: 特别篇清理 ➔ 清理分享影视库strm',
+                                s00_files,
+                                meta={'reason': 'special_delete_share',
+                                      'reason_label': '特别篇清理-删分享',
+                                      'title': disp, 'season': 0}))
+        elif special_action != 'ignore' and s00_files and l00_files:
+            # 画质对比档
             s_q, l_q = _best(s00_files), _best(l00_files)
             tag = f'《{disp}》S00'
             if _share_wins(s_q, l_q):
@@ -507,6 +527,7 @@ def build_plan():
                                 meta={'reason': 'special_local_better',
                                       'reason_label': '特别篇本地更优',
                                       'title': disp, 'season': 0}))
+        # ignore: 完全跳过
 
         s_proper = {k: v for k, v in s_seasons.items() if k > 0}
         l_proper = {k: v for k, v in l_seasons.items() if k > 0}

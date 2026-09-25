@@ -23,7 +23,7 @@ DEFAULTS = {
     'strategy_multi_season_protect': '1',
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
     'strategy_exempt_keywords':      '',
-    'strategy_special_action':       'keep',    # keep | ignore | delete  —— 特别篇 S00 策略
+    'strategy_special_action':       'compare', # compare | ignore | delete  —— 特别篇 S00 策略
 
     # 入库监控
     'ingest_enabled':        '1',      # 后台入库监控开关
@@ -105,12 +105,17 @@ def save_config(cfg: dict) -> dict:
 # ═══════════════════ 结构化访问 ═══════════════════
 def get_strategy() -> dict:
     cfg = load_config()
+    sa = cfg.get('strategy_special_action', 'compare')
+    if sa == 'keep':
+        sa = 'ignore'
+    if sa not in ('compare', 'ignore', 'delete'):
+        sa = 'compare'
     return {
         'decision': cfg.get('strategy_decision', 'quality_first'),
         'multi_season_protect': cfg.get('strategy_multi_season_protect', '1') == '1',
         'tie_keep_local': cfg.get('strategy_tie_keep_local', '0') == '1',
         'exempt_keywords': [x.strip() for x in (cfg.get('strategy_exempt_keywords') or '').split(',') if x.strip()],
-        'special_action': cfg.get('strategy_special_action', 'keep'),
+        'special_action': sa,
     }
 
 
@@ -126,7 +131,9 @@ def update_strategy(**kwargs) -> dict:
         cfg['strategy_exempt_keywords'] = ','.join(str(x).strip() for x in kws if str(x).strip()) if isinstance(kws, list) else str(kws)
     if 'special_action' in kwargs:
         sa = str(kwargs['special_action'])
-        if sa in ('keep', 'ignore', 'delete'):
+        if sa == 'keep':
+            sa = 'ignore'
+        if sa in ('compare', 'ignore', 'delete'):
             cfg['strategy_special_action'] = sa
     save_config(cfg)
     return get_strategy()
