@@ -532,7 +532,7 @@ def build_plan():
         l_proper = {k: v for k, v in l_seasons.items() if k > 0}
         n_local = len(l_proper)
 
-        use_zero_sum = multi_protect and n_local >= 2
+        use_zero_sum = (s['decision'] == 'quality_first') and multi_protect and n_local >= 2
 
         if use_zero_sum:
             can_replace = True
