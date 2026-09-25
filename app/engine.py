@@ -445,12 +445,9 @@ def _act_to_dict(a: Act) -> dict:
 
 
 def build_plan():
-    # 用 _get_lib 而不是直接 Lib(...)：30 秒内多次 build_plan 复用同一份数据。
-    # 典型场景：扫描 → 立刻执行清理，不重复 rglob 全库。
     S, L = _get_lib(S_ROOT), _get_lib(L_ROOT)
     s = _strategy()
     multi_protect = s['multi_season_protect']
-    special_action = s.get('special_action', 'keep')
     acts = []
 
     for key, s_files in S.mov.items():
@@ -471,103 +468,146 @@ def build_plan():
         disp = S.meta[key][0]
         lk = L.find((key, S.meta[key]), L.tv)
         l_seasons = L.tv[lk] if lk else {}
-        n_local = len(l_seasons)
-        multi = n_local >= 2 and len(s_seasons) < n_local
 
-        for s_num, s_files in sorted(s_seasons.items()):
-            tag = f'《{disp}》S{s_num:02d}'
-            s_eps = {_ep(x)[1] for x in s_files}
-
-            # ─── 特别篇 S00 特殊处理 ───
-            if s_num == 0:
-                if special_action == 'ignore':
-                    continue    # 忽略，不参与治理
-                elif special_action == 'delete':
-                    # 强制清理
-                    acts.append(Act('shr', f'🎬 {tag} (特别篇 · 按策略清理)',
-                                    f'├─ 🎬 {tag}: 特别篇策略=清理 ➔ 淘汰分享影视库strm', s_files,
-                                    meta={'reason': 'special_delete', 'reason_label': '特别篇清理',
-                                          'title': disp, 'season': 0}))
-                    continue
-                # keep: 默认保留（走白名单豁免）
-                acts.append(Act('exempt', f'🛡️ {tag} (特别篇 · 保留)',
-                                f'├─ 🛡️ {tag}: 特别篇策略=保留 ➔ 跳过清理',
-                                s_files,
-                                meta={'reason': 'special_keep', 'reason_label': '特别篇保留',
-                                      'title': disp, 'season': 0, 'keywords': ['特别篇']}))
-                continue
-
-            if s_num not in l_seasons:
-                hit_kws = _exempt_hit(disp)
-                if not hit_kws:
-                    for f in s_files:
+        hit_kws = _exempt_hit(disp)
+        if not hit_kws:
+            for files_map in (s_seasons, l_seasons):
+                for files in files_map.values():
+                    for f in files:
                         hit_kws = _exempt_hit(str(f))
                         if hit_kws: break
-                if hit_kws:
-                    acts.append(Act('exempt', f'🛡️ {tag} (白名单豁免)',
-                                    f'├─ 🛡️ {tag}: 命中白名单 [{",".join(hit_kws)}] ➔ 跳过清理',
-                                    s_files,
-                                    meta={'reason': 'whitelist', 'reason_label': '白名单豁免',
-                                          'title': disp, 'season': s_num, 'keywords': hit_kws}))
-                    continue
-                ok, reason = _analyze(s_eps, disp)
-                if not ok:
-                    acts.append(Act('shr', f'🚫 {tag} ({reason})', f'├─ 🚫 {tag}: {reason} ➔ 清理分享影视库strm', s_files,
-                                    meta={'reason': 'gap', 'reason_label': reason, 'title': disp, 'season': s_num}))
-                continue
+                    if hit_kws: break
+                if hit_kws: break
+        if hit_kws:
+            for sn, s_files in sorted(s_seasons.items()):
+                tag = f'《{disp}》S{sn:02d}'
+                acts.append(Act('exempt', f'🛡️ {tag} (白名单豁免)',
+                                f'├─ 🛡️ {tag}: 命中白名单 [{",".join(hit_kws)}] ➔ 跳过清理',
+                                s_files,
+                                meta={'reason': 'whitelist', 'reason_label': '白名单豁免',
+                                      'title': disp, 'season': sn, 'keywords': hit_kws}))
+            continue
 
-            l_files = l_seasons[s_num]
-            l_eps = {_ep(x)[1] for x in l_files}
-            s_q, l_q = _best(s_files), _best(l_files)
-
-            if multi and multi_protect:
-                if s_q > l_q:
-                    acts.append(Act('keep', f'📺 {tag} (本地拥有{n_local}季完整合集，保护本地合集不被掏空)',
-                                    f'├─ 🛡️ {tag}: 本地{n_local}季大合集保护 ➔ 保持本地不删',
-                                    meta={'reason': 'multi_season', 'reason_label': '多季合集保护',
-                                          'title': disp, 'season': s_num,
-                                          'local_seasons': n_local, 'share_seasons': len(s_seasons),
-                                          'local_quality': l_q, 'share_quality': s_q}))
-                else:
-                    acts.append(Act('shr', f'📺 {tag} (本地已拥有{n_local}季大合集，淘汰零碎单季分享)',
-                                    f'├─ 📺 {tag}: 本地已有合集 ➔ 清理分享影视库strm', s_files,
-                                    meta={'reason': 'local_collection', 'reason_label': '本地合集优先',
-                                          'title': disp, 'season': s_num, 'local_seasons': n_local}))
-                continue
-
-            if s_eps == l_eps:
-                if _share_wins(s_q, l_q):
-                    acts.append(Act('loc', f'📺 {tag} (集数对齐，分享画质达标，穿透删本地)',
-                                    f'├─ 📺 {tag}: 画质达标且对齐 ➔ CD2联动删除115网盘旧源', l_files,
-                                    meta={'reason': 'share_better', 'reason_label': '分享画质达标且对齐',
-                                          'title': disp, 'season': s_num}))
-                else:
-                    acts.append(Act('shr', f'📺 {tag} (集数对齐，但分享画质较差，淘汰分享)',
-                                    f'├─ 📺 {tag}: 分享画质次级 ➔ 清理分享影视库strm', s_files,
-                                    meta={'reason': 'local_better', 'reason_label': '本地画质更优',
-                                          'title': disp, 'season': s_num}))
-            elif s_eps >= l_eps and _is_seq(s_eps, disp):
-                if _share_wins(s_q, l_q):
-                    acts.append(Act('loc', f'📺 {tag} (分享库更完整 {len(s_eps)}>{len(l_eps)}集 且画质达标，剔除本地残缺源)',
-                                    f'├─ 📺 {tag}: 分享更全({len(s_eps)}>{len(l_eps)}集)且画质达标 ➔ CD2联动删除115网盘旧源', l_files,
-                                    meta={'reason': 'share_more', 'reason_label': '分享更完整',
-                                          'title': disp, 'season': s_num}))
-                else:
-                    acts.append(Act('keep', f'📺 {tag} (分享领先 {len(s_eps)}>{len(l_eps)}集，但本地画质高，双向保留)',
-                                    f'├─ 🔄 {tag}: 分享领先但本地画质高 ➔ 追更双向保留',
-                                    meta={'reason': 'share_ahead_local_quality', 'reason_label': '追更双向保留',
-                                          'title': disp, 'season': s_num,
-                                          'local_quality': l_q, 'share_quality': s_q}))
-            elif l_eps >= s_eps:
-                acts.append(Act('shr', f'📺 {tag} (分享落后于本地库，淘汰分享)',
-                                f'├─ 📺 {tag}: 分享落后于本地 ➔ 清理分享影视库strm', s_files,
-                                meta={'reason': 'share_behind', 'reason_label': '分享落后',
-                                      'title': disp, 'season': s_num}))
+        s00_files = s_seasons.get(0)
+        l00_files = l_seasons.get(0)
+        if s00_files and l00_files:
+            s_q, l_q = _best(s00_files), _best(l00_files)
+            tag = f'《{disp}》S00'
+            if _share_wins(s_q, l_q):
+                acts.append(Act('loc', f'🎬 {tag} (特别篇画质对比 → 删本地)',
+                                f'├─ 🎬 {tag}: 分享画质达标 ➔ CD2联动删除115网盘旧源',
+                                l00_files,
+                                meta={'reason': 'special_share_better',
+                                      'reason_label': '特别篇分享更优',
+                                      'title': disp, 'season': 0}))
             else:
-                acts.append(Act('shr', f'⚠️ {tag} (两库集数重叠错乱，淘汰分享)',
-                                f'├─ ⚠️ {tag}: 集数重叠错乱 ➔ 清理分享影视库strm', s_files,
-                                meta={'reason': 'overlap', 'reason_label': '集数重叠错乱',
-                                      'title': disp, 'season': s_num}))
+                acts.append(Act('shr', f'🎬 {tag} (特别篇画质对比 → 删分享)',
+                                f'├─ 🎬 {tag}: 本地画质更优 ➔ 清理分享影视库strm',
+                                s00_files,
+                                meta={'reason': 'special_local_better',
+                                      'reason_label': '特别篇本地更优',
+                                      'title': disp, 'season': 0}))
+
+        s_proper = {k: v for k, v in s_seasons.items() if k > 0}
+        l_proper = {k: v for k, v in l_seasons.items() if k > 0}
+        n_local = len(l_proper)
+
+        use_zero_sum = multi_protect and n_local >= 2
+
+        if use_zero_sum:
+            can_replace = True
+            for sn, l_files in l_proper.items():
+                if sn not in s_proper:
+                    can_replace = False
+                    break
+                s_files = s_proper[sn]
+                l_eps = {_ep(x)[1] for x in l_files}
+                s_eps = {_ep(x)[1] for x in s_files}
+                if len(s_eps) < len(l_eps):
+                    can_replace = False
+                    break
+                if _best(s_files) < _best(l_files):
+                    can_replace = False
+                    break
+
+            if can_replace:
+                for sn, l_files in sorted(l_proper.items()):
+                    tag = f'《{disp}》S{sn:02d}'
+                    acts.append(Act('loc', f'📺 {tag} (整剧零和：分享全面达标 → 删本地)',
+                                    f'├─ 📺 {tag}: 整剧零和 ➔ CD2联动删除115网盘旧源', l_files,
+                                    meta={'reason': 'multi_zero_sum_share',
+                                          'reason_label': '整剧零和-分享替代',
+                                          'title': disp, 'season': sn,
+                                          'local_seasons': n_local,
+                                          'share_seasons': len(s_proper)}))
+            else:
+                for sn, s_files in sorted(s_proper.items()):
+                    if sn in l_proper:
+                        tag = f'《{disp}》S{sn:02d}'
+                        acts.append(Act('shr', f'📺 {tag} (整剧零和：分享不达标 → 删分享)',
+                                        f'├─ 📺 {tag}: 整剧零和 ➔ 清理分享影视库strm', s_files,
+                                        meta={'reason': 'multi_zero_sum_local',
+                                              'reason_label': '整剧零和-本地保留',
+                                              'title': disp, 'season': sn,
+                                              'local_seasons': n_local,
+                                              'share_seasons': len(s_proper)}))
+        else:
+            for sn, s_files in sorted(s_proper.items()):
+                tag = f'《{disp}》S{sn:02d}'
+                s_eps = {_ep(x)[1] for x in s_files}
+
+                if sn not in l_proper:
+                    ok, reason = _analyze(s_eps, disp)
+                    if not ok:
+                        acts.append(Act('shr', f'🚫 {tag} ({reason})',
+                                        f'├─ 🚫 {tag}: {reason} ➔ 清理分享影视库strm', s_files,
+                                        meta={'reason': 'gap', 'reason_label': reason,
+                                              'title': disp, 'season': sn}))
+                    continue
+
+                l_files = l_proper[sn]
+                l_eps = {_ep(x)[1] for x in l_files}
+                s_q, l_q = _best(s_files), _best(l_files)
+
+                if s_eps == l_eps:
+                    if _share_wins(s_q, l_q):
+                        acts.append(Act('loc', f'📺 {tag} (集数对齐，分享画质达标，穿透删本地)',
+                                        f'├─ 📺 {tag}: 画质达标且对齐 ➔ CD2联动删除115网盘旧源', l_files,
+                                        meta={'reason': 'share_better',
+                                              'reason_label': '分享画质达标且对齐',
+                                              'title': disp, 'season': sn}))
+                    else:
+                        acts.append(Act('shr', f'📺 {tag} (集数对齐，但分享画质较差，淘汰分享)',
+                                        f'├─ 📺 {tag}: 分享画质次级 ➔ 清理分享影视库strm', s_files,
+                                        meta={'reason': 'local_better',
+                                              'reason_label': '本地画质更优',
+                                              'title': disp, 'season': sn}))
+                elif s_eps >= l_eps and _is_seq(s_eps, disp):
+                    if _share_wins(s_q, l_q):
+                        acts.append(Act('loc', f'📺 {tag} (分享库更完整 {len(s_eps)}>{len(l_eps)}集 且画质达标，剔除本地残缺源)',
+                                        f'├─ 📺 {tag}: 分享更全({len(s_eps)}>{len(l_eps)}集)且画质达标 ➔ CD2联动删除115网盘旧源', l_files,
+                                        meta={'reason': 'share_more',
+                                              'reason_label': '分享更完整',
+                                              'title': disp, 'season': sn}))
+                    else:
+                        acts.append(Act('keep', f'📺 {tag} (分享领先 {len(s_eps)}>{len(l_eps)}集，但本地画质高，双向保留)',
+                                        f'├─ 🔄 {tag}: 分享领先但本地画质高 ➔ 追更双向保留',
+                                        meta={'reason': 'share_ahead_local_quality',
+                                              'reason_label': '追更双向保留',
+                                              'title': disp, 'season': sn,
+                                              'local_quality': l_q, 'share_quality': s_q}))
+                elif l_eps >= s_eps:
+                    acts.append(Act('shr', f'📺 {tag} (分享落后于本地库，淘汰分享)',
+                                    f'├─ 📺 {tag}: 分享落后于本地 ➔ 清理分享影视库strm', s_files,
+                                    meta={'reason': 'share_behind',
+                                          'reason_label': '分享落后',
+                                          'title': disp, 'season': sn}))
+                else:
+                    acts.append(Act('shr', f'⚠️ {tag} (两库集数重叠错乱，淘汰分享)',
+                                    f'├─ ⚠️ {tag}: 集数重叠错乱 ➔ 清理分享影视库strm', s_files,
+                                    meta={'reason': 'overlap',
+                                          'reason_label': '集数重叠错乱',
+                                          'title': disp, 'season': sn}))
     return acts
 
 
