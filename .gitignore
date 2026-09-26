@@ -27,3 +27,4 @@ Thumbs.db
 *.bak
 *.bak-*
 *.pre-*
+*.bak.*
