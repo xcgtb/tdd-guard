@@ -557,18 +557,17 @@ def _handle_callback(token, cb):
 
     elif data.startswith('plan:'):
         plan_id = data[5:]
-        safe_id = re.sub(r'[^0-9a-f]', '', plan_id)
-        pf = engine.STATE_DIR / f'plan_{safe_id}.json'
-        if not pf.exists():
-            _answer_callback(token, cb['id'], '计划已失效', alert=True); return
-        try:
-            plan = json.loads(pf.read_text(encoding='utf-8'))
-            keys = plan.get('keys', [])
-        except Exception:
-            _send(token, chat_id, '⚠️ 计划文件损坏'); return
-        preview = '\n'.join(f'• {k.split("|", 1)[1]}' for k in keys[:20])
-        more = f'\n… 共 {len(keys)} 条' if len(keys) > 20 else ''
-        _send(token, chat_id, f'📋 <b>计划清单</b> ({len(keys)} 项)\n\n{preview}{more}')
+        plan_data = engine.load_plan(plan_id)
+        if plan_data is None:
+            _answer_callback(token, cb['id'], '计划已失效/格式过旧', alert=True); return
+        actions = plan_data.get('actions') or []
+        if not actions:
+            _send(token, chat_id, '📋 <b>计划清单</b>\n\n(空)'); return
+        preview = '\n'.join('• ' + (a.get('text') or '?') for a in actions[:20])
+        more = f'\n… 共 {len(actions)} 条' if len(actions) > 20 else ''
+        state = plan_data.get('state', 'pending')
+        _send(token, chat_id,
+              f'📋 <b>计划清单</b> ({len(actions)} 项 · {state})\n\n{preview}{more}')
 
     elif data.startswith('clean_ask:'):
         plan_id = data[10:]

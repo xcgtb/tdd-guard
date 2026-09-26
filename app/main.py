@@ -405,6 +405,41 @@ def get_task(tid: str):
     return t.to_dict()
 
 
+@app.get('/api/plan/{plan_id}', dependencies=[Depends(auth)])
+def api_get_plan(plan_id: str):
+    # 查看单个 Plan 详情（白皮书 §17）
+    data = engine.load_plan(plan_id)
+    if data is None:
+        raise HTTPException(404, 'Plan 不存在或格式过旧')
+    return {'status': 'success', 'plan': data}
+
+
+@app.get('/api/plans', dependencies=[Depends(auth)])
+def api_list_plans(limit: int = 20):
+    # 列出最近 Plan（白皮书 §17）
+    if limit < 1: limit = 1
+    if limit > 100: limit = 100
+    plans = []
+    files = sorted(engine.STATE_DIR.glob('plan_*.json'),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    for f in files:
+        if len(plans) >= limit: break
+        try:
+            data = json.loads(f.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if data.get('schema_version') != 2:
+            continue
+        plans.append({
+            'id': data.get('id'),
+            'ts': data.get('ts'),
+            'state': data.get('state'),
+            'stats': data.get('stats', {}),
+            'executed_at': data.get('executed_at'),
+        })
+    return {'status': 'success', 'plans': plans}
+
+
 # ═══════════════════ 双库治理 ═══════════════════
 @app.post('/api/check', dependencies=[Depends(auth)])
 def api_check():

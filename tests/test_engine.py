@@ -405,3 +405,86 @@ class TestCloudVideoConfidence:
             assert f.exists()
         finally:
             self._teardown(orig)
+
+
+import json as _json
+import time as _time
+
+
+class TestPlanLifecycle:
+
+    def test_action_id_uses_stable_media_key(self):
+        act = engine.Act('loc', '📺 《闪电侠 (2014)》S01 (整剧零和：分享全面达标 → 删本地)',
+                         'detail', [], {'title': '闪电侠 (2014)', 'season': 1})
+        assert act.action_id == 'loc:tv:闪电侠 (2014):S01'
+        assert '整剧零和' not in act.action_id
+
+    def test_movie_action_id_has_no_season(self):
+        act = engine.Act('shr', '🎬 《测试电影》 (本地更优)',
+                         'detail', [], {'title': '测试电影'})
+        assert act.action_id == 'shr:movie:测试电影'
+
+    def test_save_plan_writes_schema_v2(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '剧A (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.S_ROOT, '剧A (2020)/Season 01', 'E01.1080p.strm')
+        acts = engine.build_plan()
+        pid = engine.save_plan(acts)
+        assert pid is not None
+        pf = engine.STATE_DIR / f'plan_{pid}.json'
+        assert pf.exists()
+        data = _json.loads(pf.read_text(encoding='utf-8'))
+        assert data.get('schema_version') == 2
+        assert data.get('state') == 'pending'
+        assert isinstance(data.get('actions'), list)
+        assert len(data['actions']) >= 1
+        first = data['actions'][0]
+        assert 'action_id' in first
+        assert 'media_key' in first
+
+    def test_load_plan_rejects_old_schema(self):
+        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        old_pf = engine.STATE_DIR / 'plan_deadbeef.json'
+        old_pf.write_text(_json.dumps({
+            'id': 'deadbeef', 'ts': _time.time(), 'keys': ['loc|x']
+        }), encoding='utf-8')
+        try:
+            assert engine.load_plan('deadbeef') is None
+        finally:
+            old_pf.unlink(missing_ok=True)
+
+    def test_expired_plan_rejected(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '剧B (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.S_ROOT, '剧B (2020)/Season 01', 'E01.1080p.strm')
+        acts = engine.build_plan()
+        pid = engine.save_plan(acts)
+        assert pid is not None
+        pf = engine.STATE_DIR / f'plan_{pid}.json'
+        data = _json.loads(pf.read_text(encoding='utf-8'))
+        data['ts'] = _time.time() - (engine.PLAN_TTL + 3600)
+        pf.write_text(_json.dumps(data, ensure_ascii=False), encoding='utf-8')
+
+        class A: pass
+        a = A(); a.plan = pid; a.dry_run = False
+        res = engine.action_inter_clean(a)
+        assert res.get('status') == 'error'
+        assert res.get('code') == 'plan_expired'
+
+    def test_done_plan_cannot_be_reexecuted(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '剧C (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.S_ROOT, '剧C (2020)/Season 01', 'E01.1080p.strm')
+        acts = engine.build_plan()
+        pid = engine.save_plan(acts)
+        assert pid is not None
+        engine.save_plan_state(pid, 'done')
+
+        class A: pass
+        a = A(); a.plan = pid; a.dry_run = False
+        res = engine.action_inter_clean(a)
+        assert res.get('status') == 'error'
+        assert res.get('code') == 'plan_used'
