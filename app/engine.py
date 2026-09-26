@@ -543,10 +543,13 @@ def purge_old():
                     shutil.rmtree(d, ignore_errors=True)
             except OSError: pass
     if STATE_DIR.exists():
+        plan_cut = time.time() - 7 * 86400
         for f in STATE_DIR.glob('plan_*.json'):
             try:
-                if f.stat().st_mtime < time.time() - 86400: f.unlink()
-            except OSError: pass
+                if f.stat().st_mtime < plan_cut:
+                    f.unlink()
+            except OSError:
+                pass
 
 
 @dataclass
@@ -556,9 +559,26 @@ class Act:
     detail: str
     files: list = field(default_factory=list)
     meta: dict = field(default_factory=dict)
+
+    @property
+    def media_key(self):
+        title = self.meta.get('title', '')
+        if not title:
+            return ''
+        season = self.meta.get('season')
+        if season is None:
+            return f'movie:{title}'
+        return f'tv:{title}:S{int(season):02d}'
+
+    @property
+    def action_id(self):
+        if not self.media_key:
+            return ''
+        return f'{self.kind}:{self.media_key}'
+
     @property
     def key(self):
-        return f'{self.kind}|{self.text}'
+        return self.action_id or f'{self.kind}|{self.text}'
 
 
 def _act_to_dict(a: Act) -> dict:
@@ -790,14 +810,88 @@ def build_plan():
 
 
 def save_plan(acts):
-    keys = sorted(a.key for a in acts if a.kind not in ('keep', 'exempt'))
-    if not keys: return None
+    todo = [a for a in acts if a.kind not in ('keep', 'exempt') and a.action_id]
+    if not todo:
+        return None
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.time()
-    pid = hashlib.md5(('\n'.join(keys) + str(ts)).encode()).hexdigest()[:8]
+    ids = sorted(a.action_id for a in todo)
+    pid = hashlib.md5(('\n'.join(ids) + str(ts)).encode()).hexdigest()[:8]
+    actions_payload = []
+    for a in todo:
+        actions_payload.append({
+            'action_id': a.action_id,
+            'media_key': a.media_key,
+            'kind': a.kind,
+            'text': a.text,
+            'reason': a.meta.get('reason', ''),
+            'reason_label': a.meta.get('reason_label', ''),
+            'title': a.meta.get('title', ''),
+            'season': a.meta.get('season'),
+            'files': [str(f) for f in a.files],
+        })
+    stats = {
+        'loc': sum(1 for a in acts if a.kind == 'loc'),
+        'shr': sum(1 for a in acts if a.kind == 'shr'),
+        'keep': sum(1 for a in acts if a.kind == 'keep'),
+        'exempt': sum(1 for a in acts if a.kind == 'exempt'),
+    }
+    payload = {
+        'schema_version': 2,
+        'id': pid,
+        'ts': ts,
+        'state': 'pending',
+        'stats': stats,
+        'actions': actions_payload,
+        'executed_at': None,
+        'executed_result': None,
+    }
     (STATE_DIR / f'plan_{pid}.json').write_text(
-        json.dumps({'id': pid, 'ts': ts, 'keys': keys}, ensure_ascii=False), encoding='utf-8')
+        json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     return pid
+
+
+def load_plan(plan_id):
+    if not plan_id:
+        return None
+    safe = re.sub(r'[^0-9a-f]', '', str(plan_id))
+    if not safe:
+        return None
+    pf = STATE_DIR / f'plan_{safe}.json'
+    if not pf.exists():
+        return None
+    try:
+        data = json.loads(pf.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if data.get('schema_version') != 2:
+        return None
+    return data
+
+
+def save_plan_state(plan_id, state, extra=None):
+    if not plan_id:
+        return False
+    safe = re.sub(r'[^0-9a-f]', '', str(plan_id))
+    if not safe:
+        return False
+    pf = STATE_DIR / f'plan_{safe}.json'
+    if not pf.exists():
+        return False
+    try:
+        data = json.loads(pf.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    data['state'] = state
+    if extra:
+        data.update(extra)
+    try:
+        tmp = pf.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+        tmp.replace(pf)
+        return True
+    except OSError:
+        return False
 
 
 def action_inter_check(args):
@@ -854,18 +948,48 @@ def action_inter_clean(args):
 
 
 def _action_inter_clean_locked(args):
+    skipped_details = []
     if args.plan:
-        pf = STATE_DIR / f'plan_{re.sub(r"[^0-9a-f]", "", args.plan)}.json'
-        if not pf.exists():
-            return {'status': 'error', 'code': 'plan_not_found', 'message': '清理计划不存在或已被使用，请重新诊断'}
-        plan = json.loads(pf.read_text(encoding='utf-8'))
-        if time.time() - plan['ts'] > PLAN_TTL:
-            pf.unlink(missing_ok=True)
-            return {'status': 'error', 'code': 'plan_expired', 'message': '清理计划已过期，请重新诊断'}
-        if not args.dry_run: pf.unlink(missing_ok=True)
-        allowed = set(plan['keys'])
-        todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt') and a.key in allowed]
-        skipped = len(allowed) - len(todo)
+        plan = load_plan(args.plan)
+        if plan is None:
+            return {'status': 'error', 'code': 'plan_not_found',
+                    'message': '清理计划不存在/已损坏（可能是旧格式），请重新诊断'}
+        st = plan.get('state')
+        if st in ('done', 'failed'):
+            return {'status': 'error', 'code': 'plan_used',
+                    'message': '清理计划已执行过（state=%s），不能重复执行' % st}
+        if st == 'expired':
+            return {'status': 'error', 'code': 'plan_expired',
+                    'message': '清理计划已过期，请重新诊断'}
+        if time.time() - plan.get('ts', 0) > PLAN_TTL:
+            if not args.dry_run:
+                save_plan_state(args.plan, 'expired')
+            return {'status': 'error', 'code': 'plan_expired',
+                    'message': '清理计划已超过 2 小时未执行，已过期，请重新诊断'}
+        if not args.dry_run:
+            save_plan_state(args.plan, 'executing')
+
+        current = build_plan()
+        current_by_id = {a.action_id: a for a in current
+                         if a.kind not in ('keep', 'exempt') and a.action_id}
+        old_actions = {act.get('action_id', ''): act
+                       for act in plan.get('actions', []) if act.get('action_id')}
+        todo = []
+        for aid, old_act in old_actions.items():
+            cur = current_by_id.get(aid)
+            if cur is None:
+                skipped_details.append(
+                    '%s → 当前扫描已无此动作' % old_act.get('text', '?'))
+                continue
+            old_reason = old_act.get('reason', '')
+            cur_reason = cur.meta.get('reason', '')
+            if old_reason != cur_reason:
+                skipped_details.append(
+                    '%s → 决策原因变化: %s → %s' % (
+                        old_act.get('text', '?'), old_reason, cur_reason))
+                continue
+            todo.append(cur)
+        skipped = len(old_actions) - len(todo)
     else:
         todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt')]
         skipped = 0
@@ -899,15 +1023,30 @@ def _action_inter_clean_locked(args):
         _strm_count_cache['ts'] = 0
         _lib_stats_cache['ts'] = 0
         _lib_stats_cache['data'] = None
-    if skipped: detail.append(f'├─ ⏭ 有 {skipped} 项自诊断后状态已变化，已跳过')
+    if skipped:
+        detail.append(f'├─ ⏭ 有 {skipped} 项二次验证未通过，已跳过')
+        for s in skipped_details[:5]:
+            detail.append(f'│   · {s}')
     if not args.dry_run:
         purge_old()
-        write_audit_log('执行跨库清理', f'释放本地 {n_loc} 项, 淘汰分享 {n_sh} 项 (Emby刷新: {refreshed})',
+        write_audit_log('执行跨库清理',
+                        f'释放本地 {n_loc} 项, 淘汰分享 {n_sh} 项 (Emby刷新: {refreshed})',
                         detail + [f'⚠️ {w}' for w in warns])
         if n_loc or n_sh:
             notify_telegram(f'🗑️ <b>清理完成</b>\n释放本地: {n_loc}\n淘汰分享: {n_sh}\nEmby刷新: {"✅" if refreshed else "❌"}')
+        if args.plan:
+            save_plan_state(args.plan, 'done', {
+                'executed_at': time.time(),
+                'executed_result': {
+                    'loc': n_loc, 'shr': n_sh,
+                    'refreshed': refreshed,
+                    'skipped': skipped,
+                    'warnings': warns,
+                },
+            })
     return {'status': 'success', 'loc_cnt': n_loc, 'sh_cnt': n_sh, 'refreshed': refreshed,
-            'detail': detail, 'warnings': warns, 'dry_run': args.dry_run}
+            'detail': detail, 'warnings': warns, 'dry_run': args.dry_run,
+            'skipped': skipped}
 
 
 class TmdbError(Exception):
