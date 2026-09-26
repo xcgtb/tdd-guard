@@ -46,6 +46,19 @@ EMBY_LIB_CACHE_FILE = STATE_DIR / 'emby_library_with_tmdb.json'
 INGEST_CACHE_FILE = STATE_DIR / 'ingest_cache.json'
 
 VIDEO_EXTS = ['.mkv', '.mp4', '.ts', '.mov', '.iso', '.m2ts']
+
+# ═══════════════ 目录生命周期 / 孤儿治理（白皮书 §15+§16）═══════════════
+_CATEGORY_NAMES = {
+    '电影', '剧集', '儿童节目', '综艺', '动漫', '纪录片', '演唱会',
+    '国产电影', '华语电影', '欧美电影', '日韩电影', '动画电影', '外语电影', '其他电影',
+    '国产剧集', '欧美剧集', '日韩剧集', '其他剧集',
+    '国产剧', '欧美剧', '日韩剧',
+}
+_METADATA_EXTS = {
+    '.nfo', '.jpg', '.jpeg', '.png', '.gif', '.webp',
+    '.srt', '.ass', '.ssa', '.sub', '.idx', '.sup',
+    '.json', '.url', '.xml', '.md5', '.sha1',
+}
 TRASH_STRM = os.environ.get('TRASH_STRM', '1') == '1'
 TRASH_KEEP_DAYS = int(os.environ.get('TRASH_KEEP_DAYS', '14'))
 PLAN_TTL = 2 * 3600
@@ -444,18 +457,87 @@ def _remove_strm(f, base_root):
         f.unlink()
 
 
+def _classify_dir(path, base_root):
+    """
+    判断目录类型（白皮书 §15）：
+      lib_root / category -> 永不自动删
+      season / series_root / movie -> 媒体专属目录，可删
+      unknown -> 不动
+    """
+    try:
+        rel = path.relative_to(base_root)
+    except (ValueError, OSError):
+        return 'unknown'
+    parts = rel.parts
+    if len(parts) == 0:
+        return 'lib_root'
+    if len(parts) == 1:
+        return 'category' if parts[0] in _CATEGORY_NAMES else 'unknown'
+    name = path.name
+    parent = path.parent
+    parent_name = parent.name if parent != base_root else ''
+    if parse_season_dir(name) is not None:
+        return 'season'
+    if parent_name and parse_season_dir(parent_name) is not None:
+        return 'series_root'
+    if parent_name in _CATEGORY_NAMES:
+        return 'movie'
+    return 'unknown'
+
+
+def _dir_cleanable(d):
+    """目录（递归）内是否只含 metadata 文件/空目录。返回 (ok, reason)"""
+    try:
+        for f in d.rglob('*'):
+            if not f.is_file():
+                continue
+            ext = f.suffix.lower()
+            if ext == '.strm' or ext in VIDEO_EXTS:
+                return False, '还有媒体文件 ' + f.name
+            if ext not in _METADATA_EXTS:
+                return False, '含未知文件 ' + f.name
+    except OSError as e:
+        return False, '权限错误 %s' % e
+    return True, ''
+
+
 def _prune_up(d, base_root, cloud_root):
-    while d != base_root:
-        try: rel = d.relative_to(base_root)
-        except ValueError: return
-        if len(rel.parts) < PRUNE_MIN_DEPTH: return
-        if d.exists():
-            if any(d.rglob('*.strm')): return
-            shutil.rmtree(d, ignore_errors=True)
-        if cloud_root:
-            try: (cloud_root / rel).rmdir()
-            except OSError: pass
-        d = d.parent
+    """
+    媒体生命周期目录清理（白皮书 §15）：
+      - 只清 movie / season / series_root
+      - 遇 category / lib_root 立即停
+      - 目录内还有媒体或未知文件 -> 不删
+    """
+    cur = d
+    while cur != base_root:
+        try:
+            rel = cur.relative_to(base_root)
+        except (ValueError, OSError):
+            return
+        if len(rel.parts) < PRUNE_MIN_DEPTH:
+            return
+        kind = _classify_dir(cur, base_root)
+        if kind in ('category', 'lib_root', 'unknown'):
+            return
+        if not cur.exists():
+            cur = cur.parent
+            continue
+        ok, reason = _dir_cleanable(cur)
+        if not ok:
+            log.info('目录跳过清理 [%s]: %s (原因: %s)', kind, cur, reason)
+            return
+        try:
+            shutil.rmtree(cur, ignore_errors=True)
+            log.info('已清理空目录 [%s]: %s', kind, cur)
+        except OSError as e:
+            log.warning('目录删除失败 %s: %s', cur, e)
+            return
+        if cloud_root and kind in ('movie', 'series_root', 'season'):
+            try:
+                (cloud_root / rel).rmdir()
+            except OSError:
+                pass
+        cur = cur.parent
 
 
 
@@ -532,6 +614,69 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     for p in sorted(parents, key=lambda x: len(x.parts), reverse=True):
         _prune_up(p, base_root, cloud_root)
     return st
+
+
+def scan_orphans(max_depth=3):
+    """
+    扫描两库，返回未知文件（只报告不删，白皮书 §16）。
+    """
+    orphans = []
+    for root, lib_name in ((L_ROOT, 'local'), (S_ROOT, 'share')):
+        if not root.exists():
+            continue
+        try:
+            for f in root.rglob('*'):
+                if not f.is_file():
+                    continue
+                ext = f.suffix.lower()
+                if ext == '.strm':
+                    continue
+                if ext in VIDEO_EXTS:
+                    continue
+                if ext in _METADATA_EXTS:
+                    continue
+                try:
+                    rel = f.relative_to(root)
+                except ValueError:
+                    continue
+                if len(rel.parts) > max_depth + 1:
+                    continue
+                try:
+                    sz = f.stat().st_size
+                except OSError:
+                    sz = 0
+                orphans.append({
+                    'lib': lib_name,
+                    'path': str(f),
+                    'ext': ext,
+                    'size': sz,
+                })
+        except OSError as e:
+            log.warning('孤儿扫描失败 %s: %s', root, e)
+    return orphans
+
+
+def action_scan_orphans(args):
+    depth = getattr(args, 'max_depth', 3)
+    try:
+        depth = int(depth)
+    except (ValueError, TypeError):
+        depth = 3
+    if depth < 1: depth = 1
+    if depth > 10: depth = 10
+    items = scan_orphans(max_depth=depth)
+    by_lib = defaultdict(int)
+    by_ext = defaultdict(int)
+    for it in items:
+        by_lib[it['lib']] += 1
+        by_ext[it['ext']] += 1
+    return {
+        'status': 'success',
+        'count': len(items),
+        'by_lib': dict(by_lib),
+        'by_ext': dict(by_ext),
+        'items': items[:200],
+    }
 
 
 def purge_old():
@@ -2149,6 +2294,7 @@ ACTIONS = {
     'explore':      action_explore,
     'emby_library': action_emby_library,
     'library_stats': action_library_stats,
+    'orphans':       action_scan_orphans,
 }
 MUTATING = {'inter_clean'}
 

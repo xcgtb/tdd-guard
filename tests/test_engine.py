@@ -488,3 +488,74 @@ class TestPlanLifecycle:
         res = engine.action_inter_clean(a)
         assert res.get('status') == 'error'
         assert res.get('code') == 'plan_used'
+
+
+
+def _aux_file(root, folder, filename, content='x'):
+    d = root / folder
+    d.mkdir(parents=True, exist_ok=True)
+    (d / filename).write_text(content, encoding='utf-8')
+
+
+class TestDirLifecycle:
+
+    def test_movie_dir_cleaned_after_strm_delete(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '电影/华语电影/测试电影 (2020)', '测试电影.1080p.strm')
+        f = next(engine.L_ROOT.rglob('*.strm'))
+        r = engine.safe_delete_files([f], engine.L_ROOT, None, dry_run=False)
+        assert r['strm_removed'] == 1
+        assert not (engine.L_ROOT / '电影/华语电影/测试电影 (2020)').exists()
+        assert (engine.L_ROOT / '电影/华语电影').is_dir()
+        assert (engine.L_ROOT / '电影').is_dir()
+
+    def test_category_dir_never_deleted(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '电影', 'x.strm')
+        f = next(engine.L_ROOT.rglob('*.strm'))
+        engine.safe_delete_files([f], engine.L_ROOT, None, dry_run=False)
+        assert (engine.L_ROOT / '电影').is_dir()
+
+    def test_unknown_file_blocks_dir_delete(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '电影/华语电影/测试电影 (2020)', '测试电影.1080p.strm')
+        _aux_file(engine.L_ROOT, '电影/华语电影/测试电影 (2020)', 'readme.log', 'x')
+        f = next(engine.L_ROOT.rglob('*.strm'))
+        engine.safe_delete_files([f], engine.L_ROOT, None, dry_run=False)
+        assert (engine.L_ROOT / '电影/华语电影/测试电影 (2020)').is_dir()
+        assert (engine.L_ROOT / '电影/华语电影/测试电影 (2020)/readme.log').exists()
+
+    def test_metadata_deleted_with_media(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '电影/华语电影/测试电影 (2020)', '测试电影.1080p.strm')
+        _aux_file(engine.L_ROOT, '电影/华语电影/测试电影 (2020)', 'mediainfo.json', '{}')
+        _aux_file(engine.L_ROOT, '电影/华语电影/测试电影 (2020)', 'poster.jpg', 'img')
+        f = next(engine.L_ROOT.rglob('*.strm'))
+        engine.safe_delete_files([f], engine.L_ROOT, None, dry_run=False)
+        assert not (engine.L_ROOT / '电影/华语电影/测试电影 (2020)').exists()
+
+    def test_series_root_cleaned_after_all_seasons(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        for sn in ('Season 01', 'Season 02'):
+            _strm(engine.L_ROOT, '剧集/欧美剧集/测试剧 (2020)/' + sn, 'E01.1080p.strm')
+        files = list(engine.L_ROOT.rglob('*.strm'))
+        engine.safe_delete_files(files, engine.L_ROOT, None, dry_run=False)
+        assert not (engine.L_ROOT / '剧集/欧美剧集/测试剧 (2020)').exists()
+        assert (engine.L_ROOT / '剧集/欧美剧集').is_dir()
+
+    def test_scan_orphans_finds_unknown_files(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _aux_file(engine.L_ROOT, '电影/华语电影', 'weird.xyz', 'x')
+        _aux_file(engine.L_ROOT, '电影/华语电影/电影A (2020)', 'mediainfo.json', '{}')
+        _strm(engine.L_ROOT, '电影/华语电影/电影B (2020)', 'x.strm')
+        items = engine.scan_orphans(max_depth=3)
+        paths = [it['path'] for it in items]
+        assert any('weird.xyz' in p for p in paths)
+        assert not any('mediainfo.json' in p for p in paths)
+        assert not any(p.endswith('.strm') for p in paths)
