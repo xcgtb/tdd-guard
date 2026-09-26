@@ -6,7 +6,7 @@
   - 用户命令消息 10 秒自动删除
   - 欢迎提示 15 秒即焚，只保留最新一条
 """
-import json, time, logging, threading, urllib.request, urllib.parse
+import json, re, time, logging, threading, urllib.request, urllib.parse
 from argparse import Namespace
 
 try:
@@ -557,7 +557,8 @@ def _handle_callback(token, cb):
 
     elif data.startswith('plan:'):
         plan_id = data[5:]
-        pf = engine.STATE_DIR / f'plan_{plan_id}.json'
+        safe_id = re.sub(r'[^0-9a-f]', '', plan_id)
+        pf = engine.STATE_DIR / f'plan_{safe_id}.json'
         if not pf.exists():
             _answer_callback(token, cb['id'], '计划已失效', alert=True); return
         try:
