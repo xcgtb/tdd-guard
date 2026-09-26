@@ -1491,6 +1491,48 @@ window.addEventListener('unhandledrejection', function(e){
         </div>
       </section>
 
+      <!-- 治理计划历史 -->
+      <section class="tab" id="tab-plans">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="bookmark">治理计划历史</h3>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="number" id="plansLimit" value="20" min="1" max="100" style="width:70px;padding:6px 10px">
+              <button class="btn gray" onclick="loadPlans()" data-icon="refresh">刷新</button>
+            </div>
+          </div>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7">
+            每次扫描生成一个 Plan，含稳定 action_id + 状态。执行后的 Plan 保留 7 天供审计。
+          </p>
+        </div>
+        <div id="plansList"><div class="list-empty">加载中...</div></div>
+      </section>
+
+      <!-- 孤儿文件 -->
+      <section class="tab" id="tab-orphans">
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="alert">孤儿文件扫描</h3>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="number" id="orphansDepth" value="3" min="1" max="10" style="width:70px;padding:6px 10px">
+              <button class="btn" onclick="loadOrphans()" data-icon="search">开始扫描</button>
+            </div>
+          </div>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7">
+            扫描两库中的未知文件（非 STRM、非视频、非 metadata）。<b>只报告，不删除。</b>
+          </p>
+        </div>
+        <div class="cards" id="orphansStats" style="display:none">
+          <div class="card"><div class="label" data-icon="file">未知文件总数</div><div class="value amber" id="orph-total">0</div></div>
+          <div class="card"><div class="label" data-icon="database">本地库</div><div class="value blue" id="orph-local">0</div></div>
+          <div class="card"><div class="label" data-icon="share">分享库</div><div class="value indigo" id="orph-share">0</div></div>
+        </div>
+        <div class="panel">
+          <h3 data-icon="list">文件列表</h3>
+          <div id="orphansList"><div class="list-empty">点击右上角「开始扫描」</div></div>
+        </div>
+      </section>
+
       <!-- 执行记录 -->
       <section class="tab" id="tab-history">
         <div class="panel">
@@ -1860,7 +1902,9 @@ var MENU = [
   { id: 'subscribe',  name: '追更订阅', icon: 'bell' },
   { id: 'morning',    name: '每日晨报', icon: 'sun' },
   { id: 'daily',      name: '每日汇报', icon: 'file' },
-  { id: 'history',    name: '执行记录', icon: 'bookmark' },
+  { id: 'plans',      name: '治理计划', icon: 'bookmark' },
+  { id: 'orphans',    name: '孤儿文件', icon: 'alert' },
+  { id: 'history',    name: '执行记录', icon: 'list' },
   { id: 'settings',   name: '规则设置', icon: 'gear' }
 ];
 
@@ -2018,6 +2062,8 @@ function switchTab(id){
   if (id === 'subscribe')  loadSubscriptions();
   if (id === 'morning')    loadMorning();
   if (id === 'history')    loadRecords();
+  if (id === 'plans')      loadPlans();
+  if (id === 'orphans')    loadOrphans();
   if (id === 'daily' && !statsAutoLoaded) { statsAutoLoaded = true; loadStats(false, false); }
 }
 
@@ -3434,6 +3480,110 @@ async function testTelegram(){
     var r = await api('/api/config/test/telegram', { method: 'POST', body: JSON.stringify({ telegram_bot_token: $('cfg-tg-token').value.trim(), telegram_chat_id: $('cfg-tg-chat').value.trim() }) });
     alert(r.message);
   } catch(e){ alert(e.message); }
+}
+
+/* ═══════════ 治理计划历史 ═══════════ */
+async function loadPlans(){
+  var limit = parseInt($('plansLimit').value) || 20;
+  if (limit < 1) limit = 1;
+  if (limit > 100) limit = 100;
+  $('plansList').innerHTML = '<div class="list-empty">加载中...</div>';
+  try {
+    var r = await api('/api/plans?limit=' + limit);
+    var list = r.plans || [];
+    if (!list.length) {
+      $('plansList').innerHTML = '<div class="list-empty">暂无 Plan 记录</div>';
+      return;
+    }
+    var stateCls = { pending: 'amber', executing: 'blue', done: 'green', failed: 'red', expired: 'gray' };
+    $('plansList').innerHTML = list.map(function(p){
+      var ts = p.ts ? new Date(p.ts * 1000).toLocaleString('zh-CN') : '-';
+      var execTs = p.executed_at ? new Date(p.executed_at * 1000).toLocaleString('zh-CN') : '';
+      var st = p.state || 'pending';
+      var stCls = stateCls[st] || 'gray';
+      var s = p.stats || {};
+      var statsLine = '<span class="green">loc ' + (s.loc||0) + '</span> · <span class="red">shr ' + (s.shr||0) + '</span> · keep ' + (s.keep||0) + ' · exempt ' + (s.exempt||0);
+      return '<div class="panel" style="padding:14px;margin-bottom:12px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">'
+        + '<div style="font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-mid)">plan_' + esc(p.id) + '</div>'
+        + '<div><span class="' + stCls + '" style="font-weight:600">' + esc(st) + '</span></div>'
+        + '</div>'
+        + '<div style="font-size:12px;color:var(--text-mid);margin-bottom:6px">生成: ' + esc(ts) + (execTs ? '　执行: ' + esc(execTs) : '') + '</div>'
+        + '<div style="font-size:12px;margin-bottom:10px">' + statsLine + '</div>'
+        + '<div style="display:flex;gap:8px">'
+        + '<button class="btn sm gray" onclick="showPlanDetail(&quot;' + esc(p.id) + '&quot;)">查看详情</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  } catch(e){
+    $('plansList').innerHTML = '<div class="list-empty">加载失败: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function showPlanDetail(planId){
+  try {
+    var r = await api('/api/plan/' + planId);
+    var p = r.plan || {};
+    var actions = p.actions || [];
+    var html = '<h3>' + icon('bookmark') + 'Plan 详情 plan_' + esc(p.id) + '</h3>';
+    html += '<div class="meta-row"><span class="k">状态</span><span class="v">' + esc(p.state || '-') + '</span></div>';
+    html += '<div class="meta-row"><span class="k">生成时间</span><span class="v">' + (p.ts ? new Date(p.ts*1000).toLocaleString('zh-CN') : '-') + '</span></div>';
+    if (p.executed_at) {
+      html += '<div class="meta-row"><span class="k">执行时间</span><span class="v">' + new Date(p.executed_at*1000).toLocaleString('zh-CN') + '</span></div>';
+    }
+    var st = p.stats || {};
+    html += '<div class="meta-row"><span class="k">统计</span><span class="v">loc ' + (st.loc||0) + ' / shr ' + (st.shr||0) + ' / keep ' + (st.keep||0) + ' / exempt ' + (st.exempt||0) + '</span></div>';
+    html += '<h4 style="margin:16px 0 8px;font-size:13px">Actions (' + actions.length + ')</h4>';
+    html += '<div style="max-height:360px;overflow-y:auto;background:var(--surface-hover);border-radius:10px;padding:10px">';
+    actions.slice(0, 100).forEach(function(a){
+      html += '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">';
+      html += '<div><span class="' + (a.kind==='loc'?'amber':'red') + '">' + esc(a.kind) + '</span> · ' + esc(a.title || '') + (a.season != null ? ' S' + String(a.season).padStart(2,'0') : '') + '</div>';
+      html += '<div style="font-family:ui-monospace,monospace;font-size:10px;color:var(--text-dim)">' + esc(a.action_id) + '</div>';
+      html += '<div style="color:var(--text-mid);font-size:11px">' + esc(a.reason_label || a.reason || '') + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    html += '<div style="margin-top:16px;text-align:right"><button class="btn gray" onclick="closeModal()">关闭</button></div>';
+    openModal(html);
+  } catch(e){
+    toast('加载 Plan 失败: ' + e.message, 'error');
+  }
+}
+
+/* ═══════════ 孤儿文件 ═══════════ */
+async function loadOrphans(){
+  var depth = parseInt($('orphansDepth').value) || 3;
+  $('orphansList').innerHTML = '<div class="list-empty">扫描中（大库可能较慢）...</div>';
+  $('orphansStats').style.display = 'none';
+  try {
+    var r = await api('/api/orphans?max_depth=' + depth);
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    $('orphansStats').style.display = '';
+    $('orph-total').textContent = r.count || 0;
+    var bl = r.by_lib || {};
+    $('orph-local').textContent = bl.local || 0;
+    $('orph-share').textContent = bl.share || 0;
+    var items = r.items || [];
+    if (!items.length) {
+      $('orphansList').innerHTML = '<div class="list-empty">✅ 未发现未知文件</div>';
+      return;
+    }
+    var byExt = r.by_ext || {};
+    var extLine = Object.keys(byExt).sort(function(a,b){ return byExt[b]-byExt[a]; })
+      .slice(0, 8).map(function(k){ return esc(k) + ' ×' + byExt[k]; }).join(' · ');
+    $('orphansList').innerHTML = '<div style="font-size:12px;color:var(--text-mid);margin-bottom:10px">扩展名分布: ' + extLine + (r.count > items.length ? '　(仅显示前 ' + items.length + ' 条)' : '') + '</div>'
+      + items.map(function(it){
+        var sz = it.size ? (it.size < 1024 ? it.size + ' B' : it.size < 1048576 ? (it.size/1024).toFixed(1) + ' KB' : (it.size/1048576).toFixed(2) + ' MB') : '?';
+        var libCls = it.lib === 'local' ? 'loc' : 'shr';
+        var fname = it.path.split('/').pop();
+        return '<div class="list-item ' + libCls + '">'
+          + '<div class="t">' + esc(fname) + '</div>'
+          + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(it.lib) + '</span>' + sz + '　' + esc(it.path) + '</div>'
+          + '</div>';
+      }).join('');
+  } catch(e){
+    $('orphansList').innerHTML = '<div class="list-empty">扫描失败: ' + esc(e.message) + '</div>';
+  }
 }
 
 /* ═══════════ 初始化 ═══════════ */
