@@ -619,38 +619,42 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
 def scan_orphans(max_depth=3):
     """
     扫描两库，返回未知文件（只报告不删，白皮书 §16）。
+    用 os.walk + 深度剪枝，避免遍历大库下所有 STRM。
     """
     orphans = []
+    try:
+        max_depth = int(max_depth)
+    except (ValueError, TypeError):
+        max_depth = 3
+    if max_depth < 1: max_depth = 1
+    if max_depth > 10: max_depth = 10
+
     for root, lib_name in ((L_ROOT, 'local'), (S_ROOT, 'share')):
         if not root.exists():
             continue
+        root_parts = len(root.parts)
         try:
-            for f in root.rglob('*'):
-                if not f.is_file():
+            for dp, dns, fns in os.walk(root, topdown=True):
+                cur_depth = len(Path(dp).parts) - root_parts
+                if cur_depth > max_depth:
+                    dns[:] = []
                     continue
-                ext = f.suffix.lower()
-                if ext == '.strm':
-                    continue
-                if ext in VIDEO_EXTS:
-                    continue
-                if ext in _METADATA_EXTS:
-                    continue
-                try:
-                    rel = f.relative_to(root)
-                except ValueError:
-                    continue
-                if len(rel.parts) > max_depth + 1:
-                    continue
-                try:
-                    sz = f.stat().st_size
-                except OSError:
-                    sz = 0
-                orphans.append({
-                    'lib': lib_name,
-                    'path': str(f),
-                    'ext': ext,
-                    'size': sz,
-                })
+                for fn in fns:
+                    ext = os.path.splitext(fn)[1].lower()
+                    if (not ext) or ext == '.strm' \
+                       or ext in VIDEO_EXTS or ext in _METADATA_EXTS:
+                        continue
+                    fp = os.path.join(dp, fn)
+                    try:
+                        sz = os.path.getsize(fp)
+                    except OSError:
+                        sz = 0
+                    orphans.append({
+                        'lib': lib_name,
+                        'path': fp,
+                        'ext': ext,
+                        'size': sz,
+                    })
         except OSError as e:
             log.warning('孤儿扫描失败 %s: %s', root, e)
     return orphans

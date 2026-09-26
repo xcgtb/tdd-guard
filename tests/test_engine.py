@@ -559,3 +559,31 @@ class TestDirLifecycle:
         assert any('weird.xyz' in p for p in paths)
         assert not any('mediainfo.json' in p for p in paths)
         assert not any(p.endswith('.strm') for p in paths)
+
+
+
+class TestOrphanPerf:
+
+    def test_scan_orphans_respects_max_depth(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        # 3 层结构
+        _aux_file(engine.L_ROOT, '电影/华语电影/剧A (2020)', 'x.xyz', 'x')
+        # 5 层结构
+        _aux_file(engine.L_ROOT, '电影/华语电影/剧B (2020)/Season 01/extra', 'y.xyz', 'y')
+        # max_depth=3 应该只找到 3 层里的
+        items = engine.scan_orphans(max_depth=3)
+        paths = [it['path'] for it in items]
+        assert any('x.xyz' in p for p in paths)
+        assert not any('y.xyz' in p for p in paths)
+
+    def test_scan_orphans_ignores_metadata(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _aux_file(engine.L_ROOT, '电影/华语电影/电影A (2020)', 'mediainfo.json', '{}')
+        _aux_file(engine.L_ROOT, '电影/华语电影/电影A (2020)', 'poster.jpg', 'img')
+        _aux_file(engine.L_ROOT, '电影/华语电影/电影A (2020)', 'sub.srt', 'srt')
+        _aux_file(engine.L_ROOT, '电影/华语电影/电影A (2020)', 'weird.xyz', 'x')
+        items = engine.scan_orphans(max_depth=3)
+        assert len(items) == 1
+        assert items[0]['ext'] == '.xyz'

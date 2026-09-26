@@ -572,13 +572,20 @@ def api_library_stats():
         return {'status': 'error', 'message': str(e)}
 
 
+_orphan_lock = threading.Lock()
+
+
 @app.get('/api/orphans', dependencies=[Depends(auth)])
 def api_orphans(max_depth: int = 3):
     # 扫描未知/孤儿文件（白皮书 §16，只报告不删）
+    if not _orphan_lock.acquire(blocking=False):
+        return {'status': 'busy', 'message': '已有孤儿扫描任务在跑，请稍候'}
     try:
         return engine.action_scan_orphans(Args(max_depth=max_depth))
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
+    finally:
+        _orphan_lock.release()
 
 # ═══════════════════ 治理策略 ═══════════════════
 @app.get('/api/strategy', dependencies=[Depends(auth)])
