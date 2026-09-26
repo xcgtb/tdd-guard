@@ -350,14 +350,15 @@ def cloud_videos(f, base_root, cloud_root):
             d = next_d
     if not d.is_dir(): return [], 'none'
 
-    stem = f.stem
     # ── 精确匹配 ──
+    # STRM 命名约定：<原名>.<编码信息>.strm，视频扩展名被剥离
+    # 例：闪电侠.2014.S01E01.1080p.strm
+    #     → 依次尝试 <stem>.mkv / .mp4 / .ts / .mov / .iso / .m2ts
+    stem = f.stem
     exact = []
-    if Path(stem).suffix.lower() in VIDEO_EXTS and (d / stem).is_file():
-        exact.append(d / stem)
     for ext in VIDEO_EXTS:
         c = d / f'{stem}{ext}'
-        if c.is_file() and c not in exact:
+        if c.is_file():
             exact.append(c)
     if exact:
         return exact, 'exact'
