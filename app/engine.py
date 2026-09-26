@@ -31,9 +31,9 @@ except ImportError:
 def _p(env, default):
     return Path(os.environ.get(env, default))
 
-L_ROOT = _p('L_ROOT', '/vol1/1000/TgtoDrive/strm/115网盘/影视媒体库')
-S_ROOT = _p('S_ROOT', '/vol1/1000/TgtoDrive/strm/115网盘/分享影视库')
-CLOUD_L_ROOT = _p('CLOUD_L_ROOT', '/vol1/1000/docker/clouddrive2/CloudDrive/影视媒体库')
+L_ROOT = _p('L_ROOT', '/media/local')
+S_ROOT = _p('S_ROOT', '/media/share')
+CLOUD_L_ROOT = _p('CLOUD_L_ROOT', '/media/cloud')
 # DATA_DIR 以 config 为准（config.py 是路径的唯一定义处），避免两处默认值漂移
 DATA_DIR = _cfg.DATA_DIR
 LOG_TXT = DATA_DIR / '媒体治理明细.log'

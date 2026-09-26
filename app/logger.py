@@ -4,7 +4,7 @@ import os, re, sys, json, time, threading
 from pathlib import Path
 from datetime import datetime
 
-DATA_DIR = Path(os.environ.get('AGENT_DATA', '/vol1/1000/docker/media-agent/data'))
+DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))
 RECORDS_DIR = DATA_DIR / 'records'
 RECORDS_FILE = RECORDS_DIR / 'audit.jsonl'
 LEGACY_LOG = DATA_DIR / '媒体治理明细.log'

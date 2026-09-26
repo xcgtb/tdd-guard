@@ -4,12 +4,12 @@ import os
 import json
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get('AGENT_DATA', '/vol1/1000/docker/media-agent/data'))
+DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))
 CONFIG_FILE = DATA_DIR / 'config.json'
 
 DEFAULTS = {
     # 服务
-    'emby_host':              os.environ.get('EMBY_HOST',              'http://192.168.3.55:8096'),
+    'emby_host':              os.environ.get('EMBY_HOST',              'http://192.168.1.100:8096'),
     'emby_key':               os.environ.get('EMBY_KEY',               ''),
     'tmdb_key':               os.environ.get('TMDB_KEY',               ''),
 
