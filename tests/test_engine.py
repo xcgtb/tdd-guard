@@ -340,3 +340,68 @@ class TestSeasonReplaceable:
         hits = _acts_for_title(acts, '逐集白名单')
         assert len(hits) == 1
         assert hits[0].kind == 'exempt'
+
+
+# ═══════════════════ 云端源置信度（白皮书 §13）═══════════════════
+class TestCloudVideoConfidence:
+    """只有 exact / normalized 允许自动删；其他一律 STRM 保留"""
+
+    def _setup(self, conf, vids=None):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '云源测试 (2020)/Season 01', 'E01.1080p.strm')
+        f = next(engine.L_ROOT.rglob('*.strm'))
+        orig = engine.cloud_videos
+        engine.cloud_videos = lambda *a, **k: (vids or [], conf)
+        return f, orig
+
+    def _teardown(self, orig):
+        engine.cloud_videos = orig
+
+    def test_exact_allows_deletion(self):
+        f, orig = self._setup('exact', [])
+        try:
+            r = engine.safe_delete_files([f], engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
+            assert r['strm_removed'] == 1
+            assert not f.exists()
+        finally:
+            self._teardown(orig)
+
+    def test_normalized_allows_deletion(self):
+        f, orig = self._setup('normalized', [])
+        try:
+            r = engine.safe_delete_files([f], engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
+            assert r['strm_removed'] == 1
+            assert not f.exists()
+        finally:
+            self._teardown(orig)
+
+    def test_missing_blocks_strm(self):
+        f, orig = self._setup('none')
+        try:
+            r = engine.safe_delete_files([f], engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
+            assert r['strm_removed'] == 0
+            assert r['cloud_missing'] == 1
+            assert f.exists()
+        finally:
+            self._teardown(orig)
+
+    def test_fallback_blocks_strm(self):
+        f, orig = self._setup('unique_fallback')
+        try:
+            r = engine.safe_delete_files([f], engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
+            assert r['strm_removed'] == 0
+            assert r['cloud_fallback'] == 1
+            assert f.exists()
+        finally:
+            self._teardown(orig)
+
+    def test_ambiguous_blocks_strm(self):
+        f, orig = self._setup('ambiguous')
+        try:
+            r = engine.safe_delete_files([f], engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
+            assert r['strm_removed'] == 0
+            assert r['cloud_ambiguous'] == 1
+            assert f.exists()
+        finally:
+            self._teardown(orig)

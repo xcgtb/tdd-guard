@@ -325,46 +325,68 @@ def _find_dir_fuzzy(parent, target_name):
     return None
 
 def cloud_videos(f, base_root, cloud_root):
-    """查找 strm 对应的云端视频文件（目录名 + 文件名双模糊匹配 + 目录唯一兜底）"""
+    """
+    查找 strm 对应的云端视频文件（白皮书 §13 分级）。
+    返回 (files, confidence)：
+      - 'exact'           精确文件名/扩展名匹配 -> 允许自动删
+      - 'normalized'      标准化后唯一匹配     -> 允许自动删
+      - 'ambiguous'       标准化后多候选       -> 禁止自动删
+      - 'unique_fallback' 目录里只有 1 个视频  -> 禁止自动删
+      - 'none'            找不到              -> 禁止自动删
+    """
     try:
         rel_parent = f.relative_to(base_root).parent
     except ValueError:
-        return []
+        return [], 'none'
     d = cloud_root
     for part in rel_parent.parts:
-        if not d.is_dir(): return []
+        if not d.is_dir(): return [], 'none'
         next_d = d / part
         if next_d.is_dir():
             d = next_d
         else:
             next_d = _find_dir_fuzzy(d, part)
-            if not next_d: return []
+            if not next_d: return [], 'none'
             d = next_d
-    if not d.is_dir(): return []
-    out, stem = [], f.stem
+    if not d.is_dir(): return [], 'none'
+
+    stem = f.stem
+    # ── 精确匹配 ──
+    exact = []
     if Path(stem).suffix.lower() in VIDEO_EXTS and (d / stem).is_file():
-        out.append(d / stem)
+        exact.append(d / stem)
     for ext in VIDEO_EXTS:
         c = d / f'{stem}{ext}'
-        if c.is_file() and c not in out:
-            out.append(c)
-    if not out:
-        stem_norm = _normalize_title(stem)
+        if c.is_file() and c not in exact:
+            exact.append(c)
+    if exact:
+        return exact, 'exact'
+
+    # ── 标准化匹配 ──
+    stem_norm = _normalize_title(stem)
+    norm_matches = []
+    try:
         for child in d.iterdir():
             if not child.is_file(): continue
             if child.suffix.lower() not in VIDEO_EXTS: continue
             if _normalize_title(child.stem) == stem_norm:
-                out.append(child)
-    # 兜底：目录里只有一个视频文件时，认为就是它
-    if not out:
-        try:
-            vids = [c for c in d.iterdir()
-                    if c.is_file() and c.suffix.lower() in VIDEO_EXTS]
-            if len(vids) == 1:
-                out.append(vids[0])
-        except OSError:
-            pass
-    return out
+                norm_matches.append(child)
+    except OSError:
+        return [], 'none'
+    if len(norm_matches) == 1:
+        return norm_matches, 'normalized'
+    if len(norm_matches) > 1:
+        return norm_matches, 'ambiguous'
+
+    # ── 目录唯一兜底（低置信度，仅报告） ──
+    try:
+        vids = [c for c in d.iterdir()
+                if c.is_file() and c.suffix.lower() in VIDEO_EXTS]
+        if len(vids) == 1:
+            return vids, 'unique_fallback'
+    except OSError:
+        pass
+    return [], 'none'
 
 
 def _inside(p, root):
@@ -415,19 +437,45 @@ def _unlink_with_timeout(v, timeout=15):
 
 
 def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
-    st = {'strm_removed': 0, 'cloud_removed': 0, 'cloud_missing': 0, 'errors': []}
+    """
+    白皮书 §13 fail-safe 删除链：
+      - 只有 exact / normalized 允许自动删云端源
+      - ambiguous / unique_fallback / none -> 不动云端、不动 STRM，仅记账
+      - 云端删除失败 -> STRM 也不删
+    分享库调用时 cloud_root=None，直接删 STRM。
+    """
+    st = {'strm_removed': 0, 'cloud_removed': 0,
+          'cloud_missing': 0, 'cloud_ambiguous': 0, 'cloud_fallback': 0,
+          'errors': []}
     parents = set()
     for f in files:
         if f.suffix.lower() != '.strm' or not _inside(f, base_root):
             st['errors'].append(f'跳过非法路径: {f}')
             continue
-        vids = cloud_videos(f, base_root, cloud_root) if cloud_root and cloud_root.exists() else []
-        if cloud_root and not vids:
-            st['cloud_missing'] += 1
+
+        if cloud_root and cloud_root.exists():
+            vids, conf = cloud_videos(f, base_root, cloud_root)
+            if conf == 'none':
+                st['cloud_missing'] += 1
+                st['errors'].append(f'{f.name}: 未找到云端源文件，STRM 保留')
+                continue
+            if conf == 'unique_fallback':
+                st['cloud_fallback'] += 1
+                st['errors'].append(f'{f.name}: 仅目录唯一兜底匹配（低置信度），STRM 保留')
+                continue
+            if conf == 'ambiguous':
+                st['cloud_ambiguous'] += 1
+                st['errors'].append(f'{f.name}: 云端多个候选文件，STRM 保留')
+                continue
+            # exact / normalized -> 允许自动删
+        else:
+            vids, conf = [], None
+
         if dry_run:
             st['strm_removed'] += 1
             st['cloud_removed'] += len(vids)
             continue
+
         ok = True
         for v in vids:
             if _unlink_with_timeout(v):
@@ -435,7 +483,9 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
             else:
                 ok = False
                 st['errors'].append(f'{v.name}: 删除超时或失败')
-        if not ok: continue
+        if not ok:
+            continue  # 云端没删成功 -> STRM 保留
+
         try:
             _remove_strm(f, base_root); st['strm_removed'] += 1
             parents.add(f.parent)
@@ -792,8 +842,13 @@ def _action_inter_clean_locked(args):
             warns.append(f'{a.text}: ' + '; '.join(r['errors'][:2])); line += ' ⚠️ 部分失败'
         if r['strm_removed'] == 0 and not args.dry_run:
             detail.append(line + ' (未产生变更)'); continue
-        if is_loc and r['cloud_missing']:
-            line += f' ⚠️ {r["cloud_missing"]} 个 strm 未找到对应115实体'
+        if is_loc:
+            _bits = []
+            if r.get('cloud_missing'):   _bits.append(f'{r["cloud_missing"]} 个未找到源')
+            if r.get('cloud_ambiguous'): _bits.append(f'{r["cloud_ambiguous"]} 个多候选')
+            if r.get('cloud_fallback'):  _bits.append(f'{r["cloud_fallback"]} 个仅兜底')
+            if _bits:
+                line += ' ⚠️ ' + '、'.join(_bits)
         detail.append(line)
         n_loc += is_loc; n_sh += not is_loc
 
