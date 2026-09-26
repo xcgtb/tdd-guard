@@ -3255,7 +3255,7 @@ function renderExempt(){
   var kws = currentStrategy.exempt_keywords || [];
   $('exemptList').innerHTML = kws.length
     ? kws.map(function(k){
-        return '<span class="tag">' + esc(k) + '<span class="rm" onclick="removeExempt(\'' + esc(k).replace(/'/g, '&#39;') + '\')">×</span></span>';
+        return '<span class="tag">' + esc(k) + '<span class="rm" data-kw="' + esc(k) + '">×</span></span>';
       }).join('')
     : '<span style="color:#9ca3af;font-size:12px">暂无关键词</span>';
 }
@@ -3447,6 +3447,13 @@ document.addEventListener('click', function(e) {
   var title = btn.getAttribute('data-title');
   var poster = btn.getAttribute('data-poster') || '';
   toggleSubscribe(tmdbId, title, poster);
+});
+
+// 接管豁免关键词标签的删除点击，同样避免内联 onclick
+document.addEventListener('click', function(e) {
+  var rm = e.target.closest('.rm[data-kw]');
+  if (!rm) return;
+  removeExempt(rm.getAttribute('data-kw'));
 });
 
 document.addEventListener('DOMContentLoaded', async function(){
