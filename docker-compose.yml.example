@@ -1,0 +1,35 @@
+
+services:
+  tdd-guard:
+    build: .
+    image: tdd-guard:latest
+    container_name: tdd-guard
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      - TZ=Asia/Shanghai
+      # 下面三个是"容器内部"路径，随便起名，但必须跟下面 volumes 里冒号右边完全一致
+      - AGENT_DATA=/data
+      - L_ROOT=/media/local          # 你的本地/网盘媒体库（主库）
+      - S_ROOT=/media/share          # 你的分享媒体库（用于双库对比治理）
+      - CLOUD_L_ROOT=/media/cloud    # CloudDrive2 等网盘挂载的本地库（用于联动删源）
+    volumes:
+      # 冒号左边＝宿主机（你的 NAS）上的真实路径，改成你自己的
+      # 冒号右边＝容器内部路径，必须和上面 environment 里的 L_ROOT/S_ROOT/CLOUD_L_ROOT 一一对应
+      - /path/to/your/data:/data
+      - /path/to/your/local-media-library:/media/local
+      - /path/to/your/share-media-library:/media/share
+      - /path/to/your/clouddrive-mount:/media/cloud:rslave
+      - /path/to/your/static:/app/static   # 可选：想不重新 build 就改前端页面时挂载
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

@@ -109,8 +109,49 @@ def _share_wins(s_q, l_q):
     return s_q > l_q if s['tie_keep_local'] else s_q >= l_q
 
 
-class Busy(Exception):
-    pass
+# ═══════════════════ 电视剧逐集比较（白皮书 §7）═══════════════════
+def _season_replaceable(s_files, l_files, disp=''):
+    """
+    判断分享 Season 能否整体替换本地 Season（白皮书 §7.1）：
+      1. 分享 Season 必须存在
+      2. 本地每个正片 Episode 都必须在分享里找到
+      3. 每一集分享质量必须 >= 本地质量
+    同集号多份时取最高质量那份参与比较。
+    返回 (replaceable: bool, reason: str)
+    """
+    l_eps, s_eps = {}, {}
+    for f in (l_files or []):
+        ep = _ep(f)
+        if not ep or ep[0] <= 0:
+            continue
+        old = l_eps.get(ep[1])
+        if old is None or get_score(f.name) > get_score(old.name):
+            l_eps[ep[1]] = f
+    for f in (s_files or []):
+        ep = _ep(f)
+        if not ep or ep[0] <= 0:
+            continue
+        old = s_eps.get(ep[1])
+        if old is None or get_score(f.name) > get_score(old.name):
+            s_eps[ep[1]] = f
+
+    if not l_eps:
+        return False, '本地无正片集'
+    if not s_eps:
+        return False, '分享无正片集'
+
+    missing = sorted(set(l_eps) - set(s_eps))
+    if missing:
+        return False, '分享缺集 ' + fmt_nums(missing)
+
+    weak = sorted(
+        e for e in l_eps
+        if get_score(s_eps[e].name) < get_score(l_eps[e].name)
+    )
+    if weak:
+        return False, '分享画质不足 ' + fmt_nums(weak)
+
+    return True, '逐集覆盖且质量达标'
 
 
 # ═══════════════════ Emby ═══════════════════
@@ -454,6 +495,22 @@ def build_plan():
         lk = L.find(meta, L.mov)
         if not lk: continue
         disp, l_files = S.meta[key][0], L.mov[lk]
+
+        hit_kws = _exempt_hit(disp)
+        if not hit_kws:
+            for files in (s_files, l_files):
+                for f in files:
+                    hit_kws = _exempt_hit(str(f))
+                    if hit_kws: break
+                if hit_kws: break
+        if hit_kws:
+            acts.append(Act('exempt', f'🛡️ 《{disp}》 (白名单豁免)',
+                            f'├─ 🛡️ 《{disp}》: 命中白名单 [{",".join(hit_kws)}] ➔ 跳过清理',
+                            s_files + l_files,
+                            meta={'reason': 'whitelist', 'reason_label': '白名单豁免',
+                                  'title': disp, 'keywords': hit_kws}))
+            continue
+
         if _share_wins(_best(s_files), _best(l_files)):
             acts.append(Act('loc', f'🎬 《{disp}》 (分享画质达标，穿透删本地腾网盘)',
                             f'├─ 🎬 《{disp}》: 分享画质达标 ➔ CD2联动删除115网盘旧源', l_files,
@@ -540,13 +597,8 @@ def build_plan():
                 if sn not in s_proper:
                     can_replace = False
                     break
-                s_files = s_proper[sn]
-                l_eps = {_ep(x)[1] for x in l_files}
-                s_eps = {_ep(x)[1] for x in s_files}
-                if len(s_eps) < len(l_eps):
-                    can_replace = False
-                    break
-                if _best(s_files) < _best(l_files):
+                ok, _reason = _season_replaceable(s_proper[sn], l_files, disp)
+                if not ok:
                     can_replace = False
                     break
 
@@ -577,11 +629,20 @@ def build_plan():
                 s_eps = {_ep(x)[1] for x in s_files}
 
                 if sn not in l_proper:
+                    # 白皮书第4/8节：分享独有 Season（本地压根没有这季）默认保护，
+                    # 不再因为"不完整/缺集"就把分享库里唯一的这份资源删掉——
+                    # 两边都没有资源，用户还想再找的机会都没了。
+                    # 之前这里在 not ok 时会生成 'shr' 删除 Action，现在统一改成 'keep' 仅报告。
                     ok, reason = _analyze(s_eps, disp)
-                    if not ok:
-                        acts.append(Act('shr', f'🚫 {tag} ({reason})',
-                                        f'├─ 🚫 {tag}: {reason} ➔ 清理分享影视库strm', s_files,
-                                        meta={'reason': 'gap', 'reason_label': reason,
+                    if ok:
+                        acts.append(Act('keep', f'🛡️ {tag} (分享独有，本地暂无此季，默认保护)',
+                                        f'├─ 🛡️ {tag}: 分享独有 ➔ 默认保护，不自动清理',
+                                        meta={'reason': 'share_only', 'reason_label': '分享独有-默认保护',
+                                              'title': disp, 'season': sn}))
+                    else:
+                        acts.append(Act('keep', f'🛡️ {tag} (分享独有，{reason}，默认保护，不自动清理)',
+                                        f'├─ 🛡️ {tag}: 分享独有 且 {reason} ➔ 默认保护，仅报告',
+                                        meta={'reason': 'share_only_gap', 'reason_label': f'分享独有-{reason}',
                                               'title': disp, 'season': sn}))
                     continue
 
@@ -590,37 +651,46 @@ def build_plan():
                 s_q, l_q = _best(s_files), _best(l_files)
 
                 if s_eps == l_eps:
-                    if _share_wins(s_q, l_q):
-                        acts.append(Act('loc', f'📺 {tag} (集数对齐，分享画质达标，穿透删本地)',
-                                        f'├─ 📺 {tag}: 画质达标且对齐 ➔ CD2联动删除115网盘旧源', l_files,
-                                        meta={'reason': 'share_better',
-                                              'reason_label': '分享画质达标且对齐',
+                    ok, reason = _season_replaceable(s_files, l_files, disp)
+                    if ok:
+                        acts.append(Act('loc', f'📺 {tag} (逐集覆盖且质量达标，穿透删本地)',
+                                        f'├─ 📺 {tag}: 逐集质量达标 ➔ CD2联动删除115网盘旧源', l_files,
+                                        meta={'reason': 'season_all_pass',
+                                              'reason_label': '逐集达标-删本地',
                                               'title': disp, 'season': sn}))
-                    else:
-                        acts.append(Act('shr', f'📺 {tag} (集数对齐，但分享画质较差，淘汰分享)',
+                    elif not _share_wins(_best(s_files), _best(l_files)):
+                        acts.append(Act('shr', f'📺 {tag} (分享逐集画质不足，淘汰分享)',
                                         f'├─ 📺 {tag}: 分享画质次级 ➔ 清理分享影视库strm', s_files,
                                         meta={'reason': 'local_better',
                                               'reason_label': '本地画质更优',
                                               'title': disp, 'season': sn}))
+                    else:
+                        acts.append(Act('keep', f'📺 {tag} (逐集未全达标：{reason} → 保守双向保留)',
+                                        f'├─ 🛡️ {tag}: {reason} ➔ 双向保留，不自动清理',
+                                        meta={'reason': 'season_partial_pass',
+                                              'reason_label': '部分集不达标-' + reason,
+                                              'title': disp, 'season': sn}))
                 elif s_eps >= l_eps and _is_seq(s_eps, disp):
-                    if _share_wins(s_q, l_q):
-                        acts.append(Act('loc', f'📺 {tag} (分享库更完整 {len(s_eps)}>{len(l_eps)}集 且画质达标，剔除本地残缺源)',
-                                        f'├─ 📺 {tag}: 分享更全({len(s_eps)}>{len(l_eps)}集)且画质达标 ➔ CD2联动删除115网盘旧源', l_files,
+                    ok, reason = _season_replaceable(s_files, l_files, disp)
+                    if ok:
+                        acts.append(Act('loc', f'📺 {tag} (分享更完整 {len(s_eps)}>{len(l_eps)}集 且逐集达标，剔除本地)',
+                                        f'├─ 📺 {tag}: 分享更全({len(s_eps)}>{len(l_eps)}集)且逐集达标 ➔ CD2联动删除115网盘旧源', l_files,
                                         meta={'reason': 'share_more',
                                               'reason_label': '分享更完整',
                                               'title': disp, 'season': sn}))
                     else:
-                        acts.append(Act('keep', f'📺 {tag} (分享领先 {len(s_eps)}>{len(l_eps)}集，但本地画质高，双向保留)',
-                                        f'├─ 🔄 {tag}: 分享领先但本地画质高 ➔ 追更双向保留',
+                        acts.append(Act('keep', f'📺 {tag} (分享领先 {len(s_eps)}>{len(l_eps)}集 但 {reason} → 双向保留)',
+                                        f'├─ 🔄 {tag}: 分享领先但 {reason} ➔ 追更双向保留',
                                         meta={'reason': 'share_ahead_local_quality',
                                               'reason_label': '追更双向保留',
                                               'title': disp, 'season': sn,
                                               'local_quality': l_q, 'share_quality': s_q}))
                 elif l_eps >= s_eps:
-                    acts.append(Act('shr', f'📺 {tag} (分享落后于本地库，淘汰分享)',
-                                    f'├─ 📺 {tag}: 分享落后于本地 ➔ 清理分享影视库strm', s_files,
+                    # 白皮书 §8：分享缺集时不再淘汰分享，避免"两边都不全"的资源彻底消失
+                    acts.append(Act('keep', f'📺 {tag} (分享落后于本地 {len(l_eps)}>{len(s_eps)}集，保守双向保留)',
+                                    f'├─ 🛡️ {tag}: 分享缺集 ➔ 双向保留，不自动清理',
                                     meta={'reason': 'share_behind',
-                                          'reason_label': '分享落后',
+                                          'reason_label': '分享缺集-双向保留',
                                           'title': disp, 'season': sn}))
                 else:
                     acts.append(Act('shr', f'⚠️ {tag} (两库集数重叠错乱，淘汰分享)',
@@ -675,6 +745,27 @@ def action_inter_check(args):
 
 
 def action_inter_clean(args):
+    # 统一互斥锁：不管从 CLI、Web 任务队列还是 Telegram Bot 线程发起，
+    # 只要是真正会修改文件的清理（非 dry-run），都必须先拿到这把跨入口的文件锁，
+    # 避免三个入口各自维护自己的锁导致两个清理任务同时跑。
+    lock = None
+    if not args.dry_run:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        lock = open(LOCK_FILE, 'w')
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            return {'status': 'busy', 'message': '已有治理任务正在执行，请稍后再试'}
+    try:
+        return _action_inter_clean_locked(args)
+    finally:
+        if lock:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+
+
+def _action_inter_clean_locked(args):
     if args.plan:
         pf = STATE_DIR / f'plan_{re.sub(r"[^0-9a-f]", "", args.plan)}.json'
         if not pf.exists():
@@ -1838,21 +1929,13 @@ def main():
     ap.add_argument('--plan', default='')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
-    lock = None
+    # 互斥锁现在统一由 action_inter_clean 自己持有（见该函数），
+    # 这样 CLI / Web / Telegram Bot 三个入口共用同一把锁，这里不再重复加锁。
     try:
-        if args.action in MUTATING and not args.dry_run:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            lock = open(LOCK_FILE, 'w')
-            try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError: raise Busy()
         res = ACTIONS[args.action](args)
-    except Busy:
-        res = {'status': 'busy', 'message': '已有治理任务正在执行，请稍后再试'}
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         res = {'status': 'error', 'message': f'{type(e).__name__}: {e}'}
-    finally:
-        if lock: lock.close()
     print(json.dumps(res, ensure_ascii=False))
 
 
