@@ -587,3 +587,27 @@ class TestOrphanPerf:
         items = engine.scan_orphans(max_depth=3)
         assert len(items) == 1
         assert items[0]['ext'] == '.xyz'
+
+
+
+class TestCloudRootFailSafe:
+
+    def test_missing_cloud_root_blocks_strm_delete(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '电影/华语电影/测试片 (2020)', 'x.1080p.strm')
+        f = next(engine.L_ROOT.rglob('*.strm'))
+        bogus = engine.L_ROOT / '_no_such_cloud_root_'
+        r = engine.safe_delete_files([f], engine.L_ROOT, bogus, dry_run=False)
+        assert r['strm_removed'] == 0
+        assert r['cloud_missing'] == 1
+        assert f.exists()
+
+    def test_none_cloud_root_means_share_lib_ok(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.S_ROOT, '剧集/欧美剧集/剧A (2020)/Season 01', 'E01.strm')
+        f = next(engine.S_ROOT.rglob('*.strm'))
+        r = engine.safe_delete_files([f], engine.S_ROOT, None, dry_run=False)
+        assert r['strm_removed'] == 1
+        assert not f.exists()

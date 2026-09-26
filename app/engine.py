@@ -403,7 +403,7 @@ def cloud_videos(f, base_root, cloud_root):
     exact = []
     for ext in VIDEO_EXTS:
         c = d / f'{stem}{ext}'
-        if c.is_file():
+        if c.is_file() and _inside(c, cloud_root):
             exact.append(c)
     if exact:
         if path_level == 'fuzzy':
@@ -418,6 +418,7 @@ def cloud_videos(f, base_root, cloud_root):
         for child in d.iterdir():
             if not child.is_file(): continue
             if child.suffix.lower() not in VIDEO_EXTS: continue
+            if not _inside(child, cloud_root): continue
             if _normalize_title(child.stem) == stem_norm:
                 norm_matches.append(child)
     except OSError:
@@ -432,7 +433,8 @@ def cloud_videos(f, base_root, cloud_root):
     # ── 目录唯一视频兜底（低置信度，仅报告） ──
     try:
         vids = [c for c in d.iterdir()
-                if c.is_file() and c.suffix.lower() in VIDEO_EXTS]
+                if c.is_file() and c.suffix.lower() in VIDEO_EXTS
+                and _inside(c, cloud_root)]
         if len(vids) == 1:
             return vids, 'unique_fallback'
     except OSError:
@@ -573,7 +575,11 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
             st['errors'].append(f'跳过非法路径: {f}')
             continue
 
-        if cloud_root and cloud_root.exists():
+        if cloud_root is not None:
+            if not cloud_root.exists():
+                st['cloud_missing'] += 1
+                st['errors'].append(f'{f.name}: 云端根目录不可用，STRM 保留')
+                continue
             vids, conf = cloud_videos(f, base_root, cloud_root)
             if conf == 'none':
                 st['cloud_missing'] += 1
