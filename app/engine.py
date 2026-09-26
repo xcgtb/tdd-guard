@@ -578,7 +578,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
         if cloud_root is not None:
             if not cloud_root.exists():
                 st['cloud_missing'] += 1
-                st['errors'].append(f'{f.name}: 云端根目录不可用，STRM 保留')
+                st['errors'].append(f'{f.name}: 云端根目录不可用 ({cloud_root})，STRM 保留')
                 continue
             vids, conf = cloud_videos(f, base_root, cloud_root)
             if conf == 'none':
