@@ -762,9 +762,15 @@ def api_set_config(body: dict = None):
 @app.post('/api/config/test/emby', dependencies=[Depends(auth)])
 def api_test_emby(body: dict = None):
     body = body or {}
-    host = (body.get('emby_host') or engine.EMBY_HOST or '').rstrip('/')
+    raw_host = (body.get('emby_host') or '').strip()
+    host_overridden = bool(raw_host) and raw_host.rstrip('/') != (engine.EMBY_HOST or '').rstrip('/')
+    host = (raw_host or engine.EMBY_HOST or '').rstrip('/')
     key = body.get('emby_key') or ''
-    if not key or is_masked_value(key): key = engine.EMBY_KEY or ''
+    if not key or is_masked_value(key):
+        if host_overridden:
+            # 换了地址就不能偷用旧地址保存的 Key 去测——否则真实 Key 会被发往调用方指定的任意 host
+            return {'status': 'error', 'message': '更换地址后请填写完整的 API Key，不能沿用已保存的旧 Key'}
+        key = engine.EMBY_KEY or ''
     if not host or not key:
         return {'status': 'error', 'message': '请填写 Emby 地址和 API Key'}
     try:
