@@ -307,22 +307,44 @@ def _normalize_title(name: str) -> str:
 
 
 def _find_dir_fuzzy(parent, target_name):
-    """在 parent 下找名字最接近 target_name 的子目录"""
-    from pathlib import Path as _P
-    if not parent.is_dir(): return None
+    """
+    在 parent 下找最接近 target_name 的子目录。
+    返回 (dir_or_None, level)，level ∈ {exact, normalized, fuzzy, ambiguous, none}：
+      - exact       目录名完全相同        -> 高置信度
+      - normalized  标准化后完全相等      -> 高置信度
+      - fuzzy       前缀匹配且唯一候选    -> 低置信度（保留发现能力）
+      - ambiguous   前缀匹配多候选        -> 禁止自动删
+      - none        找不到                -> 禁止
+    """
+    if not parent.is_dir():
+        return None, 'none'
     target_norm = _normalize_title(target_name)
-    if not target_norm: return None
+    if not target_norm:
+        return None, 'none'
+
     exact = parent / target_name
-    if exact.is_dir(): return exact
+    if exact.is_dir():
+        return exact, 'exact'
+
     for child in parent.iterdir():
         if child.is_dir() and _normalize_title(child.name) == target_norm:
-            return child
-    for child in parent.iterdir():
-        if not child.is_dir(): continue
-        cn = _normalize_title(child.name)
-        if cn and (cn.startswith(target_norm) or target_norm.startswith(cn)):
-            return child
-    return None
+            return child, 'normalized'
+
+    prefix_matches = []
+    try:
+        for child in parent.iterdir():
+            if not child.is_dir():
+                continue
+            cn = _normalize_title(child.name)
+            if cn and (cn.startswith(target_norm) or target_norm.startswith(cn)):
+                prefix_matches.append(child)
+    except OSError:
+        return None, 'none'
+    if len(prefix_matches) == 1:
+        return prefix_matches[0], 'fuzzy'
+    if len(prefix_matches) > 1:
+        return None, 'ambiguous'
+    return None, 'none'
 
 def cloud_videos(f, base_root, cloud_root):
     """
@@ -338,22 +360,32 @@ def cloud_videos(f, base_root, cloud_root):
         rel_parent = f.relative_to(base_root).parent
     except ValueError:
         return [], 'none'
+
+    # ── 逐级解析目录，累积路径置信度 ──
+    # 任何一环是 fuzzy -> 整个路径降级；任一环 ambiguous -> 直接返回
     d = cloud_root
+    path_level = 'exact'
     for part in rel_parent.parts:
-        if not d.is_dir(): return [], 'none'
+        if not d.is_dir():
+            return [], 'none'
         next_d = d / part
         if next_d.is_dir():
             d = next_d
-        else:
-            next_d = _find_dir_fuzzy(d, part)
-            if not next_d: return [], 'none'
-            d = next_d
-    if not d.is_dir(): return [], 'none'
+            continue
+        sub, level = _find_dir_fuzzy(d, part)
+        if sub is None:
+            return [], level  # ambiguous / none
+        d = sub
+        if level == 'fuzzy':
+            path_level = 'fuzzy'
+        elif level == 'normalized' and path_level != 'fuzzy':
+            path_level = 'normalized'
 
-    # ── 精确匹配 ──
+    if not d.is_dir():
+        return [], 'none'
+
+    # ── 精确文件名匹配 ──
     # STRM 命名约定：<原名>.<编码信息>.strm，视频扩展名被剥离
-    # 例：闪电侠.2014.S01E01.1080p.strm
-    #     → 依次尝试 <stem>.mkv / .mp4 / .ts / .mov / .iso / .m2ts
     stem = f.stem
     exact = []
     for ext in VIDEO_EXTS:
@@ -361,9 +393,12 @@ def cloud_videos(f, base_root, cloud_root):
         if c.is_file():
             exact.append(c)
     if exact:
+        if path_level == 'fuzzy':
+            # 路径模糊 -> 即使文件名精确也降级为低置信度
+            return exact, 'unique_fallback'
         return exact, 'exact'
 
-    # ── 标准化匹配 ──
+    # ── 标准化后唯一匹配 ──
     stem_norm = _normalize_title(stem)
     norm_matches = []
     try:
@@ -375,11 +410,13 @@ def cloud_videos(f, base_root, cloud_root):
     except OSError:
         return [], 'none'
     if len(norm_matches) == 1:
+        if path_level == 'fuzzy':
+            return norm_matches, 'unique_fallback'
         return norm_matches, 'normalized'
     if len(norm_matches) > 1:
         return norm_matches, 'ambiguous'
 
-    # ── 目录唯一兜底（低置信度，仅报告） ──
+    # ── 目录唯一视频兜底（低置信度，仅报告） ──
     try:
         vids = [c for c in d.iterdir()
                 if c.is_file() and c.suffix.lower() in VIDEO_EXTS]
