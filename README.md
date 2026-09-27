@@ -47,17 +47,48 @@
 
 ##### 4. 编辑 docker-compose.yml
 
-按文件注释，把 volumes: 里**冒号左边**的路径改成你自己 NAS 上的真实目录：
+完整内容如下，把标了注释的几处路径改成你自己 NAS 上的真实目录即可，其余保持不变：
 
-| 变量 | 说明 |
-|---|---|
-| AGENT_DATA | 运行时数据目录（数据库、日志、执行记录），选一个空目录即可 |
-| L_ROOT | 本地/主库路径（要治理的媒体库之一） |
-| S_ROOT | 分享库路径（要治理的媒体库之一） |
-| CLOUD_L_ROOT | 网盘挂载点（如 CloudDrive2），用于联动删除网盘源文件；不需要此功能可先随便挂一个空目录 |
+    services:
+      tdd-guard:
+        build: .
+        image: tdd-guard:latest
+        container_name: tdd-guard
+        restart: unless-stopped
+        network_mode: host
+        env_file: .env
+        environment:
+          - TZ=Asia/Shanghai
+          # 下面三个是"容器内部"路径，随便起名，但必须跟下面 volumes 里冒号右边完全一致
+          - AGENT_DATA=/data
+          - L_ROOT=/media/local          # 你的本地/网盘媒体库（主库）
+          - S_ROOT=/media/share          # 你的分享媒体库（用于双库对比治理）
+          - CLOUD_L_ROOT=/media/cloud    # CloudDrive2 等网盘挂载的本地库（用于联动删源）
+        volumes:
+          # 冒号左边＝宿主机（你的 NAS）上的真实路径，改成你自己的
+          # 冒号右边＝容器内部路径，必须和上面 environment 里的 L_ROOT/S_ROOT/CLOUD_L_ROOT 一一对应
+          - /path/to/your/data:/data
+          - /path/to/your/local-media-library:/media/local
+          - /path/to/your/share-media-library:/media/share
+          - /path/to/your/clouddrive-mount:/media/cloud:rslave
+          - /path/to/your/static:/app/static   # 可选：想不重新 build 就改前端页面时挂载
+        logging:
+          driver: json-file
+          options:
+            max-size: "10m"
+            max-file: "3"
+        healthcheck:
+          test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 20s
 
-冒号**右边**的容器内路径可保持默认，也可自己改，但改了要连同 environment: 里对应的
-L_ROOT / S_ROOT / CLOUD_L_ROOT 一起改，两边必须一致。
+简单说：
+- `environment:` 里的 `L_ROOT` / `S_ROOT` / `CLOUD_L_ROOT` 是容器内部路径名，一般不用改。
+- `volumes:` 里每一行**冒号左边**是你 NAS 上真实的文件夹路径，改成你自己的；**冒号右边**要和上面
+  `environment:` 里的值一一对应，两边必须一致。
+- 不需要联动删除网盘源文件的话，`CLOUD_L_ROOT` 对应的那行可以随便挂一个空目录。
 
 （可选）非 root 运行：容器默认以 root 运行；如果想用非 root 用户，在 environment: 里加：
 
