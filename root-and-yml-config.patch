@@ -1,0 +1,549 @@
+diff --git a/Dockerfile b/Dockerfile
+index e9b7a04..1cce7f8 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
+ WORKDIR /app
+ 
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+-        tzdata gosu \
++        tzdata \
+     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+     && echo $TZ > /etc/timezone \
+     && rm -rf /var/lib/apt/lists/*
+@@ -20,8 +20,6 @@ COPY app/ ./app/
+ COPY static/ ./static/
+ COPY scripts/ ./scripts/
+ COPY tests/ ./tests/
+-COPY entrypoint.sh /entrypoint.sh
+-RUN chmod +x /entrypoint.sh
+ 
+ RUN mkdir -p /data
+ 
+@@ -30,7 +28,4 @@ EXPOSE 8321
+ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
+   CMD python /app/scripts/healthcheck.py || exit 1
+ 
+-# 默认仍以 root 运行（PUID/PGID 默认 0），行为不变；
+-# 需要非 root 运行时在 compose 里设置 PUID/PGID 环境变量即可，见 entrypoint.sh 注释。
+-ENTRYPOINT ["/entrypoint.sh"]
+ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8321"]
+diff --git a/README.md b/README.md
+index e892bfa..e9700ed 100644
+--- a/README.md
++++ b/README.md
+@@ -89,13 +89,7 @@
+ - `volumes:` 里每一行**冒号左边**是你 NAS 上真实的文件夹路径，改成你自己的；**冒号右边**要和上面
+   `environment:` 里的值一一对应，两边必须一致。
+ - 不需要联动删除网盘源文件的话，`CLOUD_L_ROOT` 对应的那行可以随便挂一个空目录。
+-
+-（可选）非 root 运行：容器默认以 root 运行；如果想用非 root 用户，在 environment: 里加：
+-
+-    - PUID=1000
+-    - PGID=1000
+-
+-（填你 NAS 上媒体目录属主的 uid/gid）
++- 容器统一以 root 运行，不提供非 root（PUID/PGID）模式——媒体目录多是 NAS 上不同用户/挂载源混合的权限，非 root 收益不大，反而增加部署复杂度。
+ 
+ ##### 5. 启动服务
+ 
+diff --git a/app/config.py b/app/config.py
+index 211128d..b61d074 100644
+--- a/app/config.py
++++ b/app/config.py
+@@ -49,6 +49,20 @@ DEFAULTS = {
+     'tmdb_scan_last_ts':         '0',
+ }
+ 
++# 这些字段如果在环境变量（.env / docker-compose.yml）里显式设置了非空值，
++# 每次 load_config() 都会用环境变量覆盖 config.json 里的落盘值——
++# 保证纯 yml 部署、不想碰 Web 设置页的用户，改 yml 能一直生效，
++# 不会被"曾经在 Web 页保存过一次"这件事锁死。
++# 用户如果想改回用 Web 页管理，把 yml 里对应这行删掉/留空即可。
++ENV_OVERRIDE_KEYS = {
++    'emby_host':              'EMBY_HOST',
++    'emby_key':               'EMBY_KEY',
++    'tmdb_key':               'TMDB_KEY',
++    'telegram_bot_token':     'TG_BOT_TOKEN',
++    'telegram_chat_id':       'TG_CHAT_ID',
++    'telegram_allowed_users': 'TG_ALLOWED_USERS',
++}
++
+ INTERNAL_KEYS = {'tmdb_scan_last_ts', 'morning_prescan_last_date',
+                  'morning_report_last_date', 'subscriptions'}
+ EDITABLE_KEYS = [k for k in DEFAULTS if k not in INTERNAL_KEYS]
+@@ -85,6 +99,11 @@ def load_config() -> dict:
+             cfg.update({k: str(v) for k, v in data.items() if v is not None})
+     except (OSError, ValueError):
+         pass
++    # yml/.env 显式设置的连接类配置始终生效，优先级高于历史落盘值
++    for k, env_name in ENV_OVERRIDE_KEYS.items():
++        v = os.environ.get(env_name)
++        if v:
++            cfg[k] = v
+     return cfg
+ 
+ 
+diff --git a/app/main.py b/app/main.py
+index 39fdaf4..9e84626 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -836,21 +836,33 @@ def api_send_morning(body: dict = None):
+ 
+ 
+ # ═══════════════════ 配置 ═══════════════════
++def _env_overridden_keys() -> list:
++    # yml/.env 里显式设置了非空值的字段：Web 页存了也不会生效，前端应据此提示/禁用
++    return [k for k, env_name in _cfg.ENV_OVERRIDE_KEYS.items() if os.environ.get(env_name)]
++
++
+ @app.get('/api/config', dependencies=[Depends(auth)])
+ def api_get_config(reveal: int = 0):
+     cfg = load_config()
++    env_overridden = _env_overridden_keys()
+     if reveal:
+-        return {'status': 'success', 'config': cfg, 'masked': False}
++        return {'status': 'success', 'config': cfg, 'masked': False, 'env_overridden': env_overridden}
+     return {'status': 'success', 'config': mask_config(cfg), 'masked': True,
+-            'sensitive_keys': SENSITIVE_KEYS}
++            'sensitive_keys': SENSITIVE_KEYS, 'env_overridden': env_overridden}
+ 
+ 
+ @app.post('/api/config', dependencies=[Depends(auth)])
+ def api_set_config(body: dict = None):
+     body = body or {}
+     cfg = load_config()
++    env_overridden = set(_env_overridden_keys())
++    skipped_env = []
+     for k in EDITABLE_KEYS:
+         if k not in body: continue
++        if k in env_overridden:
++            # yml 已经显式指定了这个字段，Web 页提交的值落盘也没用，直接跳过并告知前端
++            skipped_env.append(k)
++            continue
+         new_val = str(body[k]).strip()
+         if k in SENSITIVE_KEYS and is_masked_value(new_val):
+             continue
+@@ -859,7 +871,8 @@ def api_set_config(body: dict = None):
+     engine.reload_config()
+     try: bot.restart()
+     except Exception as e: logging.getLogger('media_agent').warning('Bot 重启失败: %s', e)
+-    return {'status': 'success', 'config': mask_config(saved), 'masked': True}
++    return {'status': 'success', 'config': mask_config(saved), 'masked': True,
++            'env_overridden': list(env_overridden), 'skipped_env': skipped_env}
+ 
+ 
+ @app.post('/api/config/test/emby', dependencies=[Depends(auth)])
+diff --git a/entrypoint.sh b/entrypoint.sh
+deleted file mode 100644
+index 5d00e4e..0000000
+--- a/entrypoint.sh
++++ /dev/null
+@@ -1,29 +0,0 @@
+-#!/bin/sh
+-# 默认 PUID/PGID=0，行为和之前完全一样（以 root 运行）。
+-# 想以非 root 运行时，在 docker-compose.yml 里加：
+-#   environment:
+-#     - PUID=1000
+-#     - PGID=1000
+-# （具体填 NAS 上挂载目录的属主 uid/gid，用 `id` 命令查）
+-set -e
+-
+-PUID="${PUID:-0}"
+-PGID="${PGID:-0}"
+-
+-if [ "$PUID" = "0" ] && [ "$PGID" = "0" ]; then
+-  exec "$@"
+-fi
+-
+-if ! getent group "$PGID" >/dev/null 2>&1; then
+-  groupadd -g "$PGID" appgroup
+-fi
+-if ! id -u "$PUID" >/dev/null 2>&1; then
+-  useradd -u "$PUID" -g "$PGID" -M -s /usr/sbin/nologin appuser
+-fi
+-
+-# 只调整 /data（AGENT_DATA，运行时数据），不动 L_ROOT/S_ROOT/CLOUD_L_ROOT——
+-# 那是用户自己的媒体库目录，容器不应该改它们的属主。
+-mkdir -p /data
+-chown -R "$PUID:$PGID" /data || true
+-
+-exec gosu "$PUID:$PGID" "$@"
+diff --git a/p1-fixes.patch b/p1-fixes.patch
+deleted file mode 100644
+index 9c76e91..0000000
+--- a/p1-fixes.patch
++++ /dev/null
+@@ -1,372 +0,0 @@
+-diff --git a/Dockerfile b/Dockerfile
+-index 1cce7f8..e9b7a04 100644
+---- a/Dockerfile
+-+++ b/Dockerfile
+-@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
+- WORKDIR /app
+- 
+- RUN apt-get update && apt-get install -y --no-install-recommends \
+--        tzdata \
+-+        tzdata gosu \
+-     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+-     && echo $TZ > /etc/timezone \
+-     && rm -rf /var/lib/apt/lists/*
+-@@ -20,6 +20,8 @@ COPY app/ ./app/
+- COPY static/ ./static/
+- COPY scripts/ ./scripts/
+- COPY tests/ ./tests/
+-+COPY entrypoint.sh /entrypoint.sh
+-+RUN chmod +x /entrypoint.sh
+- 
+- RUN mkdir -p /data
+- 
+-@@ -28,4 +30,7 @@ EXPOSE 8321
+- HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
+-   CMD python /app/scripts/healthcheck.py || exit 1
+- 
+-+# 默认仍以 root 运行（PUID/PGID 默认 0），行为不变；
+-+# 需要非 root 运行时在 compose 里设置 PUID/PGID 环境变量即可，见 entrypoint.sh 注释。
+-+ENTRYPOINT ["/entrypoint.sh"]
+- CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8321"]
+-diff --git a/README.md b/README.md
+-index 9825aa3..0711f69 100644
+---- a/README.md
+-+++ b/README.md
+-@@ -10,9 +10,10 @@
+-    - `L_ROOT`（本地/主库）、`S_ROOT`（分享库）是要治理的两个媒体库，指向你实际的媒体文件所在目录。
+-    - `CLOUD_L_ROOT` 是网盘挂载点（如 CloudDrive2），用于联动删除网盘源文件；如果你不需要这个功能可以先随便挂一个空目录。
+-    - 冒号右边的容器内路径可以保持默认，也可以自己改，但改了要连同 `environment:` 里对应的 `L_ROOT`/`S_ROOT`/`CLOUD_L_ROOT` 一起改，两边必须一致。
+--3. `docker compose up -d --build`
+--4. 浏览器打开 `http://NAS-IP:8321`，用 `.env` 里设置的密码登录。
+--5. 登录后在「设置」页里填 Emby 地址/API Key、TMDB API Key、Telegram Bot Token（如果需要通知）——这些是运行时配置，存在容器内的 `data/config.json` 里，**不需要**也不应该写进 `.env`。
+-+3. （可选）默认容器以 root 运行；如果想用非 root 用户，在 `docker-compose.yml` 里加 `environment: PUID=1000` / `PGID=1000`（填你 NAS 上媒体目录属主的 uid/gid）。
+-+4. `docker compose up -d --build`
+-+5. 浏览器打开 `http://NAS-IP:8321`，用 `.env` 里设置的密码登录。
+-+6. 登录后在「设置」页里填 Emby 地址/API Key、TMDB API Key、Telegram Bot Token（如果需要通知）——这些是运行时配置，存在容器内的 `data/config.json` 里，**不需要**也不应该写进 `.env`。
+- 
+- ## License
+- MIT
+-diff --git a/app/main.py b/app/main.py
+-index eb1518b..39fdaf4 100644
+---- a/app/main.py
+-+++ b/app/main.py
+-@@ -157,6 +157,40 @@ class _TaskStream:
+-             self.task.logs.append(self.buf.strip()); self.buf = ''
+- 
+- 
+-+class _StderrRouter:
+-+    """按线程分流 stderr：worker 线程的 print/traceback 写入各自任务日志，
+-+    其它线程（比如 uvicorn 处理别的请求时打印的异常）继续写真实 stderr，
+-+    避免一个进程级的 sys.stderr 替换把不相关线程的输出混进任务日志里。"""
+-+    def __init__(self, real):
+-+        self._real = real
+-+        self._lock = threading.Lock()
+-+        self._routes = {}
+-+
+-+    def register(self, stream):
+-+        with self._lock:
+-+            self._routes[threading.get_ident()] = stream
+-+
+-+    def unregister(self):
+-+        with self._lock:
+-+            self._routes.pop(threading.get_ident(), None)
+-+
+-+    def _target(self):
+-+        return self._routes.get(threading.get_ident(), self._real)
+-+
+-+    def write(self, s):
+-+        self._target().write(s)
+-+
+-+    def flush(self):
+-+        self._target().flush()
+-+
+-+    def isatty(self):
+-+        return False
+-+
+-+
+-+_STDERR_ROUTER = _StderrRouter(sys.stderr)
+-+sys.stderr = _STDERR_ROUTER
+-+
+-+
+- class Task:
+-     def __init__(self, kind):
+-         self.id = uuid.uuid4().hex[:12]; self.kind = kind
+-@@ -175,16 +209,34 @@ class Args:
+-         for k, v in kwargs.items(): setattr(self, k, v)
+- 
+- 
+-+TASKS_MAX_KEEP = 200  # 完成态任务最多保留这么多份，超出的按时间淘汰最旧的
+-+
+-+
+-+def _prune_tasks():
+-+    """TASKS 只增不减会在长期运行的容器里无限堆积，这里做个简单的上限淘汰：
+-+    只清理已经跑完的任务（running 状态的，包括当前正在跑的，永远不动）。"""
+-+    with TASK_LOCK:
+-+        done = sorted(
+-+            (t for t in TASKS.values() if t.status != 'running'),
+-+            key=lambda t: t.ts,
+-+        )
+-+        overflow = len(done) - TASKS_MAX_KEEP
+-+        if overflow > 0:
+-+            for t in done[:overflow]:
+-+                TASKS.pop(t.id, None)
+-+
+-+
+- def spawn(kind, fn, *fargs):
+-     with TASK_LOCK:
+-         cur = CURRENT['task']
+-         if cur is not None and cur.status == 'running':
+-             raise HTTPException(429, f'已有任务 [{cur.kind}] 正在执行，请稍候')
+-+    _prune_tasks()
+-     t = Task(kind); TASKS[t.id] = t
+- 
+-     def worker():
+-         with TASK_LOCK: CURRENT['task'] = t
+--        old_err = sys.stderr; sys.stderr = t.stream
+-+        _STDERR_ROUTER.register(t.stream)
+-         handler = logging.StreamHandler(t.stream)
+-         handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
+-         engine.log.addHandler(handler)
+-@@ -197,7 +249,7 @@ def spawn(kind, fn, *fargs):
+-             traceback.print_exc(file=sys.stderr)
+-             t.error = f'{type(e).__name__}: {e}'; t.status = 'error'
+-         finally:
+--            engine.log.removeHandler(handler); sys.stderr = old_err
+-+            engine.log.removeHandler(handler); _STDERR_ROUTER.unregister()
+-             with TASK_LOCK: CURRENT['task'] = None
+- 
+-     threading.Thread(target=worker, daemon=True).start()
+-@@ -516,7 +568,7 @@ def api_logs(n: int = 35):
+- @app.get('/api/emby/poster/{item_id}')
+- def api_emby_poster(item_id: str):
+-     if not engine.EMBY_KEY: raise HTTPException(500, '未配置 EMBY_KEY')
+--    url = f'{engine.EMBY_HOST}/Items/{item_id}/Images/Primary'
+-+    url = f'{engine.EMBY_HOST}/Items/{urllib.parse.quote(item_id, safe="")}/Images/Primary'
+-     req = urllib.request.Request(url, headers={'X-Emby-Token': engine.EMBY_KEY})
+-     try:
+-         with urllib.request.urlopen(req, timeout=15) as r:
+-diff --git a/entrypoint.sh b/entrypoint.sh
+-new file mode 100644
+-index 0000000..5d00e4e
+---- /dev/null
+-+++ b/entrypoint.sh
+-@@ -0,0 +1,29 @@
+-+#!/bin/sh
+-+# 默认 PUID/PGID=0，行为和之前完全一样（以 root 运行）。
+-+# 想以非 root 运行时，在 docker-compose.yml 里加：
+-+#   environment:
+-+#     - PUID=1000
+-+#     - PGID=1000
+-+# （具体填 NAS 上挂载目录的属主 uid/gid，用 `id` 命令查）
+-+set -e
+-+
+-+PUID="${PUID:-0}"
+-+PGID="${PGID:-0}"
+-+
+-+if [ "$PUID" = "0" ] && [ "$PGID" = "0" ]; then
+-+  exec "$@"
+-+fi
+-+
+-+if ! getent group "$PGID" >/dev/null 2>&1; then
+-+  groupadd -g "$PGID" appgroup
+-+fi
+-+if ! id -u "$PUID" >/dev/null 2>&1; then
+-+  useradd -u "$PUID" -g "$PGID" -M -s /usr/sbin/nologin appuser
+-+fi
+-+
+-+# 只调整 /data（AGENT_DATA，运行时数据），不动 L_ROOT/S_ROOT/CLOUD_L_ROOT——
+-+# 那是用户自己的媒体库目录，容器不应该改它们的属主。
+-+mkdir -p /data
+-+chown -R "$PUID:$PGID" /data || true
+-+
+-+exec gosu "$PUID:$PGID" "$@"
+-diff --git a/tests/test_bot.py b/tests/test_bot.py
+-new file mode 100644
+-index 0000000..69db0a6
+---- /dev/null
+-+++ b/tests/test_bot.py
+-@@ -0,0 +1,51 @@
+-+# -*- coding: utf-8 -*-
+-+"""
+-+bot.py 测试：Telegram 白名单鉴权（_is_allowed）。
+-+
+-+这是 Telegram 输入直接进来的那一层，必须保证：
+-+  - 没配置白名单时默认拒绝所有人（v4.4 修的那个 bug，防止回归）
+-+  - 配置了白名单后，user_id 或 chat_id 命中其一即可
+-+  - 没命中的 id 要被拒绝
+-+"""
+-+import os
+-+import sys
+-+import tempfile
+-+from pathlib import Path
+-+
+-+_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_bot_'))
+-+os.environ['L_ROOT'] = str(_TMP / 'local')
+-+os.environ['S_ROOT'] = str(_TMP / 'share')
+-+os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
+-+os.environ['AGENT_DATA'] = str(_TMP / 'data')
+-+os.environ['TMDB_KEY'] = ''
+-+os.environ['TG_BOT_TOKEN'] = ''
+-+os.environ['TG_ALLOWED_USERS'] = ''  # 白名单从 config.json 读，不从这个环境变量的默认值读
+-+
+-+sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
+-+import bot  # noqa: E402
+-+import config  # noqa: E402
+-+
+-+
+-+class TestIsAllowed:
+-+    def test_default_deny_when_no_allowlist_configured(self):
+-+        config.save_config({'telegram_allowed_users': ''})
+-+        assert bot._is_allowed('111', '222') is False
+-+        assert bot._is_allowed(None, None) is False
+-+
+-+    def test_allows_matching_user_id(self):
+-+        config.save_config({'telegram_allowed_users': '111,222'})
+-+        assert bot._is_allowed('111', '999') is True
+-+
+-+    def test_allows_matching_chat_id(self):
+-+        config.save_config({'telegram_allowed_users': '111,222'})
+-+        assert bot._is_allowed('999', '222') is True
+-+
+-+    def test_rejects_id_not_in_allowlist(self):
+-+        config.save_config({'telegram_allowed_users': '111,222'})
+-+        assert bot._is_allowed('333', '444') is False
+-+
+-+    def test_ignores_blank_entries_in_allowlist(self):
+-+        config.save_config({'telegram_allowed_users': '111,, ,222,'})
+-+        assert bot._is_allowed('111', None) is True
+-+        assert bot._is_allowed('222', None) is True
+-+        assert bot._is_allowed('', None) is False
+-diff --git a/tests/test_main.py b/tests/test_main.py
+-new file mode 100644
+-index 0000000..aafbb9d
+---- /dev/null
+-+++ b/tests/test_main.py
+-@@ -0,0 +1,127 @@
+-+# -*- coding: utf-8 -*-
+-+"""
+-+main.py 测试：鉴权（auth）+ 任务系统（TASKS 清理）。
+-+
+-+main.py 之前完全没有测试保护——它是外部输入直接进来的那一层
+-+（Web 端点、Basic Auth），所以这里先补最基本的两块：
+-+  - auth()：正确/错误用户名密码、缺失凭证都要挡住
+-+  - 未设置 WEB_PASSWORD 且未显式 ALLOW_NO_AUTH=1 时，进程必须拒绝启动
+-+    （这条用子进程测，因为 WEB_PASSWORD 是 main.py 导入时就读掉的模块级常量，
+-+    没法在同一个进程里换着测两种分支）
+-+  - _prune_tasks()：TASKS 字典不能无限堆积
+-+
+-+运行方式同其它测试：`python3 tests/run_engine_tests.py` 或 `pytest tests/ -v`。
+-+"""
+-+import os
+-+import subprocess
+-+import sys
+-+import tempfile
+-+import time
+-+from pathlib import Path
+-+
+-+_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_main_'))
+-+os.environ['L_ROOT'] = str(_TMP / 'local')
+-+os.environ['S_ROOT'] = str(_TMP / 'share')
+-+os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
+-+os.environ['AGENT_DATA'] = str(_TMP / 'data')
+-+os.environ['TMDB_KEY'] = ''
+-+os.environ['TG_BOT_TOKEN'] = ''
+-+os.environ['WEB_USER'] = 'admin'
+-+os.environ['WEB_PASSWORD'] = 'test-pass-123'
+-+
+-+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+-+sys.path.insert(0, _REPO_ROOT)
+-+
+-+import app.main as main  # noqa: E402
+-+from fastapi.security import HTTPBasicCredentials  # noqa: E402
+-+from fastapi import HTTPException  # noqa: E402
+-+
+-+
+-+def _cred(u, p):
+-+    return HTTPBasicCredentials(username=u, password=p)
+-+
+-+
+-+class TestAuth:
+-+    def test_correct_credentials_pass(self):
+-+        assert main.auth(_cred('admin', 'test-pass-123')) is True
+-+
+-+    def test_wrong_username_rejected(self):
+-+        try:
+-+            main.auth(_cred('nope', 'test-pass-123'))
+-+            assert False, '应该抛出 401'
+-+        except HTTPException as e:
+-+            assert e.status_code == 401
+-+
+-+    def test_wrong_password_rejected(self):
+-+        try:
+-+            main.auth(_cred('admin', 'wrong'))
+-+            assert False, '应该抛出 401'
+-+        except HTTPException as e:
+-+            assert e.status_code == 401
+-+
+-+    def test_missing_credentials_rejected(self):
+-+        # HTTPBasic(auto_error=False) 在没带 Authorization 头时会传 None 进来
+-+        try:
+-+            main.auth(None)
+-+            assert False, '应该抛出 401'
+-+        except HTTPException as e:
+-+            assert e.status_code == 401
+-+
+-+
+-+class TestStartupRequiresPassword:
+-+    def _run(self, env_overrides):
+-+        env = dict(os.environ)
+-+        env.update(env_overrides)
+-+        code = (
+-+            "import sys; sys.path.insert(0, %r)\n"
+-+            "import app.main\n"
+-+            "print('IMPORTED_OK')\n"
+-+        ) % _REPO_ROOT
+-+        return subprocess.run(
+-+            [sys.executable, '-c', code],
+-+            env=env, capture_output=True, text=True, timeout=30,
+-+        )
+-+
+-+    def test_refuses_without_password_and_without_allow_no_auth(self):
+-+        r = self._run({'WEB_PASSWORD': '', 'ALLOW_NO_AUTH': ''})
+-+        assert r.returncode != 0, f'应该拒绝启动，实际 returncode={r.returncode}'
+-+        assert 'IMPORTED_OK' not in r.stdout
+-+
+-+    def test_starts_without_password_when_allow_no_auth_set(self):
+-+        r = self._run({'WEB_PASSWORD': '', 'ALLOW_NO_AUTH': '1'})
+-+        assert r.returncode == 0, f'应该正常导入，实际 stderr={r.stderr[-2000:]}'
+-+        assert 'IMPORTED_OK' in r.stdout
+-+
+-+
+-+class TestPruneTasks:
+-+    def _fake_task(self, status, ts):
+-+        t = main.Task('fake')
+-+        t.status = status
+-+        t.ts = ts
+-+        return t
+-+
+-+    def test_keeps_running_task_and_caps_finished(self):
+-+        main.TASKS.clear()
+-+        old_cap = main.TASKS_MAX_KEEP
+-+        main.TASKS_MAX_KEEP = 3
+-+        try:
+-+            running = self._fake_task('running', time.time())
+-+            main.TASKS[running.id] = running
+-+            finished = []
+-+            for i in range(6):
+-+                t = self._fake_task('success', time.time() + i)
+-+                main.TASKS[t.id] = t
+-+                finished.append(t)
+-+
+-+            main._prune_tasks()
+-+
+-+            assert running.id in main.TASKS, '正在运行的任务不该被清理'
+-+            remaining_finished = [t for t in finished if t.id in main.TASKS]
+-+            assert len(remaining_finished) == 3, \
+-+                f'完成态任务应该只保留 3 个，实际剩 {len(remaining_finished)}'
+-+            # 保留下来的应该是时间戳最新的那几个
+-+            kept_ts = sorted(t.ts for t in remaining_finished)
+-+            assert kept_ts == sorted(t.ts for t in finished)[-3:]
+-+        finally:
+-+            main.TASKS_MAX_KEEP = old_cap
+-+            main.TASKS.clear()

@@ -49,6 +49,20 @@ DEFAULTS = {
     'tmdb_scan_last_ts':         '0',
 }
 
+# 这些字段如果在环境变量（.env / docker-compose.yml）里显式设置了非空值，
+# 每次 load_config() 都会用环境变量覆盖 config.json 里的落盘值——
+# 保证纯 yml 部署、不想碰 Web 设置页的用户，改 yml 能一直生效，
+# 不会被"曾经在 Web 页保存过一次"这件事锁死。
+# 用户如果想改回用 Web 页管理，把 yml 里对应这行删掉/留空即可。
+ENV_OVERRIDE_KEYS = {
+    'emby_host':              'EMBY_HOST',
+    'emby_key':               'EMBY_KEY',
+    'tmdb_key':               'TMDB_KEY',
+    'telegram_bot_token':     'TG_BOT_TOKEN',
+    'telegram_chat_id':       'TG_CHAT_ID',
+    'telegram_allowed_users': 'TG_ALLOWED_USERS',
+}
+
 INTERNAL_KEYS = {'tmdb_scan_last_ts', 'morning_prescan_last_date',
                  'morning_report_last_date', 'subscriptions'}
 EDITABLE_KEYS = [k for k in DEFAULTS if k not in INTERNAL_KEYS]
@@ -85,6 +99,11 @@ def load_config() -> dict:
             cfg.update({k: str(v) for k, v in data.items() if v is not None})
     except (OSError, ValueError):
         pass
+    # yml/.env 显式设置的连接类配置始终生效，优先级高于历史落盘值
+    for k, env_name in ENV_OVERRIDE_KEYS.items():
+        v = os.environ.get(env_name)
+        if v:
+            cfg[k] = v
     return cfg
 
 

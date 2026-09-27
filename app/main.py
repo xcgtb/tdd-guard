@@ -836,21 +836,33 @@ def api_send_morning(body: dict = None):
 
 
 # ═══════════════════ 配置 ═══════════════════
+def _env_overridden_keys() -> list:
+    # yml/.env 里显式设置了非空值的字段：Web 页存了也不会生效，前端应据此提示/禁用
+    return [k for k, env_name in _cfg.ENV_OVERRIDE_KEYS.items() if os.environ.get(env_name)]
+
+
 @app.get('/api/config', dependencies=[Depends(auth)])
 def api_get_config(reveal: int = 0):
     cfg = load_config()
+    env_overridden = _env_overridden_keys()
     if reveal:
-        return {'status': 'success', 'config': cfg, 'masked': False}
+        return {'status': 'success', 'config': cfg, 'masked': False, 'env_overridden': env_overridden}
     return {'status': 'success', 'config': mask_config(cfg), 'masked': True,
-            'sensitive_keys': SENSITIVE_KEYS}
+            'sensitive_keys': SENSITIVE_KEYS, 'env_overridden': env_overridden}
 
 
 @app.post('/api/config', dependencies=[Depends(auth)])
 def api_set_config(body: dict = None):
     body = body or {}
     cfg = load_config()
+    env_overridden = set(_env_overridden_keys())
+    skipped_env = []
     for k in EDITABLE_KEYS:
         if k not in body: continue
+        if k in env_overridden:
+            # yml 已经显式指定了这个字段，Web 页提交的值落盘也没用，直接跳过并告知前端
+            skipped_env.append(k)
+            continue
         new_val = str(body[k]).strip()
         if k in SENSITIVE_KEYS and is_masked_value(new_val):
             continue
@@ -859,7 +871,8 @@ def api_set_config(body: dict = None):
     engine.reload_config()
     try: bot.restart()
     except Exception as e: logging.getLogger('media_agent').warning('Bot 重启失败: %s', e)
-    return {'status': 'success', 'config': mask_config(saved), 'masked': True}
+    return {'status': 'success', 'config': mask_config(saved), 'masked': True,
+            'env_overridden': list(env_overridden), 'skipped_env': skipped_env}
 
 
 @app.post('/api/config/test/emby', dependencies=[Depends(auth)])
