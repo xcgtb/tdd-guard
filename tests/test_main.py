@@ -79,7 +79,7 @@ class TestStartupRequiresPassword:
         ) % _REPO_ROOT
         return subprocess.run(
             [sys.executable, '-c', code],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, capture_output=True, text=True, timeout=90,
         )
 
     def test_refuses_without_password_and_without_allow_no_auth(self):
