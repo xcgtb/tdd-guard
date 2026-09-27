@@ -157,6 +157,40 @@ class _TaskStream:
             self.task.logs.append(self.buf.strip()); self.buf = ''
 
 
+class _StderrRouter:
+    """按线程分流 stderr：worker 线程的 print/traceback 写入各自任务日志，
+    其它线程（比如 uvicorn 处理别的请求时打印的异常）继续写真实 stderr，
+    避免一个进程级的 sys.stderr 替换把不相关线程的输出混进任务日志里。"""
+    def __init__(self, real):
+        self._real = real
+        self._lock = threading.Lock()
+        self._routes = {}
+
+    def register(self, stream):
+        with self._lock:
+            self._routes[threading.get_ident()] = stream
+
+    def unregister(self):
+        with self._lock:
+            self._routes.pop(threading.get_ident(), None)
+
+    def _target(self):
+        return self._routes.get(threading.get_ident(), self._real)
+
+    def write(self, s):
+        self._target().write(s)
+
+    def flush(self):
+        self._target().flush()
+
+    def isatty(self):
+        return False
+
+
+_STDERR_ROUTER = _StderrRouter(sys.stderr)
+sys.stderr = _STDERR_ROUTER
+
+
 class Task:
     def __init__(self, kind):
         self.id = uuid.uuid4().hex[:12]; self.kind = kind
@@ -175,16 +209,34 @@ class Args:
         for k, v in kwargs.items(): setattr(self, k, v)
 
 
+TASKS_MAX_KEEP = 200  # 完成态任务最多保留这么多份，超出的按时间淘汰最旧的
+
+
+def _prune_tasks():
+    """TASKS 只增不减会在长期运行的容器里无限堆积，这里做个简单的上限淘汰：
+    只清理已经跑完的任务（running 状态的，包括当前正在跑的，永远不动）。"""
+    with TASK_LOCK:
+        done = sorted(
+            (t for t in TASKS.values() if t.status != 'running'),
+            key=lambda t: t.ts,
+        )
+        overflow = len(done) - TASKS_MAX_KEEP
+        if overflow > 0:
+            for t in done[:overflow]:
+                TASKS.pop(t.id, None)
+
+
 def spawn(kind, fn, *fargs):
     with TASK_LOCK:
         cur = CURRENT['task']
         if cur is not None and cur.status == 'running':
             raise HTTPException(429, f'已有任务 [{cur.kind}] 正在执行，请稍候')
+    _prune_tasks()
     t = Task(kind); TASKS[t.id] = t
 
     def worker():
         with TASK_LOCK: CURRENT['task'] = t
-        old_err = sys.stderr; sys.stderr = t.stream
+        _STDERR_ROUTER.register(t.stream)
         handler = logging.StreamHandler(t.stream)
         handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
         engine.log.addHandler(handler)
@@ -197,7 +249,7 @@ def spawn(kind, fn, *fargs):
             traceback.print_exc(file=sys.stderr)
             t.error = f'{type(e).__name__}: {e}'; t.status = 'error'
         finally:
-            engine.log.removeHandler(handler); sys.stderr = old_err
+            engine.log.removeHandler(handler); _STDERR_ROUTER.unregister()
             with TASK_LOCK: CURRENT['task'] = None
 
     threading.Thread(target=worker, daemon=True).start()
@@ -516,7 +568,7 @@ def api_logs(n: int = 35):
 @app.get('/api/emby/poster/{item_id}')
 def api_emby_poster(item_id: str):
     if not engine.EMBY_KEY: raise HTTPException(500, '未配置 EMBY_KEY')
-    url = f'{engine.EMBY_HOST}/Items/{item_id}/Images/Primary'
+    url = f'{engine.EMBY_HOST}/Items/{urllib.parse.quote(item_id, safe="")}/Images/Primary'
     req = urllib.request.Request(url, headers={'X-Emby-Token': engine.EMBY_KEY})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
