@@ -28,3 +28,4 @@ Thumbs.db
 *.bak-*
 *.pre-*
 *.bak.*
+docker-compose.yml
