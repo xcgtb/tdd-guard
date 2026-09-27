@@ -72,6 +72,13 @@ class TestStartupRequiresPassword:
     def _run(self, env_overrides):
         env = dict(os.environ)
         env.update(env_overrides)
+        # CLOUD_L_ROOT 指向不存在/空目录时，CD2 看门狗线程会等 60 秒后
+        # 判定"未就绪"，强制 os._exit(42) 杀掉整个进程（含本测试），CI 里必现。
+        # 这里给它一个"已就绪"的假目录，让看门狗几秒内自行退出。
+        if 'CLOUD_L_ROOT' not in env_overrides:
+            tmp = tempfile.mkdtemp()
+            (Path(tmp) / '电影').mkdir()
+            env['CLOUD_L_ROOT'] = tmp
         code = (
             "import sys; sys.path.insert(0, %r)\n"
             "import app.main\n"
