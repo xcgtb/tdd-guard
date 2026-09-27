@@ -1119,6 +1119,34 @@ window.addEventListener('unhandledrejection', function(e){
   console.error('PROMISE ERROR:', e.reason);
 });
 </script>
+
+<style id="emby-poster-card-style">
+.emby-poster-card { cursor: pointer; }
+.emby-poster-card .poster-wrap { aspect-ratio: 2/3; }
+.emby-poster-card .info { padding: 8px 10px 10px; }
+.emby-poster-card .t { font-size: 12px; }
+.emby-poster-card .meta { font-size: 10px; margin-top: 2px; }
+.emby-poster-card.st-missing .poster-wrap::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  border:2px solid rgba(239,68,68,.55);
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
+}
+.emby-poster-card.st-extra .poster-wrap::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  border:2px solid rgba(245,158,11,.55);
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
+}
+.emby-poster-card.st-aligned .poster-wrap::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  border:2px solid rgba(16,185,129,.45);
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
+}
+.emby-poster-card.st-ongoing .poster-wrap::after {
+  content:""; position:absolute; inset:0; pointer-events:none;
+  border:2px solid rgba(59,130,246,.45);
+  border-radius:var(--r-lg) var(--r-lg) 0 0;
+}
+</style>
 </head>
 <body>
 
@@ -1387,7 +1415,7 @@ window.addEventListener('unhandledrejection', function(e){
             <button data-s="share" onclick="setEmbyScope('share')">仅分享库</button>
           </div>
           <input type="text" id="embySearch" placeholder="搜索片名..." style="margin-bottom:12px" oninput="embyPage = 1; renderEmbyList()">
-          <div id="embyList"><div class="list-empty">点击「TMDB 对照」拉取</div></div>
+          <div class="poster-grid" id="embyList"><div class="list-empty">点击「TMDB 对照」拉取</div></div>
           <div id="embyLoadMoreWrap" style="text-align:center;padding:20px 0;display:none"><button class="btn gray" onclick="loadMoreEmby()">加载更多</button></div>
         </div>
       </section>
@@ -2822,99 +2850,36 @@ function toggleSeasonList(id){
 function renderSeriesCard(s){
   var ti = s.tmdb_info || {};
   var mst = ti.match_status || 'unmatched';
-  var stCls = 'st-' + mst;
-  var badges = '';
-  if (s.in_local && s.in_share) badges += '<span class="emby-badge loc">本地+分享</span>';
-  else if (s.in_local) badges += '<span class="emby-badge loc">本地</span>';
-  else if (s.in_share) badges += '<span class="emby-badge shr">分享</span>';
 
-  var tsl = ti.tmdb_status || '';
-  if (mst === 'aligned') badges += '<span class="emby-badge ok">' + icon('check') + ' 对齐</span>';
-  else if (mst === 'missing') badges += '<span class="emby-badge miss">' + icon('x') + ' 缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
-  else if (mst === 'extra') badges += '<span class="emby-badge extra">' + icon('alert') + ' 超 ' + (ti.diff || 0) + ' 集</span>';
-  else if (mst === 'ongoing') badges += '<span class="emby-badge ongoing">' + icon('clock') + ' 在更</span>';
-  else if (mst === 'unmatched') badges += '<span class="emby-badge dim">' + icon('info') + ' 未匹配</span>';
-  else if (mst === 'no_tmdb') badges += '<span class="emby-badge dim">' + icon('info') + ' 无 TMDB ID</span>';
-  else if (mst === 'pending') badges += '<span class="emby-badge gen">' + icon('info') + ' 待对照</span>';
-  if (tsl === 'Ended') badges += '<span class="emby-badge gen">已完结</span>';
-  else if (tsl === 'Returning Series') badges += '<span class="emby-badge gen">连载中</span>';
-  if (s.year) badges += '<span class="emby-badge gen">' + s.year + '</span>';
+  var statusText = '', statusCls = 'no';
+  if (mst === 'aligned')        { statusText = '✓ 对齐'; statusCls = 'ok'; }
+  else if (mst === 'missing')   { statusText = '缺 ' + Math.abs(ti.diff || 0) + ' 集'; statusCls = 'local'; }
+  else if (mst === 'extra')     { statusText = '超 ' + (ti.diff || 0) + ' 集'; statusCls = 'share'; }
+  else if (mst === 'ongoing')   { statusText = '⏳ 在更'; statusCls = 'ok'; }
+  else if (mst === 'unmatched') { statusText = '未匹配'; statusCls = 'no'; }
+  else if (mst === 'no_tmdb')   { statusText = '无 TMDB'; statusCls = 'no'; }
+  else if (mst === 'pending')   { statusText = '待对照'; statusCls = 'no'; }
 
-  // ── 顶部对比摘要 ──
-  var summary = '';
-  if (ti.tmdb_total != null) {
-    var localSeasons = (ti.seasons || []).filter(function(x){ return x.local > 0; }).length;
-    var tmdbSeasons = (ti.seasons || []).filter(function(x){ return x.tmdb > 0; }).length;
-    var diffCls = ti.diff < 0 ? 'miss' : (ti.diff > 0 ? 'extra' : 'ok');
-    var diffTxt = ti.diff < 0 ? ('缺 ' + Math.abs(ti.diff) + ' 集')
-                : (ti.diff > 0 ? ('超 ' + ti.diff + ' 集') : '完全对齐');
-    summary = '<div class="season-summary">'
-      + '<div class="item"><span class="k">Emby</span><span class="v">' + localSeasons + ' 季 · ' + ti.local_total + ' 集</span></div>'
-      + '<div class="item"><span class="k">TMDB</span><span class="v">' + tmdbSeasons + ' 季 · ' + ti.tmdb_total + ' 集</span></div>'
-      + '<div class="item ' + diffCls + '"><span class="k">差异</span><span class="v">' + diffTxt + '</span></div>'
-      + '</div>';
-  } else if (mst === 'pending') {
-    summary = '<div class="season-summary"><div class="item"><span class="k">Emby</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div><div class="item"><span class="k">TMDB</span><span class="v" style="color:#9ca3af">点击「重新对照」拉取</span></div></div>';
-  } else {
-    summary = '<div class="season-summary"><div class="item"><span class="k">Emby</span><span class="v">' + (s.total_seasons||0) + ' 季 · ' + (s.total_episodes||0) + ' 集</span></div></div>';
-  }
+  var libTag = '';
+  if (s.in_local && s.in_share) libTag = '双库';
+  else if (s.in_local) libTag = '本地';
+  else if (s.in_share) libTag = '分享';
 
-  // ── 季详情列表 ──
-  // 多季合集（如综艺、长青剧）展开全部季会占很大版面，这里默认只显示"有问题"
-  // 的季（缺集/超集/未匹配），已对齐的季折叠成一行摘要，点击可展开查看全部。
-  var seasonList = '';
-  if (ti.seasons && ti.seasons.length) {
-    var seasonRow = function(se){
-      var cls = se.status === 'aligned' ? 'ok' : (se.status === 'missing' ? 'miss' : (se.status === 'extra' ? 'extra' : 'ok'));
-      var tag = '';
-      if (se.tmdb == null) {
-        tag = '<span class="tag" style="background:#f3f4f6;color:#6b7280">—</span>';
-        se.tmdb = '?';
-      } else if (se.diff === 0) {
-        tag = '<span class="tag">✓ 完整</span>';
-      } else if (se.diff > 0) {
-        tag = '<span class="tag">超 ' + se.diff + '</span>';
-      } else {
-        tag = '<span class="tag">缺 ' + Math.abs(se.diff) + '</span>';
-      }
-      return '<div class="season-row ' + cls + '">'
-        + '<span class="s">S' + String(se.season).padStart(2,'0') + '</span>'
-        + '<span class="d">本地 <b>' + se.local + '</b> 集 / TMDB <b>' + se.tmdb + '</b> 集</span>'
-        + tag
-        + '</div>';
-    };
-    var issueSeasons = ti.seasons.filter(function(se){ return se.status !== 'aligned' || se.tmdb == null; });
-    var okCount = ti.seasons.length - issueSeasons.length;
-    var COLLAPSE_THRESHOLD = 4;
-    if (ti.seasons.length > COLLAPSE_THRESHOLD && okCount > 0) {
-      var rid = 'seasons-' + s.id;
-      seasonList = '<div class="season-list" id="' + rid + '" data-collapsed="1">'
-        + issueSeasons.map(seasonRow).join('')
-        + '<div class="season-row ok season-toggle" onclick="event.stopPropagation();toggleSeasonList(\'' + rid + '\')">'
-        + '<span class="d">✓ 另有 ' + okCount + ' 季已对齐（已折叠）</span>'
-        + '<span class="tag" style="background:#f3f4f6;color:#6b7280">展开全部 ' + ti.seasons.length + ' 季</span>'
-        + '</div>'
-        + '<div class="season-list-full hidden">' + ti.seasons.map(seasonRow).join('') + '</div>'
-        + '</div>';
-    } else {
-      seasonList = '<div class="season-list">' + ti.seasons.map(seasonRow).join('') + '</div>';
-    }
-  }
-
-  /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
   var poster = s.has_image
     ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" loading="lazy">'
-    : '无图';
+    : '<div class="no-img">暂无海报</div>';
 
-  return '<div class="emby-card ' + stCls + '" onclick="showEmbyDetailById(\'' + s.id + '\')" style="cursor:pointer">'
-    + '<div class="emby-head">'
-    + '<div class="emby-poster">' + poster + '</div>'
-    + '<div class="emby-body">'
-    + '<div class="emby-title">' + esc(s.name || '?') + '</div>'
-    + '<div class="emby-badges">' + badges + '</div>'
-    + summary
-    + seasonList
+  var epInfo = (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+
+  return '<div class="poster-card emby-poster-card st-' + mst + '" onclick="showEmbyDetailById(\'' + esc(s.id) + '\')">'
+    + '<div class="poster-wrap">' + poster
+    + '<span class="badge-type">剧集</span>'
+    + '<span class="badge-status ' + statusCls + '">' + statusText + '</span>'
     + '</div>'
+    + '<div class="info">'
+    + '<div class="t" title="' + esc(s.name || '?') + '">' + esc(s.name || '?') + '</div>'
+    + '<div class="meta"><span>' + (s.year || '—') + ' · ' + libTag + '</span></div>'
+    + '<div class="meta"><span style="color:var(--text-dim);font-size:10px">' + epInfo + '</span></div>'
     + '</div>'
     + '</div>';
 }
@@ -3218,22 +3183,24 @@ async function loadLibBreakdown(seriesId, ti){
 }
 
 function renderMovieCard(m){
-  var badges = '';
-  if (m.in_local && m.in_share) badges += '<span class="emby-badge loc">本地+分享</span>';
-  else if (m.in_local) badges += '<span class="emby-badge loc">本地</span>';
-  else if (m.in_share) badges += '<span class="emby-badge shr">分享</span>';
-  if (m.year) badges += '<span class="emby-badge gen">' + m.year + '</span>';
-  /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
+  var libTag = '';
+  if (m.in_local && m.in_share) libTag = '双库';
+  else if (m.in_local) libTag = '本地';
+  else if (m.in_share) libTag = '分享';
+
   var poster = m.has_image
     ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" loading="lazy">'
-    : '无图';
-  return '<div class="emby-card" onclick="showMovieDetailById(\'' + esc(m.id) + '\')" style="cursor:pointer"><div class="emby-head">'
-    + '<div class="emby-poster">' + poster + '</div>'
-    + '<div class="emby-body">'
-    + '<div class="emby-title">' + esc(m.name || '?') + '</div>'
-    + '<div class="emby-meta">电影</div>'
-    + '<div class="emby-badges">' + badges + '</div>'
-    + '</div></div></div>';
+    : '<div class="no-img">暂无海报</div>';
+
+  return '<div class="poster-card emby-poster-card" onclick="showMovieDetailById(\'' + esc(m.id) + '\')">'
+    + '<div class="poster-wrap">' + poster
+    + '<span class="badge-type">电影</span>'
+    + '</div>'
+    + '<div class="info">'
+    + '<div class="t" title="' + esc(m.name || '?') + '">' + esc(m.name || '?') + '</div>'
+    + '<div class="meta"><span>' + (m.year || '—') + ' · ' + libTag + '</span></div>'
+    + '</div>'
+    + '</div>';
 }
 
 /* ═══════════ 追更订阅 ═══════════ */
