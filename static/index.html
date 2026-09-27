@@ -413,6 +413,8 @@ input:focus,select:focus,textarea:focus{
   letter-spacing:.6px;font-weight:700;min-width:52px;
 }
 .filter-chips{display:flex;gap:6px;flex-wrap:wrap}
+.filter-chips.year-scroll{flex-wrap:nowrap;overflow-x:auto;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;max-width:100%}
+.filter-chips.year-scroll .chip{flex-shrink:0}
 .chip{
   background:var(--surface-hover);border:none;color:var(--text-mid);
   font-size:12.5px;padding:6px 14px;border-radius:999px;cursor:pointer;
@@ -1230,26 +1232,37 @@ window.addEventListener('unhandledrejection', function(e){
           </div>
           <div class="filter-row"><span class="filter-label">题材</span>
             <div class="filter-chips" id="filterGenre">
-              <button data-v="" class="chip active">全部</button>
-              <button data-v="动作" class="chip">动作</button>
-              <button data-v="喜剧" class="chip">喜剧</button>
-              <button data-v="犯罪" class="chip">犯罪</button>
-              <button data-v="纪录" class="chip">纪录</button>
-              <button data-v="剧情" class="chip">剧情</button>
-              <button data-v="动画" class="chip">动画</button>
-              <button data-v="悬疑" class="chip">悬疑</button>
-              <button data-v="科幻" class="chip">科幻</button>
-              <button data-v="恐怖" class="chip">恐怖</button>
-              <button data-v="战争" class="chip">战争</button>
+              <button data-v="" data-media="both" class="chip active">全部</button>
+              <button data-v="动作" data-media="both" class="chip">动作</button>
+              <button data-v="冒险" data-media="movie" class="chip">冒险</button>
+              <button data-v="喜剧" data-media="both" class="chip">喜剧</button>
+              <button data-v="犯罪" data-media="both" class="chip">犯罪</button>
+              <button data-v="纪录" data-media="both" class="chip">纪录</button>
+              <button data-v="剧情" data-media="both" class="chip">剧情</button>
+              <button data-v="家庭" data-media="both" class="chip">家庭</button>
+              <button data-v="奇幻" data-media="movie" class="chip">奇幻</button>
+              <button data-v="历史" data-media="movie" class="chip">历史</button>
+              <button data-v="恐怖" data-media="movie" class="chip">恐怖</button>
+              <button data-v="音乐" data-media="movie" class="chip">音乐</button>
+              <button data-v="悬疑" data-media="both" class="chip">悬疑</button>
+              <button data-v="爱情" data-media="movie" class="chip">爱情</button>
+              <button data-v="科幻" data-media="both" class="chip">科幻</button>
+              <button data-v="惊悚" data-media="movie" class="chip">惊悚</button>
+              <button data-v="战争" data-media="both" class="chip">战争</button>
+              <button data-v="西部" data-media="both" class="chip">西部</button>
+              <button data-v="动画" data-media="both" class="chip">动画</button>
+              <button data-v="儿童" data-media="tv" class="chip">儿童</button>
+              <button data-v="新闻" data-media="tv" class="chip">新闻</button>
+              <button data-v="真人秀" data-media="tv" class="chip">真人秀</button>
+              <button data-v="肥皂剧" data-media="tv" class="chip">肥皂剧</button>
+              <button data-v="脱口秀" data-media="tv" class="chip">脱口秀</button>
+              <button data-v="电视电影" data-media="movie" class="chip">电视电影</button>
             </div>
           </div>
           <div class="filter-row"><span class="filter-label">年份</span>
-            <div class="filter-chips" id="filterYear">
+            <div class="filter-chips year-scroll" id="filterYear">
               <button data-v="" class="chip active">全部</button>
-              <button data-v="2026" class="chip">2026</button>
-              <button data-v="2025" class="chip">2025</button>
-              <button data-v="2024" class="chip">2024</button>
-              <button data-v="2023" class="chip">2023</button>
+              <!-- 年份 chip 由 JS 动态生成，支持向前滚动加载更早年份 -->
             </div>
             <input type="number" id="filterYearInput" placeholder="或输入年份" min="1900" max="2030"
                    style="width:130px;flex-shrink:0;font-size:13px;padding:8px 10px">
@@ -1367,6 +1380,11 @@ window.addEventListener('unhandledrejection', function(e){
             <button data-f="extra" onclick="setEmbyFilter('extra')">超集</button>
             <button data-f="ongoing" onclick="setEmbyFilter('ongoing')">在更</button>
             <button data-f="unmatched" onclick="setEmbyFilter('unmatched')">未匹配</button>
+          </div>
+          <div class="segmented" id="embyScopeFilter" style="margin-bottom:10px">
+            <button class="active" data-s="all" onclick="setEmbyScope('all')">本地+分享</button>
+            <button data-s="local" onclick="setEmbyScope('local')">仅本地库</button>
+            <button data-s="share" onclick="setEmbyScope('share')">仅分享库</button>
           </div>
           <input type="text" id="embySearch" placeholder="搜索片名..." style="margin-bottom:12px" oninput="embyPage = 1; renderEmbyList()">
           <div id="embyList"><div class="list-empty">点击「TMDB 对照」拉取</div></div>
@@ -1911,6 +1929,34 @@ var MENU = [
 var currentPlan = null;
 var govData = { loc: [], shr: [], keep: [], exempt: [] };
 var currentGovFilter = 'all';
+/* 双库治理的扫描结果只存在内存里，浏览器一刷新（F5）就没了，用户经常因此
+   "看不到数据"。这里把扫描结果顺带存一份到 sessionStorage，刷新后能原样恢复。 */
+function saveGovStateToSession(){
+  try {
+    sessionStorage.setItem('govState', JSON.stringify({ currentPlan: currentPlan, govData: govData }));
+  } catch(e){}
+}
+function restoreGovStateFromSession(){
+  try {
+    var raw = sessionStorage.getItem('govState');
+    if (!raw) return false;
+    var saved = JSON.parse(raw);
+    if (!saved || !saved.govData) return false;
+    currentPlan = saved.currentPlan || null;
+    govData = saved.govData;
+    if ($('govExecBtn')) $('govExecBtn').disabled = !currentPlan;
+    $('govStats').style.display = '';
+    $('gov-keep').textContent  = govData.keep.length;
+    $('gov-loc').textContent   = govData.loc.length;
+    $('gov-shr').textContent   = govData.shr.length;
+    $('gov-exempt').textContent = govData.exempt.length;
+    renderGovList();
+    return true;
+  } catch(e){ return false; }
+}
+function clearGovStateSession(){
+  try { sessionStorage.removeItem('govState'); } catch(e){}
+}
 var statsAutoLoaded = false;
 var revealed = {};
 var currentStrategy = { decision: 'quality_first', multi_season_protect: true, tie_keep_local: false, exempt_keywords: [], special_action: 'compare' };
@@ -2054,8 +2100,12 @@ function switchTab(id){
   var m = MENU.find(function(x){ return x.id === id; });
   $('tabTitle').textContent = m ? m.name : 'TDD Guard';
   toggleSidebar(false);
+  // 记住当前所在页签，浏览器刷新（F5）后停在原地，而不是每次都跳回治理总览
+  // 重新拉取一遍数据，打断正在查看的内容。
+  try { sessionStorage.setItem('lastTab', id); } catch(e){}
 
   if (id === 'dashboard')  loadDashboard();
+  if (id === 'governance' && !currentPlan) restoreGovStateFromSession();
   if (id === 'explore')    loadExplore();
   if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); }
   if (id === 'mapping')    ensureEmbyLoaded();
@@ -2068,10 +2118,41 @@ function switchTab(id){
 }
 
 /* ═══════════ 治理总览 ═══════════ */
+/* 后端 /api/dashboard、/api/library_stats 本身已经带缓存了（5分钟/30秒 TTL），
+   但前端每次打开页面都是先显示"-"/"检查中..."占位符，等接口返回才填真实值，
+   视觉上像是"每次都在重新刷新"。这里加一层本地缓存，页面一打开就先用上次的
+   数据瞬间填满（不再有占位符闪烁），网络请求仍然照常发，回来后静默更新即可。 */
+function saveDashboardCache(d){
+  try { localStorage.setItem('dashboardCache', JSON.stringify(d)); } catch(e){}
+}
+function saveLibStatsCache(r){
+  try { localStorage.setItem('libStatsCache', JSON.stringify(r)); } catch(e){}
+}
+function hydrateDashboardFromCache(){
+  try {
+    var raw = localStorage.getItem('dashboardCache');
+    if (raw) renderDashboard(JSON.parse(raw));
+  } catch(e){}
+  try {
+    var raw2 = localStorage.getItem('libStatsCache');
+    if (raw2) renderLibraryStats(JSON.parse(raw2));
+  } catch(e){}
+}
+
 async function loadLibraryStats(){
   try {
     var r = await api('/api/library_stats');
     if (r.status !== 'success') throw new Error(r.message || '\u5931\u8d25');
+    renderLibraryStats(r);
+    saveLibStatsCache(r);
+  } catch(e){
+    // 有缓存的话保留缓存显示的内容，不要用错误信息把已经填好的数据覆盖掉
+    if (!localStorage.getItem('libStatsCache')) {
+      $('libStatsGrid').innerHTML = '<div class="list-empty">\u52a0\u8f7d\u5931\u8d25: ' + esc(e.message) + '</div>';
+    }
+  }
+}
+function renderLibraryStats(r){
     var grid = $('libStatsGrid');
     var html = '<div class="cat-card cat-all"><div class="cat-name">\u5168\u90e8</div>'
       + '<div class="cat-num">' + (r.local_total + r.share_total).toLocaleString() + '</div>'
@@ -2091,14 +2172,28 @@ async function loadLibraryStats(){
       summary += '\uff08\u672a\u5206\u7c7b ' + (r.local_other + r.share_other).toLocaleString() + '\uff09';
     }
     $('libStatsSummary').textContent = summary;
-  } catch(e){
-    $('libStatsGrid').innerHTML = '<div class="list-empty">\u52a0\u8f7d\u5931\u8d25: ' + esc(e.message) + '</div>';
-  }
 }
 
 async function loadDashboard(){
   try {
     var d = await api('/api/dashboard');
+    renderDashboard(d);
+    saveDashboardCache(d);
+
+    // 策略快照
+    var st = await api('/api/strategy');
+    var s = st.strategy || {};
+    var decisionLabel = { quality_first: '画质优先', keep_local: '保留本地', keep_share: '保留分享', balanced: '严格画质' }[s.decision] || s.decision;
+    var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
+    $('strategySnapshot').innerHTML =
+      '<div class="path-row"><span class="name">决策模型</span><span class="path" style="color:#10b981;border:none">' + decisionLabel + '</span></div>' +
+      '<div class="path-row"><span class="name">多季合集保护</span><span class="path" style="color:' + (s.multi_season_protect ? '#3b82f6' : '#9ca3af') + ';border:none">' + (s.multi_season_protect ? '已开启' : '已关闭') + '</span></div>' +
+      '<div class="path-row"><span class="name">特别篇策略</span><span class="path" style="color:#8b5cf6;border:none">' + spLabel + '</span></div>' +
+      '<div class="path-row"><span class="name">平局策略</span><span class="path" style="color:#6b7280;border:none">' + (s.tie_keep_local ? '保留本地' : '保留分享') + '</span></div>' +
+      '<div class="path-row"><span class="name">白名单</span><span class="path" style="border:none;color:#6b7280">' + (s.exempt_keywords || []).join(', ') + '</span></div>';
+  } catch(e){ console.warn('dashboard 失败', e); }
+}
+function renderDashboard(d){
     $('stat-local').textContent = d.localCount || '-';
     $('stat-share').textContent = d.shareCount || '-';
     var embyOk = d.services && d.services.emby && d.services.emby.ok;
@@ -2131,19 +2226,6 @@ async function loadDashboard(){
       else if (age < 3600) $('stat-ingest-age').textContent = Math.floor(age/60) + ' 分钟前';
       else $('stat-ingest-age').textContent = Math.floor(age/3600) + ' 小时前';
     }
-
-    // 策略快照
-    var st = await api('/api/strategy');
-    var s = st.strategy || {};
-    var decisionLabel = { quality_first: '画质优先', keep_local: '保留本地', keep_share: '保留分享', balanced: '严格画质' }[s.decision] || s.decision;
-    var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
-    $('strategySnapshot').innerHTML =
-      '<div class="path-row"><span class="name">决策模型</span><span class="path" style="color:#10b981;border:none">' + decisionLabel + '</span></div>' +
-      '<div class="path-row"><span class="name">多季合集保护</span><span class="path" style="color:' + (s.multi_season_protect ? '#3b82f6' : '#9ca3af') + ';border:none">' + (s.multi_season_protect ? '已开启' : '已关闭') + '</span></div>' +
-      '<div class="path-row"><span class="name">特别篇策略</span><span class="path" style="color:#8b5cf6;border:none">' + spLabel + '</span></div>' +
-      '<div class="path-row"><span class="name">平局策略</span><span class="path" style="color:#6b7280;border:none">' + (s.tie_keep_local ? '保留本地' : '保留分享') + '</span></div>' +
-      '<div class="path-row"><span class="name">白名单</span><span class="path" style="border:none;color:#6b7280">' + (s.exempt_keywords || []).join(', ') + '</span></div>';
-  } catch(e){ console.warn('dashboard 失败', e); }
 }
 
 /* ═══════════ 扫描 ═══════════ */
@@ -2171,6 +2253,7 @@ async function scanLibrary(){
     $('gov-shr').textContent   = govData.shr.length;
     $('gov-exempt').textContent = govData.exempt.length;
     renderGovList();
+    saveGovStateToSession();
     toast('扫描完成：待处理 ' + (r.total_clean_cnt || 0) + ' 项', 'success');
   } catch(e){ toast(e.message, 'error', 4000); }
   finally {
@@ -2241,11 +2324,12 @@ async function runClean(){
     var lines = (t.result.detail || []).join('\n');
     alert('【执行结果】\n\n' + lines + '\n\n释放本地: ' + t.result.loc_cnt + '  淘汰分享: ' + t.result.sh_cnt);
     currentPlan = null;
-    if ($('govExecBtn')) $('govExecBtn').disabled = true;
-    govData = { loc: [], shr: [], keep: [], exempt: [] };
-    $('govStats').style.display = 'none';
-    $('planList').innerHTML = '<div class="list-empty">已执行完毕</div>';
+    clearGovStateSession();
     loadDashboard();
+    // 执行完直接重新扫描一遍，双库治理页面显示清理后的最新结果，
+    // 而不是把整页清空，什么都看不到。
+    $('planList').innerHTML = '<div class="list-empty">正在重新扫描，查看清理后的最新结果...</div>';
+    await scanLibrary();
   } catch(e){ toast(e.message, 'error', 4000); }
 }
 
@@ -2284,6 +2368,59 @@ function toggleExploreFilters(){
     panel.classList.add('hidden');
     if (summary) summary.classList.remove('open');
     if (toggleText) toggleText.textContent = '展开筛选';
+  }
+}
+
+/* 年份 chip：初始生成最近若干年，滚动到最右侧（更早年份）时继续往前补 */
+var _yearMinLoaded = null;
+var YEAR_FLOOR = 1900;
+function _appendYearChips(fromYear, count){
+  var el = $('filterYear');
+  if (!el) return fromYear;
+  var frag = document.createDocumentFragment();
+  var y = fromYear;
+  var n = 0;
+  while (y >= YEAR_FLOOR && n < count) {
+    var btn = document.createElement('button');
+    btn.className = 'chip';
+    btn.dataset.v = String(y);
+    btn.textContent = y;
+    frag.appendChild(btn);
+    y -= 1; n += 1;
+  }
+  el.appendChild(frag);
+  return y; // 下一次应从这个年份继续往前生成
+}
+function populateYearChips(){
+  var el = $('filterYear');
+  if (!el || el.dataset.populated) return;
+  el.dataset.populated = '1';
+  var thisYear = new Date().getFullYear() + 1;
+  _yearMinLoaded = _appendYearChips(thisYear, 30);
+  el.addEventListener('scroll', function(){
+    if (_yearMinLoaded === null || _yearMinLoaded < YEAR_FLOOR) return;
+    if (el.scrollLeft + el.clientWidth >= el.scrollWidth - 80) {
+      _yearMinLoaded = _appendYearChips(_yearMinLoaded, 20);
+    }
+  }, { passive: true });
+}
+
+/* 题材 chip 会因所选「类型」(电影/剧集) 而有所不同，切换类型时隐藏不适用的题材 */
+function refreshGenreChipsForMedia(media){
+  var el = $('filterGenre');
+  if (!el) return;
+  var activeInvalid = false;
+  el.querySelectorAll('.chip').forEach(function(b){
+    var m = b.dataset.media || 'both';
+    var visible = (m === 'both' || m === media || !b.dataset.v);
+    b.classList.toggle('hidden', !visible);
+    if (!visible && b.classList.contains('active')) activeInvalid = true;
+  });
+  if (activeInvalid) {
+    el.querySelectorAll('.chip').forEach(function(b){ b.classList.remove('active'); });
+    var allBtn = el.querySelector('.chip[data-v=""]');
+    if (allBtn) allBtn.classList.add('active');
+    exploreState.genre = '';
   }
 }
 
@@ -2469,11 +2606,18 @@ function explorePage(delta){
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function switchExploreTab_init(){
+  populateYearChips();
+  refreshGenreChipsForMedia(exploreState.media);
   setupChipGroup('filterRegion', 'region');
   setupChipGroup('filterMedia', 'media');
   setupChipGroup('filterYear', 'year');
   setupChipGroup('filterSort', 'sort');
   setupChipGroup('filterGenre', 'genre');
+  var mediaEl = $('filterMedia');
+  if (mediaEl) mediaEl.addEventListener('click', function(e){
+    var btn = e.target.closest('.chip');
+    if (btn && btn.dataset.v) refreshGenreChipsForMedia(btn.dataset.v);
+  });
   var yi = $('filterYearInput');
   if (yi) {
     yi.addEventListener('keydown', function(e){
@@ -2494,7 +2638,13 @@ function switchExploreTab_init(){
 
 /* ═══════════ 片库映射 ═══════════ */
 var embyData = { series: [], movies: [], stats: {} };
-var embyFilterState = { type: 'series', filter: 'all' };
+var embyFilterState = { type: 'series', filter: 'all', scope: 'all' };
+function setEmbyScope(sc){
+  embyPage = 1;
+  embyFilterState.scope = sc;
+  document.querySelectorAll('#embyScopeFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.s === sc); });
+  renderEmbyList();
+}
 var embyPage = 1;
 var embyLoaded = false;
 function ensureEmbyLoaded(){ if (!embyLoaded) loadEmbyLibrary(false, false); }
@@ -2621,6 +2771,8 @@ function renderEmbyList(){
   var arr;
   if (embyFilterState.type === 'movies') {
     arr = embyData.movies.slice();
+    if (embyFilterState.scope === 'local') arr = arr.filter(function(x){ return x.in_local; });
+    else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
     if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
     if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
     list.innerHTML = arr.slice(0, embyPage * 30).map(renderMovieCard).join('');
@@ -2637,6 +2789,8 @@ function renderEmbyList(){
   } else if (embyFilterState.filter !== 'all') {
     arr = arr.filter(function(x){ return (x.tmdb_info || {}).match_status === embyFilterState.filter; });
   }
+  if (embyFilterState.scope === 'local') arr = arr.filter(function(x){ return x.in_local; });
+  else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
   if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
   if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
   var prio = { missing: 0, extra: 1, unmatched: 2, no_tmdb: 2, ongoing: 3, aligned: 4 };
@@ -2654,6 +2808,16 @@ function renderEmbyList(){
   list.innerHTML = arr.slice(0, embyPage * 30).map(renderSeriesCard).join('');
   hydratePosters(list);
   updateEmbyLoadMore(arr.length);
+}
+function toggleSeasonList(id){
+  var el = document.getElementById(id);
+  if (!el) return;
+  var full = el.querySelector('.season-list-full');
+  var otherRows = Array.prototype.slice.call(el.children).filter(function(c){ return c !== full; });
+  var collapsed = el.getAttribute('data-collapsed') !== '0';
+  otherRows.forEach(function(r){ r.classList.toggle('hidden', collapsed); });
+  if (full) full.classList.toggle('hidden', !collapsed);
+  el.setAttribute('data-collapsed', collapsed ? '0' : '1');
 }
 function renderSeriesCard(s){
   var ti = s.tmdb_info || {};
@@ -2696,9 +2860,11 @@ function renderSeriesCard(s){
   }
 
   // ── 季详情列表 ──
+  // 多季合集（如综艺、长青剧）展开全部季会占很大版面，这里默认只显示"有问题"
+  // 的季（缺集/超集/未匹配），已对齐的季折叠成一行摘要，点击可展开查看全部。
   var seasonList = '';
   if (ti.seasons && ti.seasons.length) {
-    seasonList = '<div class="season-list">' + ti.seasons.map(function(se){
+    var seasonRow = function(se){
       var cls = se.status === 'aligned' ? 'ok' : (se.status === 'missing' ? 'miss' : (se.status === 'extra' ? 'extra' : 'ok'));
       var tag = '';
       if (se.tmdb == null) {
@@ -2716,7 +2882,23 @@ function renderSeriesCard(s){
         + '<span class="d">本地 <b>' + se.local + '</b> 集 / TMDB <b>' + se.tmdb + '</b> 集</span>'
         + tag
         + '</div>';
-    }).join('') + '</div>';
+    };
+    var issueSeasons = ti.seasons.filter(function(se){ return se.status !== 'aligned' || se.tmdb == null; });
+    var okCount = ti.seasons.length - issueSeasons.length;
+    var COLLAPSE_THRESHOLD = 4;
+    if (ti.seasons.length > COLLAPSE_THRESHOLD && okCount > 0) {
+      var rid = 'seasons-' + s.id;
+      seasonList = '<div class="season-list" id="' + rid + '" data-collapsed="1">'
+        + issueSeasons.map(seasonRow).join('')
+        + '<div class="season-row ok season-toggle" onclick="event.stopPropagation();toggleSeasonList(\'' + rid + '\')">'
+        + '<span class="d">✓ 另有 ' + okCount + ' 季已对齐（已折叠）</span>'
+        + '<span class="tag" style="background:#f3f4f6;color:#6b7280">展开全部 ' + ti.seasons.length + ' 季</span>'
+        + '</div>'
+        + '<div class="season-list-full hidden">' + ti.seasons.map(seasonRow).join('') + '</div>'
+        + '</div>';
+    } else {
+      seasonList = '<div class="season-list">' + ti.seasons.map(seasonRow).join('') + '</div>';
+    }
   }
 
   /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
@@ -2937,12 +3119,39 @@ async function deleteSeriesFromLib(seriesId, target, seriesName){
     }
     alert(doneMsg);
 
-    // 4. 刷\u65b0
-    embyLoaded = false;
-    loadEmbyLibrary(false, false);
+    // 4. 局部刷新：只更新被删剧集自身的数据，不重新拉取/对照整个片库，
+    //    这样其余剧集的 TMDB 对照结果不会被清空，用户还能继续预览、删除下一部。
+    await refreshSingleSeriesInList(seriesId, target);
     closeModal();
   } catch(e){
     alert('\u5220\u9664\u5931\u8d25\uff1a' + e.message);
+  }
+}
+
+/* 只重新拉取单部剧集在 Emby 中的最新分集情况，替换/移除列表里对应的一条，
+   避免像整页刷新那样把所有剧集的 TMDB 对照状态打回"待对照"。 */
+async function refreshSingleSeriesInList(seriesId, deletedTarget){
+  try {
+    var r = await api('/api/emby/series/' + seriesId + '/episodes');
+    var eps = (r && r.status === 'success') ? (r.episodes || []) : [];
+    var idx = embyData.series.findIndex(function(x){ return x.id === seriesId; });
+    if (!eps.length) {
+      // 两个库的文件都已删完：直接从列表移除
+      if (idx >= 0) embyData.series.splice(idx, 1);
+      delete window.__embySeriesMap[seriesId];
+    } else if (idx >= 0) {
+      var s = embyData.series[idx];
+      s.in_local = eps.some(function(e){ return e.lib === 'local'; });
+      s.in_share = eps.some(function(e){ return e.lib === 'share'; });
+      // 只更新被删库那一侧的分集计数展示，TMDB 对照结果（match_status/seasons）保留不动
+      window.__embySeriesMap[seriesId] = s;
+    }
+    var st = embyData.stats;
+    st.total_series = embyData.series.length;
+    $('emby-total').textContent = st.total_series || 0;
+    renderEmbyList();
+  } catch(e) {
+    // 局部刷新失败不影响已完成的删除操作，静默忽略
   }
 }
 
@@ -3614,9 +3823,18 @@ document.addEventListener('DOMContentLoaded', async function(){
   renderMenu();
   switchExploreTab_init();
   setupInfiniteScroll();
+  // 先用本地缓存的数据瞬间填满治理总览，避免每次打开/刷新都先看到一堆
+  // "-"/"检查中..."占位符再变成真实数据，视觉上不再像"每次都在重新刷新"。
+  hydrateDashboardFromCache();
   // 预加载订阅列表（供探索页订阅按钮用）
   try { var r = await api('/api/subscriptions'); currentSubs = r.subscriptions || []; } catch(e){}
-  loadDashboard();
+  var lastTab = 'dashboard';
+  try { lastTab = sessionStorage.getItem('lastTab') || 'dashboard'; } catch(e){}
+  if (lastTab !== 'dashboard' && MENU.some(function(m){ return m.id === lastTab; })) {
+    switchTab(lastTab);
+  } else {
+    loadDashboard();
+  }
   loadLibraryStats();
   pollTmdbProgress();
 });

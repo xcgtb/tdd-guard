@@ -1306,16 +1306,31 @@ SORT_MAP = {
 }
 
 GENRE_MAP = {
-    '动作': {'movie': 28,    'tv': 10759},
-    '喜剧': {'movie': 35,    'tv': 35},
-    '犯罪': {'movie': 80,    'tv': 80},
-    '纪录': {'movie': 99,    'tv': 99},
-    '剧情': {'movie': 18,    'tv': 18},
-    '动画': {'movie': 16,    'tv': 16},
-    '悬疑': {'movie': 9648,  'tv': 9648},
-    '科幻': {'movie': 878,   'tv': 10765},
-    '恐怖': {'movie': 27,    'tv': None},
-    '战争': {'movie': 10752, 'tv': 10768},
+    # 与 TMDB 官方 genre 列表对齐（movie: /genre/movie/list, tv: /genre/tv/list）
+    '动作':   {'movie': 28,    'tv': 10759},
+    '冒险':   {'movie': 12,    'tv': None},
+    '喜剧':   {'movie': 35,    'tv': 35},
+    '犯罪':   {'movie': 80,    'tv': 80},
+    '纪录':   {'movie': 99,    'tv': 99},
+    '剧情':   {'movie': 18,    'tv': 18},
+    '家庭':   {'movie': 10751, 'tv': 10751},
+    '奇幻':   {'movie': 14,    'tv': None},
+    '历史':   {'movie': 36,    'tv': None},
+    '恐怖':   {'movie': 27,    'tv': None},
+    '音乐':   {'movie': 10402, 'tv': None},
+    '悬疑':   {'movie': 9648,  'tv': 9648},
+    '爱情':   {'movie': 10749, 'tv': None},
+    '科幻':   {'movie': 878,   'tv': 10765},
+    '惊悚':   {'movie': 53,    'tv': None},
+    '战争':   {'movie': 10752, 'tv': 10768},
+    '西部':   {'movie': 37,    'tv': 37},
+    '动画':   {'movie': 16,    'tv': 16},
+    '儿童':   {'movie': None,  'tv': 10762},
+    '新闻':   {'movie': None,  'tv': 10763},
+    '真人秀': {'movie': None,  'tv': 10764},
+    '肥皂剧': {'movie': None,  'tv': 10766},
+    '脱口秀': {'movie': None,  'tv': 10767},
+    '电视电影': {'movie': 10770, 'tv': None},
 }
 
 
@@ -1414,11 +1429,18 @@ def emby_library_overview(force=False):
 
     for s in series_data.get('Items', []):
         sid = s.get('Id'); path = s.get('Path', '') or ''
+        # Emby 有时会残留"空壳"剧集条目（元数据存在，但没有任何实际分集文件，
+        # 常见于删除后 Emby 尚未彻底清理，或媒体库正在扫描中）。这类条目不该
+        # 出现在片库映射对照里，否则用户会看到"Emby 没有数据"却仍被列出的剧。
+        if not eps_by_series.get(sid):
+            continue
         season_map = {}
         for ep in eps_by_series.get(sid, []):
             sn = ep.get('ParentIndexNumber'); en = ep.get('IndexNumber')
             if sn is None or en is None: continue
             season_map.setdefault(sn, set()).add(en)
+        if not season_map:
+            continue
         seasons = []
         total_missing = 0
         for sn in sorted(season_map.keys()):
@@ -2037,6 +2059,36 @@ def send_morning_report(items: list, force_refresh: bool = False) -> bool:
     if ok:
         _cfg.mark_morning_report_sent(datetime.date.today().isoformat())
     return ok
+
+
+def patch_emby_lib_cache_after_series_delete(series_id: str, deleted_target: str):
+    """单剧删除后，就地更新内存 + 磁盘上的片库映射缓存（含 TMDB 对照结果），
+    而不是整体清空——这样片库映射页不需要为了看到最新状态而重新跑一遍
+    很慢的全量 TMDB 对照，其它剧集的对照结果也不会被打回"待对照"。"""
+    for cache in (_emby_lib_cache, {'data': read_emby_lib_cache()}):
+        data = cache.get('data')
+        if not data:
+            continue
+        series_list = data.get('series') or []
+        idx = next((i for i, s in enumerate(series_list) if s.get('id') == series_id), None)
+        if idx is None:
+            continue
+        remaining = (emby_request('/Items', {
+            'ParentId': series_id, 'Recursive': 'true',
+            'IncludeItemTypes': 'Episode', 'Fields': 'Path', 'Limit': 5000,
+        }) or {}).get('Items') or []
+        if not remaining:
+            series_list.pop(idx)
+        else:
+            paths = [emby_path_to_container(e.get('Path') or '') for e in remaining]
+            series_list[idx]['in_local'] = any(p and _inside(p, L_ROOT) for p in paths)
+            series_list[idx]['in_share'] = any(p and _inside(p, S_ROOT) for p in paths)
+        data['series'] = series_list
+        if cache is _emby_lib_cache:
+            _emby_lib_cache['data'] = data
+            _emby_lib_cache['ts'] = time.time()
+        else:
+            save_emby_lib_cache(data)
 
 
 def save_emby_lib_cache(data: dict):

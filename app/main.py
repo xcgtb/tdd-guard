@@ -1051,16 +1051,23 @@ def api_emby_series_delete(series_id: str, body: dict = None):
         except Exception:
             pass
 
-        # 清空内存缓存，下次对照立即拿最新数据
+        # 清空分集/索引缓存，保证下次查这部剧能拿到最新数据
         try:
             engine._ep_cache['ts'] = 0
             engine._ep_cache['data'] = None
-            engine._emby_lib_cache['ts'] = 0
-            engine._emby_lib_cache['data'] = None
             engine._emby_index_cache['ts'] = 0
             engine._emby_index_cache['data'] = None
             engine._invalidate_lib_cache()
             engine.invalidate_stats_cache()
+        except Exception:
+            pass
+
+        # 片库映射页用的是已对照过 TMDB 的持久化缓存（_emby_lib_cache / 磁盘文件），
+        # 之前这里会整体清空，导致下次打开片库映射时所有剧集的 TMDB 对照结果
+        # 都被打回"待对照"，只能整页重新跑一遍很慢的 TMDB 对照。
+        # 这里改为只在缓存里"就地"更新/移除这一部剧，其余剧集的对照结果保留。
+        try:
+            engine.patch_emby_lib_cache_after_series_delete(series_id, target)
         except Exception:
             pass
 
