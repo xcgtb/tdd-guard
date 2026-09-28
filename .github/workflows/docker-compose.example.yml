@@ -1,0 +1,19 @@
+# 直接使用 GHCR 预构建镜像，无需自己 build。
+# 用法：复制为 docker-compose.yml，改掉标 ← 的地方，然后 docker compose up -d
+# 启动后浏览器打开 http://<主机IP>:8321，Emby / TMDB / Telegram 等都在网页「设置」里填写。
+services:
+  tdd-guard:
+    image: ghcr.io/xcgtb/tdd-guard:latest
+    container_name: tdd-guard
+    restart: unless-stopped
+    # host 网络：Emby 与本服务在同一台机器时，网页里 Emby 地址默认 http://127.0.0.1:8096 即可。
+    # 若改用 bridge 网络，请删掉这行，加上 ports: ["8321:8321"]，并在网页里填 Emby 的局域网地址。
+    network_mode: host
+    environment:
+      WEB_USER: admin
+      WEB_PASSWORD: change-me            # ← 必填，不设置会拒绝启动
+    volumes:
+      - ./data:/data                     # 配置、状态、日志（必须持久化）
+      - /path/to/local-strm:/media/local     # ← 本地库 STRM 目录
+      - /path/to/share-strm:/media/share     # ← 分享库 STRM 目录
+      - /path/to/cloud:/media/cloud          # ← 云端库目录（用不到可删）
