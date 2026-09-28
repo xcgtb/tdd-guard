@@ -317,6 +317,34 @@ class TestSeasonReplaceable:
         assert len(hits) == 1
         assert hits[0].kind == 'exempt'
 
+    def test_incomplete_season_deletes_both(self):
+        """残次品：前序缺失（缺 E01）→ 本地+分享都删"""
+        _reset_libs()
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
+        for ep in (3, 4, 5):
+            _strm(engine.L_ROOT, '残次品测试 (2020)/Season 01', f'E{ep:02d}.1080p.strm')
+            _strm(engine.S_ROOT, '残次品测试 (2020)/Season 01', f'E{ep:02d}.2160p.strm')
+
+        acts = engine.build_plan()
+        hits = _acts_for_title(acts, '残次品测试')
+        kinds = {a.kind for a in hits}
+        # 应产生删本地 + 删分享两个动作
+        assert 'loc' in kinds and 'shr' in kinds
+        assert all(a.meta['reason'] in ('incomplete_delete_local', 'incomplete_delete_share') for a in hits)
+
+    def test_mid_gap_season_deletes_both(self):
+        """残次品：中间断层（缺 E03）→ 本地+分享都删"""
+        _reset_libs()
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
+        for ep in (1, 2, 4):
+            _strm(engine.L_ROOT, '断层测试 (2020)/Season 01', f'E{ep:02d}.2160p.strm')
+            _strm(engine.S_ROOT, '断层测试 (2020)/Season 01', f'E{ep:02d}.2160p.strm')
+
+        acts = engine.build_plan()
+        hits = _acts_for_title(acts, '断层测试')
+        kinds = {a.kind for a in hits}
+        assert 'loc' in kinds and 'shr' in kinds
+
 
 # ═══════════════════ 云端源置信度（白皮书 §13）═══════════════════
 class TestCloudVideoConfidence:

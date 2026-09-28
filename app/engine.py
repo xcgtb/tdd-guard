@@ -259,11 +259,20 @@ def _season_compare(s_files, l_files):
             s_better += 1
         else:
             l_better += 1
+    # 合并后集号是否完整（前序缺 1 或中间断层均视为不完整残次品）
+    union = s_keys | l_keys
+    complete = True
+    if union:
+        lo, hi = min(union), max(union)
+        # 前序缺失：最小集号不是 1；中间断层：1..hi 之间有缺
+        if lo > 1 or len(union) < (hi - lo + 1):
+            complete = False
     return {
         's_eps': s_eps, 'l_eps': l_eps,
         's_only': sorted(s_keys - l_keys),
         'l_only': sorted(l_keys - s_keys),
         'common': common, 's_better': s_better, 'l_better': l_better,
+        'complete': complete,
     }
 
 
@@ -1271,14 +1280,11 @@ def build_plan():
 
 
 def _emit_season_act(acts, disp, sn, s_files, l_files):
-    """单季择优：逐集对齐 + 达标率择优，取消双向保留。
+    """单季治理：先判完整性（残次品），完整才逐集择优。
 
     决策规则：
-      - 交集内逐集比画质，统计分享达标集数 s_better 与本地达标集数 l_better。
-      - 分享独有集(s_only)、本地独有集(l_only) 计入各自「更完整」优势。
-      - 分享达标率 >= SEASON_REPLACE_RATIO 且集数不落后 → 删本地（留分享）。
-      - 否则本地更优 → 删分享（留本地）。
-      - 前序缺失 / 中间断层不再视为「不完整障碍」，直接纳入择优。
+      - 合并后集号不完整（前序缺 1 或中间断层）→ 视为残次品，本地+分享都删。
+      - 完整：交集内逐集比画质，达标率高者保留，另一方淘汰。
     """
     tag = f'《{disp}》S{sn:02d}'
     cmp = _season_compare(s_files, l_files)
@@ -1287,6 +1293,24 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
     common = len(cmp['common'])
     s_better = cmp['s_better']
     l_better = cmp['l_better']
+
+    # ── 不完整 = 残次品：两边都删 ──
+    if not cmp['complete'] and common > 0:
+        if l_files:
+            acts.append(Act('loc', f'⚠️ {tag} (残次品：集数不完整 → 删本地)',
+                            f'├─ ⚠️ {tag}: 前序缺失/中间断层 ➔ CD2联动删除115网盘旧源',
+                            l_files,
+                            meta={'reason': 'incomplete_delete_local',
+                                  'reason_label': '残次品-删本地',
+                                  'title': disp, 'season': sn}))
+        if s_files:
+            acts.append(Act('shr', f'⚠️ {tag} (残次品：集数不完整 → 删分享)',
+                            f'├─ ⚠️ {tag}: 前序缺失/中间断层 ➔ 清理分享影视库strm',
+                            s_files,
+                            meta={'reason': 'incomplete_delete_share',
+                                  'reason_label': '残次品-删分享',
+                                  'title': disp, 'season': sn}))
+        return
 
     if common == 0:
         # 无交集集号，无法逐集比画质 → 静默，不删任何一边
@@ -1331,6 +1355,10 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
         cmp = _season_compare(s_proper[sn], l_files)
         common = len(cmp['common'])
         if common == 0:
+            all_pass = False
+            break
+        # 不完整（残次品）不参与「整剧零和整体删本地」，交给逐季处理（两边都删）
+        if not cmp['complete']:
             all_pass = False
             break
         if cmp['s_better'] / common < SEASON_REPLACE_RATIO:
