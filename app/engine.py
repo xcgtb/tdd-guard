@@ -995,6 +995,11 @@ def clean_orphan_dirs(paths, dry_run=True):
             removed.append(str(d))
         except OSError as e:
             errors.append(f'{p}: {e}')
+    if not dry_run and removed:
+        write_audit_log('洗版残留清理',
+                        f'清理洗版残留目录 {len(removed)} 个',
+                        [f'删除 {len(removed)} 个残留目录'] + removed[:50]
+                        + (['错误: ' + e for e in errors[:3]] if errors else []))
     return {'status': 'success', 'dry_run': dry_run,
             'removed': removed, 'count': len(removed), 'errors': errors}
 
@@ -2895,12 +2900,10 @@ def scan_exempt_matches():
 
 
 
-def action_library_stats(args):
-    # 缓存命中则直接返回
-    now = time.time()
-    if _lib_stats_cache['data'] is not None and (now - _lib_stats_cache['ts']) < _CACHE_TTL:
-        return _lib_stats_cache['data']
-    """统计双库各分类的 STRM 数量（按实际目录名匹配）"""
+def _recompute_all_stats():
+    """单次遍历双库，同时更新「分类统计」与「STRM 计数」两套缓存。
+    之前两处各自独立遍历，时间不同/网络挂载抖动会导致数字对不上；
+    统一从同一次遍历取数，保证总览卡片与总库分类统计永远一致。"""
     CATS = [
         ('\U0001F476 儿童节目', ['儿童']),
         ('\U0001F3A4 演唱会',       ['演唱会']),
@@ -2968,9 +2971,21 @@ def action_library_stats(args):
         'local_other': out['local_other'],
         'share_other': out['share_other'],
     }
-    _lib_stats_cache['ts'] = time.time()
+    now = time.time()
+    _lib_stats_cache['ts'] = now
     _lib_stats_cache['data'] = result
+    # 同一次遍历的总数同步写入 STRM 计数缓存（内存+磁盘），两处数字永远一致
+    _strm_count_cache.update({'ts': now, 'local': out['local_total'], 'share': out['share_total']})
+    _save_strm_count_disk(out['local_total'], out['share_total'])
     return result
+
+
+def action_library_stats(args):
+    # 缓存命中则直接返回
+    now = time.time()
+    if _lib_stats_cache['data'] is not None and (now - _lib_stats_cache['ts']) < _CACHE_TTL:
+        return _lib_stats_cache['data']
+    return _recompute_all_stats()
 
 
 
@@ -3020,17 +3035,16 @@ def _save_strm_count_disk(local, share):
 
 
 def _strm_count_bg_refresh():
-    """后台重算 STRM 总数（单飞），完成后更新内存+磁盘缓存"""
+    """后台重算统计（单飞）。走 _recompute_all_stats 统一遍历，
+    同时更新分类统计与 STRM 计数，保证两处数字一致。"""
     if not _strm_count_refreshing.acquire(blocking=False):
         return
     try:
-        l = sum(1 for _ in L_ROOT.rglob('*.strm')) if L_ROOT.exists() else 0
-        s_ = sum(1 for _ in S_ROOT.rglob('*.strm')) if S_ROOT.exists() else 0
-        _strm_count_cache.update({'ts': time.time(), 'local': l, 'share': s_})
-        _save_strm_count_disk(l, s_)
-        log.info('后台刷新 STRM 计数: local=%d share=%d', l, s_)
+        _recompute_all_stats()
+        log.info('后台刷新统计完成: local=%d share=%d',
+                 _strm_count_cache['local'], _strm_count_cache['share'])
     except Exception as e:
-        log.warning('STRM 计数后台刷新失败: %s', e)
+        log.warning('统计后台刷新失败: %s', e)
     finally:
         _strm_count_refreshing.release()
 

@@ -40,7 +40,7 @@ if not WEB_PASSWORD:
         )
         raise SystemExit(1)
 
-app = FastAPI(title='TTD Guard', version='1.3.0')
+app = FastAPI(title='TTD Guard', version='1.3.4')
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
