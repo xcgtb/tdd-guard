@@ -36,8 +36,8 @@
 例如在 NAS 上：
 
 ```bash
-mkdir -p /vol1/1000/docker/tdd-guard/data
-cd /vol1/1000/docker/tdd-guard
+mkdir -p /vol1/1000/docker/ttd-guard/data
+cd /vol1/1000/docker/ttd-guard
 ```
 
 ### 2. 准备 `docker-compose.yml`
