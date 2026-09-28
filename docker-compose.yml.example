@@ -1,9 +1,9 @@
 services:
-  tdd-guard:
+  ttd-guard:
     # GHCR 预构建镜像：不需要源码、不需要 build。
-    # 想固定版本可改成：ghcr.io/xcgtb/tdd-guard:1.2.1
-    image: ghcr.io/xcgtb/tdd-guard:latest
-    container_name: tdd-guard
+    # 想固定版本可改成：ghcr.io/xcgtb/ttd-guard:1.2.1
+    image: ghcr.io/xcgtb/ttd-guard:latest
+    container_name: ttd-guard
     restart: unless-stopped
     network_mode: host
 
