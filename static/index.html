@@ -1583,12 +1583,17 @@ window.addEventListener('unhandledrejection', function(e){
         </div>
         <div class="panel" id="orphanDirsPanel" style="display:none">
           <div class="row-between">
-            <h3 data-icon="database">孤儿目录（无 STRM）</h3>
-            <button class="btn danger" id="cleanOrphanDirsBtn" onclick="cleanOrphanDirs()" data-icon="trash">删除选中目录</button>
+            <h3 data-icon="database">洗版残留（无 STRM 目录）</h3>
+            <div style="display:flex;gap:10px;align-items:center">
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+                <input type="checkbox" id="orphanDirsSelectAll" onchange="toggleAllOrphanDirs(this)"> 全选
+              </label>
+              <button class="btn danger" id="cleanOrphanDirsBtn" onclick="cleanOrphanDirs()" data-icon="trash">删除选中目录</button>
+            </div>
           </div>
           <p style="font-size:12px;color:#6b7280;line-height:1.7">
-            这些目录里已没有任何 STRM（只剩字幕/元数据或为空），不再对应可播放资源。
-            勾选后可确认删除。<b>删除不可恢复，请谨慎。</b>
+            更名洗版后，治理清理 STRM 时残留的字幕/元数据目录（目录内已无任何 STRM）。
+            只列出最顶层目录，删除会连同内部子目录（Season 等）一并清理。<b>删除不可恢复，请谨慎。</b>
           </p>
           <div id="orphanDirsList"><div class="list-empty">无</div></div>
         </div>
@@ -4134,20 +4139,26 @@ var _orphanDirs = [];
 function renderOrphanDirs(dirs){
   _orphanDirs = dirs || [];
   var panel = $('orphanDirsPanel');
+  var selectAll = $('orphanDirsSelectAll');
+  if (selectAll) selectAll.checked = false;
   if (!_orphanDirs.length) {
     panel.style.display = 'none';
     return;
   }
   panel.style.display = '';
+  var kindLabel = { movie: '影片目录', season: '季目录', series_root: '剧集目录' };
   $('orphanDirsList').innerHTML = _orphanDirs.map(function(d, i){
     var libCls = d.lib === 'local' ? 'loc' : 'shr';
     var sz = d.size ? (d.size < 1024 ? d.size + ' B' : d.size < 1048576 ? (d.size/1024).toFixed(1) + ' KB' : (d.size/1048576).toFixed(2) + ' MB') : '0 B';
     return '<label class="list-item ' + libCls + '" style="display:flex;align-items:center;gap:10px;cursor:pointer">'
       + '<input type="checkbox" class="orphan-dir-cb" data-i="' + i + '" style="flex:none">'
       + '<div style="flex:1;min-width:0"><div class="t">' + esc(d.path.split('/').pop()) + '</div>'
-      + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(d.lib) + '</span>' + esc(d.kind) + '　' + d.file_count + ' 文件 ' + sz + '　' + esc(d.path) + '</div></div>'
+      + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(d.lib) + '</span>' + esc(kindLabel[d.kind] || d.kind) + '　' + d.file_count + ' 文件 ' + sz + '　' + esc(d.path) + '</div></div>'
       + '</label>';
   }).join('');
+}
+function toggleAllOrphanDirs(cb){
+  document.querySelectorAll('.orphan-dir-cb').forEach(function(el){ el.checked = cb.checked; });
 }
 async function cleanOrphanDirs(){
   var cbs = document.querySelectorAll('.orphan-dir-cb:checked');

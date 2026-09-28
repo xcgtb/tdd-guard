@@ -891,13 +891,16 @@ def scan_orphans(max_depth=3, diag=None):
 
 
 def scan_orphan_dirs(max_depth=3):
-    """扫描两库中「媒体专属目录里已无任何 .strm」的孤儿目录。
+    """扫描两库中的「洗版残留」：更名洗版后，治理删除 STRM 时残留的
+    字幕/元数据所在目录（目录内已无任何 .strm）。
 
-    适用场景：某部片/某季的 STRM 已被治理删除，但附属文件（字幕/metadata）
-    或空目录残留。这类目录不再对应任何可播放资源，应报告并可确认删除。
+    去重规则：只报告最顶层的无 STRM 媒体目录——若剧名目录与其下 Season
+    都无 STRM，只报告剧名目录一条，不再重复列出内部 Season（删除顶层
+    目录即连同内部一并清理）。
 
-    只识别 movie / series_root / season 层（用 _classify_dir 判断），
-    不上探 category / lib_root；只报告，不删除。
+    实现：单次 os.walk（快）；扫描深度内逐层标记「含 STRM 的目录及其祖先」，
+    未被标记的媒体目录即候选；超过深度的未扫描子树保守视为可能含 STRM，
+    不报告（宁可漏报不误删）。
     返回 [{'lib': 'local'|'share', 'path': str, 'kind': str, 'file_count': int, 'size': int}]
     """
     max_depth = _clamp_depth(max_depth)
@@ -906,33 +909,52 @@ def scan_orphan_dirs(max_depth=3):
         if not root.exists():
             continue
         root_parts = len(root.parts)
+        marked = set()   # 自身或其（扫描深度内）后代含 .strm 的目录
+        visited = {}     # str(dir) -> kind（仅媒体目录）
+
+        def _mark(d):
+            x = d
+            while True:
+                marked.add(str(x))
+                if x == root:
+                    break
+                x = x.parent
+
         for dp, dns, fns in os.walk(root, topdown=True):
-            cur_depth = len(Path(dp).parts) - root_parts
+            d = Path(dp)
+            cur_depth = len(d.parts) - root_parts
+            if any(f.lower().endswith('.strm') for f in fns):
+                _mark(d)
             if cur_depth >= max_depth:
+                # 本层文件已检查；子目录不可见时保守标记（可能藏有 strm）
+                if dns:
+                    _mark(d)
+                    pruned = len(dns)
+                    log.info('孤儿目录扫描：深度 %d 处 %d 个子目录未扫描（保守跳过）', cur_depth, pruned)
                 dns[:] = []
                 continue
-            d = Path(dp)
             kind = _classify_dir(d, root)
-            if kind not in ('movie', 'series_root', 'season'):
+            if kind in ('movie', 'series_root', 'season'):
+                visited[str(d)] = kind
+        # 候选：未被标记的媒体目录；父目录也是候选的跳过（顶层已覆盖）
+        candidates = {p for p, k in visited.items() if p not in marked}
+        for p in sorted(candidates):
+            if str(Path(p).parent) in candidates:
                 continue
-            # 递归检查该目录下是否还存在任何 .strm
-            has_strm = False
+            d = Path(p)
             file_count = 0
             total_size = 0
-            for f in d.rglob('*'):
-                if not f.is_file():
-                    continue
-                file_count += 1
-                try:
-                    total_size += f.stat().st_size
-                except OSError:
-                    pass
-                if f.suffix.lower() == '.strm':
-                    has_strm = True
-                    break
-            if has_strm:
+            try:
+                for f in d.rglob('*'):
+                    if f.is_file():
+                        file_count += 1
+                        try:
+                            total_size += f.stat().st_size
+                        except OSError:
+                            pass
+            except OSError:
                 continue
-            out.append({'lib': lib_name, 'path': str(d), 'kind': kind,
+            out.append({'lib': lib_name, 'path': p, 'kind': visited[p],
                         'file_count': file_count, 'size': total_size})
     out.sort(key=lambda x: (x['lib'], x['path']))
     return out
