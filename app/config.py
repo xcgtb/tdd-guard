@@ -20,7 +20,7 @@ DEFAULTS = {
 
     # 治理策略
     'strategy_decision':             'quality_first',
-    'strategy_multi_season_protect': '1',
+    'strategy_multi_season_protect': 'compare',  # off | compare | full —— 多季合集保护档位（compare 即“开启”）
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
     'strategy_exempt_keywords':      '',
     'strategy_special_action':       'compare', # compare | ignore | delete  —— 特别篇 S00 策略
@@ -134,9 +134,17 @@ def get_strategy() -> dict:
         sa = 'ignore'
     if sa not in ('compare', 'ignore', 'delete'):
         sa = 'compare'
+    mp = cfg.get('strategy_multi_season_protect', 'compare')
+    # 兼容旧布尔值 '1'/'0'
+    if mp in ('1', 'true', 'on'):
+        mp = 'full'
+    elif mp in ('0', 'false', 'off'):
+        mp = 'off'
+    if mp not in ('off', 'compare', 'full'):
+        mp = 'compare'
     return {
         'decision': dec,
-        'multi_season_protect': cfg.get('strategy_multi_season_protect', '1') == '1',
+        'multi_season_protect': mp,
         'tie_keep_local': cfg.get('strategy_tie_keep_local', '0') == '1',
         'exempt_keywords': [x.strip() for x in (cfg.get('strategy_exempt_keywords') or '').split(',') if x.strip()],
         'special_action': sa,
@@ -153,7 +161,14 @@ def update_strategy(**kwargs) -> dict:
             d = 'quality_first'
         cfg['strategy_decision'] = d
     if 'multi_season_protect' in kwargs:
-        cfg['strategy_multi_season_protect'] = '1' if kwargs['multi_season_protect'] else '0'
+        mp = str(kwargs['multi_season_protect'])
+        if mp in ('1', 'true', 'on'):
+            mp = 'full'
+        elif mp in ('0', 'false', 'off'):
+            mp = 'off'
+        if mp not in ('off', 'compare', 'full'):
+            mp = 'compare'
+        cfg['strategy_multi_season_protect'] = mp
     if 'tie_keep_local' in kwargs:
         cfg['strategy_tie_keep_local'] = '1' if kwargs['tie_keep_local'] else '0'
     if 'exempt_keywords' in kwargs:

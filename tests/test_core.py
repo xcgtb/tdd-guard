@@ -95,49 +95,58 @@ class TestTitleKey:
 
 # ═══════════════════ get_score / best_score ═══════════════════
 class TestScore:
-    def test_dv_outranks_everything(self):
-        assert core.get_score('xxx.2160p.DV.mkv') > core.get_score('xxx.2160p.REMUX.60FPS.mkv')
+    def test_resolution_outranks_hdr(self):
+        # 关键回归：1080p DV 不得高于 4K HDR（分辨率优先，同级才比 HDR）
+        assert core.get_score('xxx.2160p.HDR10.mkv') > core.get_score('xxx.1080p.DoVi.P5.mkv')
 
     def test_resolution_tiers(self):
         s4k = core.get_score('xxx.2160p.mkv')
         s1080 = core.get_score('xxx.1080p.mkv')
         s720 = core.get_score('xxx.720p.mkv')
         s_none = core.get_score('xxx.mkv')
-        assert s4k > s1080 > s720 > s_none == 0
+        assert s4k > s1080 > s720 > s_none
+
+    def test_hdr_tiers_same_resolution(self):
+        assert core.get_score('xxx.2160p.DV.mkv') > core.get_score('xxx.2160p.HDR10.mkv')
+        assert core.get_score('xxx.2160p.HDR10.mkv') > core.get_score('xxx.2160p.SDR.mkv')
+
+    def test_remux_outranks_web_same_res(self):
+        assert core.get_score('xxx.2160p.REMUX.mkv') > core.get_score('xxx.2160p.WEB-DL.mkv')
 
     def test_dovi_alias(self):
-        assert core.get_score('xxx.DOLBY.VISION.mkv') >= 10000
-        assert core.get_score('xxx.DOVI.mkv') >= 10000
+        assert core.get_score('xxx.2160p.DOLBY.VISION.mkv')[1] == 3
+        assert core.get_score('xxx.2160p.DOVI.mkv')[1] == 3
 
     def test_best_score_picks_max(self):
         names = ['a.720p.mkv', 'b.2160p.DV.mkv', 'c.1080p.mkv']
         assert core.best_score(names) == core.get_score('b.2160p.DV.mkv')
 
     def test_best_score_empty(self):
-        assert core.best_score([]) == 0
+        assert core.best_score([]) == (0, 0, 0, 0, 0)
 
 
 # ═══════════════════ share_wins ═══════════════════
 class TestShareWins:
     def test_share_strictly_better(self):
-        assert core.share_wins(200, 100) is True
-        assert core.share_wins(200, 100, tie_keep_local=True) is True
+        assert core.share_wins((3, 2, 0, 0, 0), (2, 3, 0, 0, 0)) is True
+        assert core.share_wins((3, 2, 0, 0, 0), (2, 3, 0, 0, 0), tie_keep_local=True) is True
 
     def test_local_strictly_better(self):
-        assert core.share_wins(100, 200) is False
-        assert core.share_wins(100, 200, tie_keep_local=True) is False
+        assert core.share_wins((2, 3, 0, 0, 0), (3, 2, 0, 0, 0)) is False
+        assert core.share_wins((2, 3, 0, 0, 0), (3, 2, 0, 0, 0), tie_keep_local=True) is False
 
     def test_tie_default_share_wins(self):
-        assert core.share_wins(100, 100) is True
+        assert core.share_wins((3, 2, 0, 0, 0), (3, 2, 0, 0, 0)) is True
 
     def test_tie_keep_local_flag(self):
-        assert core.share_wins(100, 100, tie_keep_local=True) is False
+        assert core.share_wins((3, 2, 0, 0, 0), (3, 2, 0, 0, 0), tie_keep_local=True) is False
 
 
 # ═══════════════════ is_exempt ═══════════════════
 class TestExempt:
-    def test_default_keyword(self):
-        assert core.is_exempt('百家讲坛.S10E01') is True
+    def test_no_default_keyword(self):
+        # 内置白名单已剔除，默认不应命中任何关键词
+        assert core.is_exempt('百家讲坛.S10E01') is False
 
     def test_not_exempt(self):
         assert core.is_exempt('随便一部剧.S01E01') is False
@@ -192,7 +201,7 @@ class TestAnalyzeSeasonEpisodes:
 
     def test_exempt_overrides_gaps(self):
         # 白名单命中时，即使有断层也应判定为“完整”
-        ok, reason = core.analyze_season_episodes([1, 5], '百家讲坛')
+        ok, reason = core.analyze_season_episodes([1, 5], '百家讲坛', exempt_keywords=['百家讲坛'])
         assert ok is True and reason == '白名单豁免'
 
     def test_duplicates_and_unsorted_input(self):

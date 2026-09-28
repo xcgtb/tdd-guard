@@ -1580,6 +1580,17 @@ window.addEventListener('unhandledrejection', function(e){
           <h3 data-icon="list">文件列表</h3>
           <div id="orphansList"><div class="list-empty">点击右上角「开始扫描」</div></div>
         </div>
+        <div class="panel" id="orphanDirsPanel" style="display:none">
+          <div class="row-between">
+            <h3 data-icon="database">孤儿目录（无 STRM）</h3>
+            <button class="btn danger" id="cleanOrphanDirsBtn" onclick="cleanOrphanDirs()" data-icon="trash">删除选中目录</button>
+          </div>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7">
+            这些目录里已没有任何 STRM（只剩字幕/元数据或为空），不再对应可播放资源。
+            勾选后可确认删除。<b>删除不可恢复，请谨慎。</b>
+          </p>
+          <div id="orphanDirsList"><div class="list-empty">无</div></div>
+        </div>
       </section>
 
       <!-- 执行记录 -->
@@ -1619,13 +1630,22 @@ window.addEventListener('unhandledrejection', function(e){
             <div class="d">分享库永远优先，省 115 网盘空间</div>
           </div>
           
-
-          <div class="toggle-row" style="margin-top:16px">
-            <div>
-              <div class="lbl">多季合集保护</div>
-              <div class="desc">本地拥有多季完整合集时，保护本地不被掏空</div>
+          <div style="margin-top:16px">
+            <div class="lbl" style="margin-bottom:8px">多季合集保护</div>
+            <div style="display:flex;gap:8px">
+              <div class="strategy-option" data-msp="off" onclick="pickMultiProtect('off')" style="flex:1;margin:0;padding:10px 8px;text-align:center">
+                <div class="t" style="font-size:12px">关闭</div>
+                <div class="d" style="font-size:10px">逐季独立择优</div>
+              </div>
+              <div class="strategy-option" data-msp="compare" onclick="pickMultiProtect('compare')" style="flex:1;margin:0;padding:10px 8px;text-align:center">
+                <div class="t" style="font-size:12px">开启</div>
+                <div class="d" style="font-size:10px">分享全季达标才删本地</div>
+              </div>
+              <div class="strategy-option" data-msp="full" onclick="pickMultiProtect('full')" style="flex:1;margin:0;padding:10px 8px;text-align:center">
+                <div class="t" style="font-size:12px">全量豁免</div>
+                <div class="d" style="font-size:10px">本地多季一律保护</div>
+              </div>
             </div>
-            <label class="switch"><input type="checkbox" id="strMultiProtect" onchange="saveStrategy()"><span class="slider"></span></label>
           </div>
           <div class="toggle-row">
             <div>
@@ -2091,7 +2111,7 @@ function clearGovStateSession(){
 }
 var statsAutoLoaded = false;
 var revealed = {};
-var currentStrategy = { decision: 'quality_first', multi_season_protect: true, tie_keep_local: false, exempt_keywords: [], special_action: 'compare' };
+var currentStrategy = { decision: 'quality_first', multi_season_protect: 'compare', tie_keep_local: false, exempt_keywords: [], special_action: 'compare' };
 var currentSubs = [];
 var currentGovItems = [];
 
@@ -2345,9 +2365,10 @@ async function loadDashboard(){
     var s = st.strategy || {};
     var decisionLabel = { quality_first: '画质优先', keep_local: '保留本地', keep_share: '保留分享', balanced: '严格画质' }[s.decision] || s.decision;
     var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
+    var mspLabel = { off: '关闭', compare: '开启', full: '全量豁免' }[s.multi_season_protect] || '开启';
     $('strategySnapshot').innerHTML =
       '<div class="path-row"><span class="name">决策模型</span><span class="path" style="color:#10b981;border:none">' + decisionLabel + '</span></div>' +
-      '<div class="path-row"><span class="name">多季合集保护</span><span class="path" style="color:' + (s.multi_season_protect ? '#3b82f6' : '#9ca3af') + ';border:none">' + (s.multi_season_protect ? '已开启' : '已关闭') + '</span></div>' +
+      '<div class="path-row"><span class="name">多季合集保护</span><span class="path" style="color:#3b82f6;border:none">' + mspLabel + '</span></div>' +
       '<div class="path-row"><span class="name">特别篇策略</span><span class="path" style="color:#8b5cf6;border:none">' + spLabel + '</span></div>' +
       '<div class="path-row"><span class="name">平局策略</span><span class="path" style="color:#6b7280;border:none">' + (s.tie_keep_local ? '保留本地' : '保留分享') + '</span></div>' +
       '<div class="path-row"><span class="name">白名单</span><span class="path" style="border:none;color:#6b7280">' + (s.exempt_keywords || []).join(', ') + '</span></div>';
@@ -3679,7 +3700,9 @@ function applyStrategyUI(){
   document.querySelectorAll('.strategy-option[data-sp]').forEach(function(el){
     el.classList.toggle('on', el.dataset.sp === (currentStrategy.special_action || 'compare'));
   });
-  $('strMultiProtect').checked = !!currentStrategy.multi_season_protect;
+  document.querySelectorAll('.strategy-option[data-msp]').forEach(function(el){
+    el.classList.toggle('on', el.dataset.msp === (currentStrategy.multi_season_protect || 'compare'));
+  });
   $('strTieLocal').checked = !!currentStrategy.tie_keep_local;
   renderExempt();
 }
@@ -3693,11 +3716,16 @@ function pickSpecial(v){
   applyStrategyUI();
   saveStrategy();
 }
+function pickMultiProtect(v){
+  currentStrategy.multi_season_protect = v;
+  applyStrategyUI();
+  saveStrategy();
+}
 async function saveStrategy(){
   try {
     var body = {
       decision: currentStrategy.decision,
-      multi_season_protect: $('strMultiProtect').checked,
+      multi_season_protect: currentStrategy.multi_season_protect || 'compare',
       tie_keep_local: $('strTieLocal').checked,
       special_action: currentStrategy.special_action || 'compare',
       exempt_keywords: currentStrategy.exempt_keywords || [],
@@ -4038,6 +4066,7 @@ async function loadOrphans(){
     var bl = r.by_lib || {};
     $('orph-local').textContent = bl.local || 0;
     $('orph-share').textContent = bl.share || 0;
+    renderOrphanDirs(r.orphan_dirs || []);
     var items = r.items || [];
     var totalFiles = ((r.scan || {}).libs || []).reduce(function(a, l){ return a + (l.files || 0); }, 0);
     var block = orphScanBlock(r);
@@ -4064,6 +4093,44 @@ async function loadOrphans(){
   } catch(e){
     $('orphansStats').style.display = 'none';
     $('orphansList').innerHTML = '<div class="list-empty">扫描失败: ' + esc(e.message) + '</div>';
+  }
+}
+
+var _orphanDirs = [];
+function renderOrphanDirs(dirs){
+  _orphanDirs = dirs || [];
+  var panel = $('orphanDirsPanel');
+  if (!_orphanDirs.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  $('orphanDirsList').innerHTML = _orphanDirs.map(function(d, i){
+    var libCls = d.lib === 'local' ? 'loc' : 'shr';
+    var sz = d.size ? (d.size < 1024 ? d.size + ' B' : d.size < 1048576 ? (d.size/1024).toFixed(1) + ' KB' : (d.size/1048576).toFixed(2) + ' MB') : '0 B';
+    return '<label class="list-item ' + libCls + '" style="display:flex;align-items:center;gap:10px;cursor:pointer">'
+      + '<input type="checkbox" class="orphan-dir-cb" data-i="' + i + '" style="flex:none">'
+      + '<div style="flex:1;min-width:0"><div class="t">' + esc(d.path.split('/').pop()) + '</div>'
+      + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(d.lib) + '</span>' + esc(d.kind) + '　' + d.file_count + ' 文件 ' + sz + '　' + esc(d.path) + '</div></div>'
+      + '</label>';
+  }).join('');
+}
+async function cleanOrphanDirs(){
+  var cbs = document.querySelectorAll('.orphan-dir-cb:checked');
+  if (!cbs.length) { toast('请先勾选要删除的目录', 'error'); return; }
+  var paths = [];
+  cbs.forEach(function(cb){ paths.push(_orphanDirs[parseInt(cb.dataset.i)].path); });
+  if (!confirm('确定删除 ' + paths.length + ' 个孤儿目录吗？此操作不可恢复！')) return;
+  $('cleanOrphanDirsBtn').disabled = true;
+  try {
+    var r = await api('/api/orphans/clean', { method: 'POST', body: JSON.stringify({ paths: paths, dry_run: false }) });
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    toast('已删除 ' + r.count + ' 个目录', 'success');
+    loadOrphans();
+  } catch(e){
+    toast('删除失败: ' + e.message, 'error');
+  } finally {
+    $('cleanOrphanDirsBtn').disabled = false;
   }
 }
 

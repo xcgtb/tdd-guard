@@ -19,9 +19,12 @@ RE_YEAR = re.compile(r'\((\d{4})\)')
 RE_DV = re.compile(r'(?<![A-Z0-9])(?:DV|DOVI)(?![A-Z0-9])|DOLBY[ ._-]?VISION')
 RE_4K = re.compile(r'2160P|(?<![A-Z0-9])4K(?![A-Z0-9])')
 RE_FPS = re.compile(r'(?<![0-9])(?:60|120)FPS')
+RE_HDR = re.compile(r'(?<![A-Z0-9])HDR(?:10)?(?![A-Z0-9])')
+RE_SDR = re.compile(r'(?<![A-Z0-9])SDR(?![A-Z0-9])')
+RE_BIT10 = re.compile(r'(?i)10[ ._-]?bit')
 
 # ═══════════════════ 默认数据 ═══════════════════
-DEFAULT_EXEMPT_KEYWORDS: Tuple[str, ...] = ('百家讲坛',)
+DEFAULT_EXEMPT_KEYWORDS: Tuple[str, ...] = ()
 DEFAULT_CATEGORIES: Tuple[str, ...] = (
     '👶 儿童节目', '🎤 演唱会', '🎪 综艺剧', '⛩️ 动漫剧', '🧸 动画电影', '📽️ 纪录片',
     '🇨🇳 国产剧', '🇺🇸 欧美剧', '🇯🇵 日韩剧', '🇨🇳 华语电影', '🌐 外语电影',
@@ -71,21 +74,66 @@ def title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:
     return (f'tmdb:{t.group(1)}' if t else disp), disp, base, year
 
 # ═══════════════════ 画质评分 ═══════════════════
-def get_score(name: str) -> int:
+# 画质分层比较，避免「1080p DV > 4K HDR」这类跨分辨率错判。
+# 比较维度优先级（高 → 低）：
+#   1. 分辨率：2160p > 1080p > 720p > 其他
+#   2. HDR 维度（同分辨率才有意义，作为第二比较位）：DV > HDR10/HDR > SDR > 无
+#   3. 编码档次：REMUX > WEB-DL/其他
+#   4. 帧率：60fps+ > 其他
+#   5. 色深：10bit > 8bit
+# 每个维度独立成一位，返回可比较的 tuple；逐位比较保证同级才往后比。
+
+def quality_of(name: str) -> Tuple[int, int, int, int, int]:
+    """解析文件名，返回 (分辨率, HDR, 编码, 帧率, 色深) 五元组，逐位越大越优。"""
     s = name.upper()
-    score = 0
-    if RE_DV.search(s):      score += 10000
-    if RE_4K.search(s):      score += 4000
-    elif '1080P' in s:       score += 2000
-    elif '720P' in s:        score += 1000
-    if 'REMUX' in s:         score += 500
-    if RE_FPS.search(s):     score += 300
-    return score
+    if RE_4K.search(s):
+        res = 3
+    elif '1080P' in s:
+        res = 2
+    elif '720P' in s:
+        res = 1
+    else:
+        res = 0
+    if RE_DV.search(s):
+        hdr = 3
+    elif RE_HDR.search(s):
+        hdr = 2
+    elif RE_SDR.search(s):
+        hdr = 1
+    else:
+        hdr = 0
+    codec = 1 if 'REMUX' in s else 0
+    fps = 1 if RE_FPS.search(s) else 0
+    bit = 1 if RE_BIT10.search(s) else 0
+    return (res, hdr, codec, fps, bit)
 
-def best_score(names: Iterable[str]) -> int:
-    return max((get_score(n) for n in names), default=0)
 
-def share_wins(s_q: int, l_q: int, tie_keep_local: bool = False) -> bool:
+def quality_label(name: str) -> str:
+    """人类可读的画质档位标签（用于展示/审计）。"""
+    res, hdr, codec, fps, bit = quality_of(name)
+    parts = []
+    parts.append({3: '2160p', 2: '1080p', 1: '720p'}.get(res, 'SD'))
+    if hdr == 3:
+        parts.append('DV')
+    elif hdr == 2:
+        parts.append('HDR')
+    if codec:
+        parts.append('REMUX')
+    return ' '.join(parts)
+
+
+def get_score(name: str) -> Tuple[int, int, int, int, int]:
+    """兼容旧调用：返回画质五元组（可比较）。"""
+    return quality_of(name)
+
+
+def best_score(names: Iterable[str]):
+    """取一组文件中的最高画质五元组。"""
+    return max((quality_of(n) for n in names), default=(0, 0, 0, 0, 0))
+
+
+def share_wins(s_q, l_q, tie_keep_local: bool = False) -> bool:
+    """比较两组画质元组：s_q 是否胜出（>= 或 >，取决于平局策略）。"""
     return s_q > l_q if tie_keep_local else s_q >= l_q
 
 # ═══════════════════ 集数判定 ═══════════════════

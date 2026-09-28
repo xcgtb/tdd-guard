@@ -54,7 +54,7 @@ def _patch_strategy(monkeypatch_dict):
     """覆盖 engine._strategy()，避免测试依赖 /data/config.json 的真实内容"""
     base = {
         'decision': 'quality_first',
-        'multi_season_protect': True,
+        'multi_season_protect': 'compare',
         'tie_keep_local': False,
         'exempt_keywords': [],
         'special_action': 'compare',
@@ -179,10 +179,10 @@ class TestCleanupLock:
         assert res2['status'] == 'success'
 
 
-# ═══════════════════ 分享独有 Season 默认保护 ═══════════════════
+# ═══════════════════ 分享独有 Season 静默 ═══════════════════
 class TestShareOnlySeasonProtection:
-    def test_complete_share_only_season_is_protected(self):
-        """本地完全没有这部剧，分享库这季集数是完整的——不该有任何删除动作"""
+    def test_complete_share_only_season_is_silent(self):
+        """本地完全没有这部剧，分享库这季集数完整——静默，不生成任何 action"""
         _reset_libs()
         _patch_strategy({'exempt_keywords': []})
 
@@ -192,17 +192,10 @@ class TestShareOnlySeasonProtection:
         acts = engine.build_plan()
         hits = _acts_for_title(acts, '分享独有剧集A')
 
-        assert len(hits) == 1
-        assert hits[0].kind == 'keep'
-        assert not any(a.kind in ('loc', 'shr') for a in hits)
+        assert len(hits) == 0
 
-    def test_incomplete_share_only_season_is_protected_not_deleted(self):
-        """
-        回归测试：修复前，本地没有的 Season 只要分享库这边缺集/错集，
-        就会被 _analyze() 判定为 gap，直接生成 kind='shr' 的删除 Action——
-        这季在两个库里唯一的资源就这样被删掉了，以后想找都找不回来。
-        修复后必须是 kind='keep'，只报告不删除。
-        """
+    def test_incomplete_share_only_season_is_silent(self):
+        """分享独有但缺集（断层）——同样静默，不生成任何 action（不再显示受保护）"""
         _reset_libs()
         _patch_strategy({'exempt_keywords': []})
 
@@ -212,14 +205,10 @@ class TestShareOnlySeasonProtection:
         acts = engine.build_plan()
         hits = _acts_for_title(acts, '分享独有剧集B')
 
-        assert len(hits) == 1
-        assert hits[0].kind == 'keep'
-        assert hits[0].meta['reason'] == 'share_only_gap'
-        assert not any(a.kind in ('loc', 'shr') for a in hits)
+        assert len(hits) == 0
 
     def test_share_only_season_never_shows_up_as_deletable_in_check(self):
-        """action_inter_check() 返回给前端的字段里，分享独有的季不该出现在
-        del_share_items（会被展示成"待清理分享"）里，只能出现在 protected_items 里"""
+        """action_inter_check() 返回的字段里，分享独有的季不应出现在任何删除/保护列表里"""
         _reset_libs()
         _patch_strategy({'exempt_keywords': []})
 
@@ -234,64 +223,51 @@ class TestShareOnlySeasonProtection:
         protected_titles = [i['title'] for i in res['protected_items']]
 
         assert not any('分享独有剧集C' in t for t in share_titles)
-        assert any('分享独有剧集C' in t for t in protected_titles)
+        assert not any('分享独有剧集C' in t for t in protected_titles)
 
 
-# ═══════════════════ 电视剧逐集比较（白皮书 §7）═══════════════════
+# ═══════════════════ 电视剧逐集择优（新逻辑）═══════════════════
 class TestSeasonReplaceable:
-    """白皮书 §7：分享 Season 必须逐集覆盖本地 + 逐集质量 >= 本地"""
+    """逐集对齐 + 达标率择优，取消双向保留"""
 
-    def test_whitepaper_positive_example(self):
+    def test_positive_share_wins(self):
+        """分享逐集达标率 >= 阈值且集数不落后 → 删本地"""
         _reset_libs()
-        _patch_strategy({'exempt_keywords': []})
-        _strm(engine.L_ROOT, '逐集正例 (2020)/Season 01', 'E01.2160p.strm')
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
+        _strm(engine.L_ROOT, '逐集正例 (2020)/Season 01', 'E01.1080p.strm')
         _strm(engine.L_ROOT, '逐集正例 (2020)/Season 01', 'E02.1080p.strm')
         _strm(engine.L_ROOT, '逐集正例 (2020)/Season 01', 'E03.1080p.strm')
         _strm(engine.S_ROOT, '逐集正例 (2020)/Season 01', 'E01.2160p.strm')
-        _strm(engine.S_ROOT, '逐集正例 (2020)/Season 01', 'E02.1080p.strm')
+        _strm(engine.S_ROOT, '逐集正例 (2020)/Season 01', 'E02.2160p.strm')
         _strm(engine.S_ROOT, '逐集正例 (2020)/Season 01', 'E03.2160p.strm')
 
         acts = engine.build_plan()
         hits = _acts_for_title(acts, '逐集正例')
         assert len(hits) == 1
         assert hits[0].kind == 'loc'
-        assert hits[0].meta['reason'] == 'season_all_pass'
+        assert hits[0].meta['reason'] == 'share_wins'
 
-    def test_whitepaper_negative_example(self):
+    def test_negative_local_wins(self):
+        """本地画质整体更优 → 删分享"""
         _reset_libs()
-        _patch_strategy({'exempt_keywords': []})
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
         _strm(engine.L_ROOT, '逐集反例 (2020)/Season 01', 'E01.2160p.strm')
         _strm(engine.L_ROOT, '逐集反例 (2020)/Season 01', 'E02.2160p.strm')
-        _strm(engine.L_ROOT, '逐集反例 (2020)/Season 01', 'E03.1080p.strm')
+        _strm(engine.L_ROOT, '逐集反例 (2020)/Season 01', 'E03.2160p.strm')
         _strm(engine.S_ROOT, '逐集反例 (2020)/Season 01', 'E01.1080p.strm')
-        _strm(engine.S_ROOT, '逐集反例 (2020)/Season 01', 'E02.2160p.strm')
-        _strm(engine.S_ROOT, '逐集反例 (2020)/Season 01', 'E03.2160p.strm')
+        _strm(engine.S_ROOT, '逐集反例 (2020)/Season 01', 'E02.1080p.strm')
+        _strm(engine.S_ROOT, '逐集反例 (2020)/Season 01', 'E03.1080p.strm')
 
         acts = engine.build_plan()
         hits = _acts_for_title(acts, '逐集反例')
         assert len(hits) == 1
-        assert hits[0].kind == 'keep'
-        assert hits[0].meta['reason'] == 'season_partial_pass'
+        assert hits[0].kind == 'shr'
+        assert hits[0].meta['reason'] == 'local_wins'
 
-    def test_share_missing_episode_blocks(self):
+    def test_share_more_episodes_wins(self):
+        """分享集数更多且达标 → 删本地"""
         _reset_libs()
-        _patch_strategy({'exempt_keywords': []})
-        _strm(engine.L_ROOT, '分享缺集 (2020)/Season 01', 'E01.2160p.strm')
-        _strm(engine.L_ROOT, '分享缺集 (2020)/Season 01', 'E02.2160p.strm')
-        _strm(engine.L_ROOT, '分享缺集 (2020)/Season 01', 'E03.2160p.strm')
-        _strm(engine.S_ROOT, '分享缺集 (2020)/Season 01', 'E01.2160p.strm')
-        _strm(engine.S_ROOT, '分享缺集 (2020)/Season 01', 'E03.2160p.strm')
-
-        acts = engine.build_plan()
-        hits = _acts_for_title(acts, '分享缺集')
-        assert len(hits) == 1
-        assert hits[0].kind == 'keep'
-        # 分享集数(2) < 本地集数(3)，走 l_eps>=s_eps 分支
-        assert hits[0].meta['reason'] == 'share_behind'
-
-    def test_share_more_episodes_passes(self):
-        _reset_libs()
-        _patch_strategy({'exempt_keywords': []})
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
         _strm(engine.L_ROOT, '分享更多 (2020)/Season 01', 'E01.2160p.strm')
         _strm(engine.L_ROOT, '分享更多 (2020)/Season 01', 'E02.2160p.strm')
         _strm(engine.S_ROOT, '分享更多 (2020)/Season 01', 'E01.2160p.strm')
@@ -302,11 +278,12 @@ class TestSeasonReplaceable:
         hits = _acts_for_title(acts, '分享更多')
         assert len(hits) == 1
         assert hits[0].kind == 'loc'
-        assert hits[0].meta['reason'] == 'share_more'
+        assert hits[0].meta['reason'] == 'share_wins'
 
-    def test_all_tie_2160_pass(self):
+    def test_all_tie_2160_share_wins(self):
+        """画质全平局时默认平局保留分享 → 删本地"""
         _reset_libs()
-        _patch_strategy({'exempt_keywords': []})
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
         _strm(engine.L_ROOT, '全平局 (2020)/Season 01', 'E01.2160p.strm')
         _strm(engine.L_ROOT, '全平局 (2020)/Season 01', 'E02.2160p.strm')
         _strm(engine.S_ROOT, '全平局 (2020)/Season 01', 'E01.2160p.strm')
@@ -316,23 +293,22 @@ class TestSeasonReplaceable:
         hits = _acts_for_title(acts, '全平局')
         assert len(hits) == 1
         assert hits[0].kind == 'loc'
-        assert hits[0].meta['reason'] == 'season_all_pass'
+        assert hits[0].meta['reason'] == 'share_wins'
 
-    def test_share_only_season_still_protected(self):
+    def test_share_only_season_silent(self):
+        """分享独有 Season → 静默，不生成任何 action"""
         _reset_libs()
-        _patch_strategy({'exempt_keywords': []})
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': []})
         _strm(engine.S_ROOT, '分享独有回归 (2020)/Season 01', 'E01.2160p.strm')
         _strm(engine.S_ROOT, '分享独有回归 (2020)/Season 01', 'E03.2160p.strm')
 
         acts = engine.build_plan()
         hits = _acts_for_title(acts, '分享独有回归')
-        assert len(hits) == 1
-        assert hits[0].kind == 'keep'
-        assert hits[0].meta['reason'] == 'share_only_gap'
+        assert len(hits) == 0
 
     def test_whitelist_still_wins(self):
         _reset_libs()
-        _patch_strategy({'exempt_keywords': ['逐集白名单']})
+        _patch_strategy({'multi_season_protect': 'off', 'exempt_keywords': ['逐集白名单']})
         _strm(engine.L_ROOT, '逐集白名单 (2020)/Season 01', 'E01.2160p.strm')
         _strm(engine.S_ROOT, '逐集白名单 (2020)/Season 01', 'E01.1080p.strm')
 

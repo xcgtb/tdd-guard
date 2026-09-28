@@ -40,7 +40,7 @@ if not WEB_PASSWORD:
         )
         raise SystemExit(1)
 
-app = FastAPI(title='TTD Guard', version='1.2.1')
+app = FastAPI(title='TTD Guard', version='1.3.0')
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
@@ -792,7 +792,7 @@ _orphan_lock = threading.Lock()
 
 @app.get('/api/orphans', dependencies=[Depends(auth)])
 def api_orphans(max_depth: int = 3):
-    # 扫描未知/孤儿文件（白皮书 §16，只报告不删）
+    # 扫描未知/孤儿文件 + 无 strm 的孤儿目录（白皮书 §16，只报告不删）
     if not _orphan_lock.acquire(blocking=False):
         return {'status': 'busy', 'message': '已有孤儿扫描任务在跑，请稍候'}
     try:
@@ -801,6 +801,15 @@ def api_orphans(max_depth: int = 3):
         return {'status': 'error', 'message': str(e)}
     finally:
         _orphan_lock.release()
+
+
+@app.post('/api/orphans/clean', dependencies=[Depends(auth)])
+def api_clean_orphan_dirs(body: dict = None):
+    # 删除孤儿目录（前端传入 paths 列表；dry_run 默认 True 只预览）
+    body = body or {}
+    paths = body.get('paths') or []
+    dry_run = bool(body.get('dry_run', True))
+    return engine.clean_orphan_dirs(paths, dry_run=dry_run)
 
 # ═══════════════════ 治理策略 ═══════════════════
 @app.get('/api/strategy', dependencies=[Depends(auth)])
@@ -820,7 +829,14 @@ def api_set_strategy(body: dict = None):
             raise HTTPException(400, 'decision 必须是 quality_first / keep_local / keep_share')
         kwargs['decision'] = d
     if 'multi_season_protect' in body:
-        kwargs['multi_season_protect'] = bool(body['multi_season_protect'])
+        mp = str(body['multi_season_protect'])
+        if mp in ('1', 'true', 'on'):
+            mp = 'full'
+        elif mp in ('0', 'false', 'off'):
+            mp = 'off'
+        if mp not in ('off', 'compare', 'full'):
+            raise HTTPException(400, 'multi_season_protect 必须是 off / compare / full')
+        kwargs['multi_season_protect'] = mp
     if 'tie_keep_local' in body:
         kwargs['tie_keep_local'] = bool(body['tie_keep_local'])
     if 'exempt_keywords' in body:

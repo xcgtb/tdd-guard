@@ -225,6 +225,52 @@ def _season_replaceable(s_files, l_files, disp=''):
     return True, '逐集覆盖且质量达标'
 
 
+def _season_compare(s_files, l_files):
+    """
+    逐集对齐比较分享与本地同一季（取代双向保留，改为单向择优）。
+    同集号多份时取各自最高画质参与比较。
+    返回 dict：
+      s_eps / l_eps : {集号: 最高画质文件}
+      s_only / l_only : 各自独有的集号列表（含前序缺失、中间断层）
+      common : 交集集号
+      s_better : 交集内分享画质 >= 本地的集数
+      l_better : 交集内本地画质 > 分享的集数
+    """
+    s_eps, l_eps = {}, {}
+    for f in (s_files or []):
+        ep = _ep(f)
+        if not ep or ep[0] <= 0:
+            continue
+        old = s_eps.get(ep[1])
+        if old is None or get_score(f.name) > get_score(old.name):
+            s_eps[ep[1]] = f
+    for f in (l_files or []):
+        ep = _ep(f)
+        if not ep or ep[0] <= 0:
+            continue
+        old = l_eps.get(ep[1])
+        if old is None or get_score(f.name) > get_score(old.name):
+            l_eps[ep[1]] = f
+    s_keys, l_keys = set(s_eps), set(l_eps)
+    common = s_keys & l_keys
+    s_better = l_better = 0
+    for e in common:
+        if get_score(s_eps[e].name) >= get_score(l_eps[e].name):
+            s_better += 1
+        else:
+            l_better += 1
+    return {
+        's_eps': s_eps, 'l_eps': l_eps,
+        's_only': sorted(s_keys - l_keys),
+        'l_only': sorted(l_keys - s_keys),
+        'common': common, 's_better': s_better, 'l_better': l_better,
+    }
+
+
+# 逐集择优阈值：交集内分享画质达标集数占比 >= 该比例才删本地（否则删分享或保留）。
+SEASON_REPLACE_RATIO = 0.9
+
+
 # ═══════════════════ Emby ═══════════════════
 def emby_request(path, params=None, method='GET', timeout=15):
     if not EMBY_KEY:
@@ -568,6 +614,23 @@ def _inside(p, root):
 
 
 def _remove_strm(f, base_root):
+    """删除 STRM（可进 trash 或彻底删），并彻底粉碎同目录下同 stem 的附属文件。
+
+    附属文件（-mediainfo.json / .nfo / .srt / .ass / .jpg 等）一律彻底删除（不进 trash），
+    只匹配与 STRM 同 stem 的文件，避免误删同目录下其他集的字幕。
+    """
+    stem = f.stem
+    for sibling in f.parent.iterdir():
+        if not sibling.is_file() or sibling.name == f.name:
+            continue
+        if sibling.suffix.lower() == '.strm':
+            continue
+        # 附属文件与 STRM 同 stem（或以其为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt
+        if sibling.stem == stem or sibling.stem.startswith(stem):
+            try:
+                sibling.unlink()
+            except OSError:
+                pass
     if TRASH_STRM:
         dest = TRASH_DIR / datetime.date.today().isoformat() / base_root.name / f.relative_to(base_root)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -818,10 +881,98 @@ def scan_orphans(max_depth=3, diag=None):
     return orphans
 
 
+def scan_orphan_dirs(max_depth=3):
+    """扫描两库中「媒体专属目录里已无任何 .strm」的孤儿目录。
+
+    适用场景：某部片/某季的 STRM 已被治理删除，但附属文件（字幕/metadata）
+    或空目录残留。这类目录不再对应任何可播放资源，应报告并可确认删除。
+
+    只识别 movie / series_root / season 层（用 _classify_dir 判断），
+    不上探 category / lib_root；只报告，不删除。
+    返回 [{'lib': 'local'|'share', 'path': str, 'kind': str, 'file_count': int, 'size': int}]
+    """
+    max_depth = _clamp_depth(max_depth)
+    out = []
+    for root, lib_name in ((L_ROOT, 'local'), (S_ROOT, 'share')):
+        if not root.exists():
+            continue
+        root_parts = len(root.parts)
+        for dp, dns, fns in os.walk(root, topdown=True):
+            cur_depth = len(Path(dp).parts) - root_parts
+            if cur_depth >= max_depth:
+                dns[:] = []
+                continue
+            d = Path(dp)
+            kind = _classify_dir(d, root)
+            if kind not in ('movie', 'series_root', 'season'):
+                continue
+            # 递归检查该目录下是否还存在任何 .strm
+            has_strm = False
+            file_count = 0
+            total_size = 0
+            for f in d.rglob('*'):
+                if not f.is_file():
+                    continue
+                file_count += 1
+                try:
+                    total_size += f.stat().st_size
+                except OSError:
+                    pass
+                if f.suffix.lower() == '.strm':
+                    has_strm = True
+                    break
+            if has_strm:
+                continue
+            out.append({'lib': lib_name, 'path': str(d), 'kind': kind,
+                        'file_count': file_count, 'size': total_size})
+    out.sort(key=lambda x: (x['lib'], x['path']))
+    return out
+
+
+def clean_orphan_dirs(paths, dry_run=True):
+    """删除指定的孤儿目录（仅允许 movie / series_root / season 层，且目录内无 .strm）。
+
+    paths: 目录路径列表。dry_run=True 时只返回将删除的数量。
+    校验：目录必须在 L_ROOT 或 S_ROOT 内、归类为媒体专属目录、内部无 .strm。
+    """
+    removed = []
+    errors = []
+    for p in paths:
+        d = Path(p)
+        # 归属库
+        base = None
+        if _inside(d, L_ROOT):
+            base = L_ROOT
+        elif _inside(d, S_ROOT):
+            base = S_ROOT
+        else:
+            errors.append(f'{p}: 不在任何库内，跳过')
+            continue
+        kind = _classify_dir(d, base)
+        if kind not in ('movie', 'series_root', 'season'):
+            errors.append(f'{p}: 不是媒体专属目录({kind})，跳过')
+            continue
+        # 双重确认目录内无 strm
+        if any(f.is_file() and f.suffix.lower() == '.strm' for f in d.rglob('*')):
+            errors.append(f'{p}: 目录内仍有 strm，跳过')
+            continue
+        if dry_run:
+            removed.append(str(d))
+            continue
+        try:
+            shutil.rmtree(d, ignore_errors=False)
+            removed.append(str(d))
+        except OSError as e:
+            errors.append(f'{p}: {e}')
+    return {'status': 'success', 'dry_run': dry_run,
+            'removed': removed, 'count': len(removed), 'errors': errors}
+
+
 def action_scan_orphans(args):
     depth = _clamp_depth(getattr(args, 'max_depth', 3))
     diag = {}
     items = scan_orphans(max_depth=depth, diag=diag)
+    orphan_dirs = scan_orphan_dirs(max_depth=depth)
     libs = diag.get('libs', [])
 
     warnings = []
@@ -855,9 +1006,20 @@ def action_scan_orphans(args):
         'by_lib': dict(by_lib),
         'by_ext': dict(by_ext),
         'items': items[:200],
+        'orphan_dirs': orphan_dirs,
+        'orphan_dir_count': len(orphan_dirs),
         'scan': {'depth': depth, 'elapsed': diag.get('elapsed', 0), 'libs': libs},
         'warnings': warnings,
     }
+
+
+def action_clean_orphan_dirs(args):
+    """删除孤儿目录（只报告不删的配套删除动作）。paths 由前端传入。"""
+    paths = getattr(args, 'paths', []) or []
+    dry_run = bool(getattr(args, 'dry_run', True))
+    if not paths:
+        return {'status': 'error', 'message': '未指定要删除的目录'}
+    return clean_orphan_dirs(paths, dry_run=dry_run)
 
 
 def purge_old():
@@ -980,7 +1142,6 @@ def _group_exempt_acts(acts):
 def build_plan():
     S, L = _get_lib(S_ROOT), _get_lib(L_ROOT)
     s = _strategy()
-    multi_protect = s['multi_season_protect']
     acts = []
 
     for key, s_files in S.mov.items():
@@ -1059,7 +1220,7 @@ def build_plan():
                                       'reason_label': '特别篇清理-删分享',
                                       'title': disp, 'season': 0}))
         elif special_action != 'ignore' and s00_files and l00_files:
-            # 画质对比档
+            # 画质对比档（一边没有时不做处理）
             s_q, l_q = _best(s00_files), _best(l00_files)
             tag = f'《{disp}》S00'
             if _share_wins(s_q, l_q):
@@ -1080,118 +1241,122 @@ def build_plan():
 
         s_proper = {k: v for k, v in s_seasons.items() if k > 0}
         l_proper = {k: v for k, v in l_seasons.items() if k > 0}
+
+        # ── 多季保护三档：off / compare / full ──
+        multi_protect = s['multi_season_protect']
         n_local = len(l_proper)
+        is_multi_local = n_local >= 2
 
-        use_zero_sum = (s['decision'] == 'quality_first') and multi_protect and n_local >= 2
+        # full 档：本地多季合集一律保护，不删本地
+        if multi_protect == 'full' and is_multi_local:
+            # 只处理分享独有季吗？不——full 档下本地各季全部保护，
+            # 分享库中与本地对齐的季也不动，整体跳过本剧所有正片季。
+            continue
 
-        if use_zero_sum:
-            can_replace = True
-            for sn, l_files in l_proper.items():
-                if sn not in s_proper:
-                    can_replace = False
-                    break
-                ok, _reason = _season_replaceable(s_proper[sn], l_files, disp)
-                if not ok:
-                    can_replace = False
-                    break
+        # compare 档（即“开启”）：本地多季时，仅当分享对本地全部季逐集达标才整体删本地；
+        # 否则逐季独立择优（保护本地不被部分季掏空）。
+        if multi_protect == 'compare' and is_multi_local:
+            _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local)
+            continue
 
-            if can_replace:
-                for sn, l_files in sorted(l_proper.items()):
-                    tag = f'《{disp}》S{sn:02d}'
-                    acts.append(Act('loc', f'📺 {tag} (整剧零和：分享全面达标 → 删本地)',
-                                    f'├─ 📺 {tag}: 整剧零和 ➔ CD2联动删除115网盘旧源', l_files,
-                                    meta={'reason': 'multi_zero_sum_share',
-                                          'reason_label': '整剧零和-分享替代',
-                                          'title': disp, 'season': sn,
-                                          'local_seasons': n_local,
-                                          'share_seasons': len(s_proper)}))
-            else:
-                for sn, s_files in sorted(s_proper.items()):
-                    if sn in l_proper:
-                        tag = f'《{disp}》S{sn:02d}'
-                        acts.append(Act('shr', f'📺 {tag} (整剧零和：分享不达标 → 删分享)',
-                                        f'├─ 📺 {tag}: 整剧零和 ➔ 清理分享影视库strm', s_files,
-                                        meta={'reason': 'multi_zero_sum_local',
-                                              'reason_label': '整剧零和-本地保留',
-                                              'title': disp, 'season': sn,
-                                              'local_seasons': n_local,
-                                              'share_seasons': len(s_proper)}))
-        else:
-            for sn, s_files in sorted(s_proper.items()):
-                tag = f'《{disp}》S{sn:02d}'
-                s_eps = {_ep(x)[1] for x in s_files}
-
-                if sn not in l_proper:
-                    # 白皮书第4/8节：分享独有 Season（本地压根没有这季）默认保护，
-                    # 不再因为"不完整/缺集"就把分享库里唯一的这份资源删掉——
-                    # 两边都没有资源，用户还想再找的机会都没了。
-                    # 之前这里在 not ok 时会生成 'shr' 删除 Action，现在统一改成 'keep' 仅报告。
-                    ok, reason = _analyze(s_eps, disp)
-                    if ok:
-                        acts.append(Act('keep', f'🛡️ {tag} (分享独有，本地暂无此季，默认保护)',
-                                        f'├─ 🛡️ {tag}: 分享独有 ➔ 默认保护，不自动清理',
-                                        meta={'reason': 'share_only', 'reason_label': '分享独有-默认保护',
-                                              'title': disp, 'season': sn}))
-                    else:
-                        acts.append(Act('keep', f'🛡️ {tag} (分享独有，{reason}，默认保护，不自动清理)',
-                                        f'├─ 🛡️ {tag}: 分享独有 且 {reason} ➔ 默认保护，仅报告',
-                                        meta={'reason': 'share_only_gap', 'reason_label': f'分享独有-{reason}',
-                                              'title': disp, 'season': sn}))
-                    continue
-
-                l_files = l_proper[sn]
-                l_eps = {_ep(x)[1] for x in l_files}
-                s_q, l_q = _best(s_files), _best(l_files)
-
-                if s_eps == l_eps:
-                    ok, reason = _season_replaceable(s_files, l_files, disp)
-                    if ok:
-                        acts.append(Act('loc', f'📺 {tag} (逐集覆盖且质量达标，穿透删本地)',
-                                        f'├─ 📺 {tag}: 逐集质量达标 ➔ CD2联动删除115网盘旧源', l_files,
-                                        meta={'reason': 'season_all_pass',
-                                              'reason_label': '逐集达标-删本地',
-                                              'title': disp, 'season': sn}))
-                    elif not _share_wins(_best(s_files), _best(l_files)):
-                        acts.append(Act('shr', f'📺 {tag} (分享逐集画质不足，淘汰分享)',
-                                        f'├─ 📺 {tag}: 分享画质次级 ➔ 清理分享影视库strm', s_files,
-                                        meta={'reason': 'local_better',
-                                              'reason_label': '本地画质更优',
-                                              'title': disp, 'season': sn}))
-                    else:
-                        acts.append(Act('keep', f'📺 {tag} (逐集未全达标：{reason} → 保守双向保留)',
-                                        f'├─ 🛡️ {tag}: {reason} ➔ 双向保留，不自动清理',
-                                        meta={'reason': 'season_partial_pass',
-                                              'reason_label': '部分集不达标-' + reason,
-                                              'title': disp, 'season': sn}))
-                elif s_eps >= l_eps and _is_seq(s_eps, disp):
-                    ok, reason = _season_replaceable(s_files, l_files, disp)
-                    if ok:
-                        acts.append(Act('loc', f'📺 {tag} (分享更完整 {len(s_eps)}>{len(l_eps)}集 且逐集达标，剔除本地)',
-                                        f'├─ 📺 {tag}: 分享更全({len(s_eps)}>{len(l_eps)}集)且逐集达标 ➔ CD2联动删除115网盘旧源', l_files,
-                                        meta={'reason': 'share_more',
-                                              'reason_label': '分享更完整',
-                                              'title': disp, 'season': sn}))
-                    else:
-                        acts.append(Act('keep', f'📺 {tag} (分享领先 {len(s_eps)}>{len(l_eps)}集 但 {reason} → 双向保留)',
-                                        f'├─ 🔄 {tag}: 分享领先但 {reason} ➔ 追更双向保留',
-                                        meta={'reason': 'share_ahead_local_quality',
-                                              'reason_label': '追更双向保留',
-                                              'title': disp, 'season': sn,
-                                              'local_quality': l_q, 'share_quality': s_q}))
-                elif l_eps >= s_eps:
-                    # 白皮书 §8：分享缺集时不再淘汰分享，避免"两边都不全"的资源彻底消失
-                    acts.append(Act('keep', f'📺 {tag} (分享落后于本地 {len(l_eps)}>{len(s_eps)}集，保守双向保留)',
-                                    f'├─ 🛡️ {tag}: 分享缺集 ➔ 双向保留，不自动清理',
-                                    meta={'reason': 'share_behind',
-                                          'reason_label': '分享缺集-双向保留',
-                                          'title': disp, 'season': sn}))
-                else:
-                    acts.append(Act('shr', f'⚠️ {tag} (两库集数重叠错乱，淘汰分享)',
-                                    f'├─ ⚠️ {tag}: 集数重叠错乱 ➔ 清理分享影视库strm', s_files,
-                                    meta={'reason': 'overlap',
-                                          'reason_label': '集数重叠错乱',
-                                          'title': disp, 'season': sn}))
+        # off 档：逐季独立择优
+        for sn, s_files in sorted(s_proper.items()):
+            tag = f'《{disp}》S{sn:02d}'
+            # 分享独有 / 本地独有：静默，不生成 action（主力是分享，列表不宜过多）
+            if sn not in l_proper:
+                continue
+            l_files = l_proper[sn]
+            _emit_season_act(acts, disp, sn, s_files, l_files)
     return acts
+
+
+def _emit_season_act(acts, disp, sn, s_files, l_files):
+    """单季择优：逐集对齐 + 达标率择优，取消双向保留。
+
+    决策规则：
+      - 交集内逐集比画质，统计分享达标集数 s_better 与本地达标集数 l_better。
+      - 分享独有集(s_only)、本地独有集(l_only) 计入各自「更完整」优势。
+      - 分享达标率 >= SEASON_REPLACE_RATIO 且集数不落后 → 删本地（留分享）。
+      - 否则本地更优 → 删分享（留本地）。
+      - 前序缺失 / 中间断层不再视为「不完整障碍」，直接纳入择优。
+    """
+    tag = f'《{disp}》S{sn:02d}'
+    cmp = _season_compare(s_files, l_files)
+    s_total = len(cmp['s_eps'])
+    l_total = len(cmp['l_eps'])
+    common = len(cmp['common'])
+    s_better = cmp['s_better']
+    l_better = cmp['l_better']
+
+    if common == 0:
+        # 无交集集号，无法逐集比画质 → 静默，不删任何一边
+        return
+
+    # 分享在交集内的达标率
+    share_ratio = s_better / common if common else 0.0
+
+    # 分享集数领先（含独有集）且达标率够高 → 删本地，留分享
+    if share_ratio >= SEASON_REPLACE_RATIO and s_total >= l_total:
+        acts.append(Act('loc', f'📺 {tag} (分享画质达标 {s_better}/{common} 集 → 删本地腾网盘)',
+                        f'├─ 📺 {tag}: 分享达标率 {share_ratio:.0%} ({s_better}/{common}集) ➔ CD2联动删除115网盘旧源',
+                        l_files,
+                        meta={'reason': 'share_wins',
+                              'reason_label': '分享择优-删本地',
+                              'title': disp, 'season': sn,
+                              'share_better': s_better, 'local_better': l_better,
+                              'share_total': s_total, 'local_total': l_total}))
+    else:
+        acts.append(Act('shr', f'📺 {tag} (本地更优 {l_better}/{common} 集 → 淘汰分享)',
+                        f'├─ 📺 {tag}: 本地达标率 {(l_better/common):.0%} ({l_better}/{common}集) ➔ 清理分享影视库strm',
+                        s_files,
+                        meta={'reason': 'local_wins',
+                              'reason_label': '本地择优-删分享',
+                              'title': disp, 'season': sn,
+                              'share_better': s_better, 'local_better': l_better,
+                              'share_total': s_total, 'local_total': l_total}))
+
+
+def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
+    """多季保护 compare 档：本地多季合集。
+
+    仅当分享对本地「全部季」都逐集达标（每季交集集号对齐且分享达标率够高），
+    才整体删本地（腾网盘）；否则逐季独立择优（删分享里不达标的部分），
+    保护本地多季合集不被部分季掏空。
+    """
+    all_pass = True
+    for sn, l_files in l_proper.items():
+        if sn not in s_proper:
+            all_pass = False
+            break
+        cmp = _season_compare(s_proper[sn], l_files)
+        common = len(cmp['common'])
+        if common == 0:
+            all_pass = False
+            break
+        if cmp['s_better'] / common < SEASON_REPLACE_RATIO:
+            all_pass = False
+            break
+        if len(cmp['s_eps']) < len(cmp['l_eps']):
+            all_pass = False
+            break
+
+    if all_pass:
+        for sn, l_files in sorted(l_proper.items()):
+            tag = f'《{disp}》S{sn:02d}'
+            acts.append(Act('loc', f'📺 {tag} (整剧零和：分享全季达标 → 删本地)',
+                            f'├─ 📺 {tag}: 整剧零和 ➔ CD2联动删除115网盘旧源', l_files,
+                            meta={'reason': 'multi_full_share',
+                                  'reason_label': '整剧零和-分享替代',
+                                  'title': disp, 'season': sn,
+                                  'local_seasons': n_local,
+                                  'share_seasons': len(s_proper)}))
+        return
+
+    # 不满足全量替换 → 逐季独立择优（删分享里不达标的季，保护本地）
+    for sn, s_files in sorted(s_proper.items()):
+        if sn not in l_proper:
+            continue
+        _emit_season_act(acts, disp, sn, s_files, l_proper[sn])
 
 
 def save_plan(acts):
@@ -2701,8 +2866,9 @@ ACTIONS = {
     'emby_library': action_emby_library,
     'library_stats': action_library_stats,
     'orphans':       action_scan_orphans,
+    'clean_orphans': action_clean_orphan_dirs,
 }
-MUTATING = {'inter_clean'}
+MUTATING = {'inter_clean', 'clean_orphans'}
 
 
 def main():
