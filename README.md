@@ -2,6 +2,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-READY-blue.svg)](https://www.docker.com/)
+
 双库影视媒体治理系统：比较「本地库」与「分享库」中同一影视的画质与完整度，生成治理计划，并在确认后执行清理；同时提供 Emby 状态、TMDB 缺集检查和 Telegram 通知。
 
 > **安全原则：默认先扫描、再生成计划、最后确认执行。**
