@@ -1,4 +1,7 @@
 # 🎬 TDD Guard
+[![LICENSE](https://img.shields.io/badge/LICENSE-MIT-blueviolet?style=for-the-badge)](https://opensource.org/licenses/MIT)
+[![PYTHON](https://img.shields.io/badge/PYTHON-3.11-blue?style=for-the-badge)](https://www.python.org/)
+[![DOCKER](https://img.shields.io/badge/DOCKER-READY-blue?style=for-the-badge)](https://www.docker.com/)
 
 双库影视媒体治理系统：比较「本地库」与「分享库」中同一影视的画质与完整度，生成治理计划，并在确认后执行清理；同时提供 Emby 状态、TMDB 缺集检查和 Telegram 通知。
 
