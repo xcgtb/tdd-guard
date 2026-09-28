@@ -1,11 +1,15 @@
 # 🎬 TTD Guard
-[![LICENSE](https://img.shields.io/badge/LICENSE-MIT-blueviolet?style=for-the-badge)](https://opensource.org/licenses/MIT)
-[![PYTHON](https://img.shields.io/badge/PYTHON-3.11-blue?style=for-the-badge)](https://www.python.org/)
-[![DOCKER](https://img.shields.io/badge/DOCKER-READY-blue?style=for-the-badge)](https://www.docker.com/)
+
+![LICENSE](https://img.shields.io/badge/LICENSE-MIT-blueviolet?style=for-the-badge)
+
+![PYTHON](https://img.shields.io/badge/PYTHON-3.11-blue?style=for-the-badge)
+
+![DOCKER](https://img.shields.io/badge/DOCKER-READY-blue?style=for-the-badge)
 
 双库影视媒体治理系统：比较「本地库」与「分享库」中同一影视的画质与完整度，生成治理计划，并在确认后执行清理；同时提供 Emby 状态、TMDB 缺集检查和 Telegram 通知。
 
 > **安全原则：默认先扫描、再生成计划、最后确认执行。**
+>
 > 建议第一次部署只做预览，不要直接执行删除。
 
 ## 功能
@@ -92,106 +96,11 @@ docker compose ps
 http://NAS-IP:8321
 ```
 
-### 4. 可选：使用 `.env` 管理密钥
-
-如果不希望把 Web 密码、Emby Key、TMDB Key 等写进 compose 文件，也可以继续使用 `.env`。仓库提供 `.env.example` 作为模板，真实 `.env` 已被 `.gitignore` 排除，不应提交到 GitHub。
-
-运行时环境变量中的 `EMBY_*`、`TMDB_KEY`、`TG_*` 会优先于 `/data/config.json` 中的历史配置。
-
-## 本地构建
-
-如果不使用 GHCR：
-
-```bash
-docker compose build --no-cache
-docker compose up -d
-```
-
-或直接：
-
-```bash
-docker build -t ttd-guard:preview .
-```
-
-## 配置说明
-
-### Web 登录
-
-| 变量 | 必填 | 说明 |
-|---|---:|---|
-| `WEB_USER` | 是 | Web 用户名 |
-| `WEB_PASSWORD` | 是 | Web 密码；未设置且未显式允许无认证时拒绝启动 |
-| `TZ` | 否 | 默认 `Asia/Shanghai` |
-
-### 媒体目录
-
-| 变量 | 默认容器路径 | 作用 |
-|---|---|---|
-| `AGENT_DATA` | `/data` | 配置、状态、执行记录 |
-| `L_ROOT` | `/media/local` | 本地/主媒体库 |
-| `S_ROOT` | `/media/share` | 分享媒体库 |
-| `CLOUD_L_ROOT` | `/media/cloud` | CloudDrive2 等云盘挂载 |
-
-### 外部服务
-
-可以在 Web「设置」中配置，也可以用环境变量固定：
-
-- `EMBY_HOST`
-- `EMBY_KEY`
-- `TMDB_KEY`
-- `TG_BOT_TOKEN`
-- `TG_CHAT_ID`
-- `TG_ALLOWED_USERS`
-
-如果这些环境变量显式设置为非空值，它们会覆盖 `data/config.json` 中对应值。
-
-## 第一次使用建议
-
-1. 启动后先打开 Web。
-2. 确认 `/media/local`、`/media/share` 和 `/media/cloud` 映射正确。
-3. 执行扫描/治理计划预览。
-4. 检查待删除列表。
-5. 确认无误后再执行真实治理。
-6. 正式运行前建议备份 `/data`。
-
 ## 更新
-
-使用 GHCR：
 
 ```bash
 docker compose pull
 docker compose up -d
-```
-
-指定版本：
-
-```yaml
-image: ghcr.io/xcgtb/ttd-guard:1.2.1
-```
-
-正式发布版本使用 Git tag，例如：
-
-```bash
-git tag v1.2.1
-git push origin v1.2.1
-```
-
-GitHub Actions 会构建并推送 `linux/amd64` 与 `linux/arm64` 镜像。
-
-## 开发与测试
-
-源码仓库保留测试，用于 CI；**测试代码不会进入正式 Docker 镜像**。
-
-```bash
-python -m pip install -r requirements.txt
-python -m pip install pytest
-pytest tests/ -v
-```
-
-发布前检查：
-
-```bash
-python scripts/release_check.py
 ```
 
 ## 项目目录
