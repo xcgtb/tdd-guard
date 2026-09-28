@@ -40,7 +40,7 @@ if not WEB_PASSWORD:
         )
         raise SystemExit(1)
 
-app = FastAPI(title='TDD Guard', version='1.2.1')
+app = FastAPI(title='TTD Guard', version='1.2.1')
 
 TASKS = {}
 TASK_LOCK = threading.Lock()
@@ -1161,7 +1161,7 @@ def api_test_telegram(body: dict = None):
     if not token or not chat_id:
         return {'status': 'error', 'message': '请填写 Bot Token 和 Chat ID'}
     try:
-        text = '✅ <b>TDD Guard</b> 测试消息\n如果你看到这条消息，说明 Telegram 通知已配置成功。'
+        text = '✅ <b>TTD Guard</b> 测试消息\n如果你看到这条消息，说明 Telegram 通知已配置成功。'
         url = f'https://api.telegram.org/bot{token}/sendMessage'
         data = urllib.parse.urlencode({'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}).encode()
         req = urllib.request.Request(url, data=data, method='POST')

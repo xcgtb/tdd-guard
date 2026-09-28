@@ -201,7 +201,7 @@ def _init_bot(token):
 
 
 HELP_TEXT = (
-    '🎬 <b>TDD Guard</b>\n'
+    '🎬 <b>TTD Guard</b>\n'
     '<i>点输入框左侧 ☰ 选功能，或直接输命令</i>\n'
     '\n'
     '🧹 <b>治理</b>\n'
@@ -283,7 +283,7 @@ def _show_menu(token, chat_id, user_msg_id=None):
     if old:
         _try_delete(token, chat_id, old)
     m = _send(token, chat_id,
-              '🎬 <b>TDD Guard</b>\n\n点击输入框左侧 <b>☰</b>，或输入 / 查看命令',
+              '🎬 <b>TTD Guard</b>\n\n点击输入框左侧 <b>☰</b>，或输入 / 查看命令',
               _clear_keyboard(),
               ttl=MENU_MSG_TTL,
               delete_user_msg=user_msg_id)

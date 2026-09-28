@@ -2298,7 +2298,7 @@ MORNING_GAP_TOP = 50   # 晨报里最多列出多少部缺集剧（按缺得最�
 
 def build_morning_report(items: list, force_refresh: bool = False) -> str:
     now = datetime.datetime.now()
-    lines = [tg_title('☀️', 'TDD Guard 晨报', f'{now:%Y-%m-%d} 周{_WEEK[now.weekday()]}')]
+    lines = [tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_WEEK[now.weekday()]}')]
 
     if 'stats' in items:
         try:

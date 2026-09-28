@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#6366f1">
-<title>TDD Guard</title>
+<title>TTD Guard</title>
 <style>
 /* ═══════════════════════════════════════════════
-   TDD Guard · Aurora UI v3
+   TTD Guard · Aurora UI v3
    浅色 / 深色 双主题 + 移动端适配
    ═══════════════════════════════════════════════ */
 
@@ -1155,7 +1155,7 @@ window.addEventListener('unhandledrejection', function(e){
 <div class="app-wrap">
   <div class="mask" id="mask" onclick="toggleSidebar(false)"></div>
   <aside class="sidebar" id="sidebar">
-    <div class="side-title" id="sideTitle">TDD Guard <span class="v">V1.1</span></div>
+    <div class="side-title" id="sideTitle">TTD Guard <span class="v">V1.1</span></div>
     <nav id="menu"></nav>
     <div class="side-foot">
       <button data-icon="logout">退出系统</button>
@@ -1889,7 +1889,7 @@ function injectIcons(root){
 }
 </script>
 <script>
-/* TDD Guard - UI Modal v1 */
+/* TTD Guard - UI Modal v1 */
 (function(){
   var overlay = null;
 
@@ -2128,7 +2128,7 @@ function showLoginOverlay(){
   d.id = 'loginOverlay';
   d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(10,14,26,.92);display:flex;align-items:center;justify-content:center;padding:20px';
   d.innerHTML = '<div style="background:var(--surface,#fff);color:var(--text,#111);border-radius:16px;padding:24px;width:100%;max-width:340px;box-shadow:0 10px 40px rgba(0,0,0,.4)">'
-    + '<div style="font-size:18px;font-weight:700;margin-bottom:16px">登录 TDD Guard</div>'
+    + '<div style="font-size:18px;font-weight:700;margin-bottom:16px">登录 TTD Guard</div>'
     + '<input id="loginUser" type="text" name="username" autocomplete="username" placeholder="用户名" value="admin" style="width:100%;margin-bottom:10px;font-size:16px;padding:10px">'
     + '<input id="loginPass" type="password" name="password" autocomplete="current-password" placeholder="密码" style="width:100%;margin-bottom:10px;font-size:16px;padding:10px">'
     + '<div id="loginErr" style="color:#ef4444;font-size:13px;min-height:18px;margin-bottom:6px"></div>'
@@ -2258,7 +2258,7 @@ function switchTab(id){
   document.querySelectorAll('.tab').forEach(function(s){ s.classList.remove('active'); });
   var tab = $('tab-' + id); if(tab) tab.classList.add('active');
   var m = MENU.find(function(x){ return x.id === id; });
-  $('tabTitle').textContent = m ? m.name : 'TDD Guard';
+  $('tabTitle').textContent = m ? m.name : 'TTD Guard';
   toggleSidebar(false);
   // 记住当前所在页签，浏览器刷新（F5）后停在原地，而不是每次都跳回治理总览
   // 重新拉取一遍数据，打断正在查看的内容。
