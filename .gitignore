@@ -29,3 +29,7 @@ Thumbs.db
 *.pre-*
 *.bak.*
 docker-compose.yml
+docker-compose.yml
+.env
+data/
+static/
