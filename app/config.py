@@ -9,7 +9,7 @@ CONFIG_FILE = DATA_DIR / 'config.json'
 
 DEFAULTS = {
     # 服务
-    'emby_host':              os.environ.get('EMBY_HOST',              'http://192.168.1.100:8096'),
+    'emby_host':              os.environ.get('EMBY_HOST',              'http://127.0.0.1:8096'),
     'emby_key':               os.environ.get('EMBY_KEY',               ''),
     'tmdb_key':               os.environ.get('TMDB_KEY',               ''),
 
