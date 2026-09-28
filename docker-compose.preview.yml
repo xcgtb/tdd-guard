@@ -1,10 +1,10 @@
 services:
-  tdd-guard:
+  ttd-guard:
     build:
       context: .
       dockerfile: Dockerfile
-    image: tdd-guard:preview
-    container_name: tdd-guard-preview
+    image: ttd-guard:preview
+    container_name: ttd-guard-preview
     restart: "no"
     network_mode: host
     environment:

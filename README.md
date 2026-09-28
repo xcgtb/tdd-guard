@@ -1,4 +1,4 @@
-# 🎬 TDD Guard
+# 🎬 TTD Guard
 [![LICENSE](https://img.shields.io/badge/LICENSE-MIT-blueviolet?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![PYTHON](https://img.shields.io/badge/PYTHON-3.11-blue?style=for-the-badge)](https://www.python.org/)
 [![DOCKER](https://img.shields.io/badge/DOCKER-READY-blue?style=for-the-badge)](https://www.docker.com/)
@@ -54,9 +54,9 @@ cd /vol1/1000/docker/tdd-guard
 
 ```yaml
 services:
-  tdd-guard:
-    image: ghcr.io/xcgtb/tdd-guard:latest
-    container_name: tdd-guard
+  ttd-guard:
+    image: ghcr.io/xcgtb/ttd-guard:latest
+    container_name: ttd-guard
     restart: unless-stopped
     network_mode: host
     environment:
@@ -110,7 +110,7 @@ docker compose up -d
 或直接：
 
 ```bash
-docker build -t tdd-guard:preview .
+docker build -t ttd-guard:preview .
 ```
 
 ## 配置说明
@@ -166,7 +166,7 @@ docker compose up -d
 指定版本：
 
 ```yaml
-image: ghcr.io/xcgtb/tdd-guard:1.2.1
+image: ghcr.io/xcgtb/ttd-guard:1.2.1
 ```
 
 正式发布版本使用 Git tag，例如：
@@ -197,7 +197,7 @@ python scripts/release_check.py
 ## 项目目录
 
 ```text
-tdd-guard/
+ttd-guard/
 ├── app/                       # 后端核心代码
 ├── static/                    # Web 前端
 ├── scripts/                   # 健康检查、诊断、发布检查
