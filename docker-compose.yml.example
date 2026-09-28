@@ -1,30 +1,56 @@
 services:
   tdd-guard:
+    # GHCR 预构建镜像：不需要源码、不需要 build。
+    # 想固定版本可改成：ghcr.io/xcgtb/tdd-guard:1.2.1
     image: ghcr.io/xcgtb/tdd-guard:latest
     container_name: tdd-guard
     restart: unless-stopped
     network_mode: host
-    env_file:
-      - .env
+
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
+      TZ: Asia/Shanghai
+
+      # Web 登录：必须修改成你自己的强密码
+      WEB_USER: admin
+      WEB_PASSWORD: CHANGE_ME_TO_A_STRONG_PASSWORD
+
+      # 容器内部路径，不需要修改
       AGENT_DATA: /data
       L_ROOT: /media/local
       S_ROOT: /media/share
       CLOUD_L_ROOT: /media/cloud
-      # 使用 CloudDrive2 联动删除源文件时设为 1；不用时保持 0
-      ENABLE_CD2_WATCHDOG: ${ENABLE_CD2_WATCHDOG:-0}
+
+      # 使用 CloudDrive2 联动删除源文件时改成 "1"；不用时保持 "0"
+      ENABLE_CD2_WATCHDOG: "0"
+
+      # 可选：也可以直接在这里固定外部服务配置。
+      # 不使用时保持注释；也可以启动后在 Web「设置」中填写。
+      # EMBY_HOST: http://你的Emby地址:8096
+      # EMBY_KEY: 你的Emby_API_Key
+      # TMDB_KEY: 你的TMDB_API_Key
+      # TG_BOT_TOKEN: 你的Telegram_Bot_Token
+      # TG_CHAT_ID: 你的Telegram_Chat_ID
+      # TG_ALLOWED_USERS: 你的Telegram用户ID
+
     volumes:
+      # TTD Guard 自己的数据、数据库、配置、执行记录
       - ./data:/data
-      - /path/to/local-strm:/media/local
-      - /path/to/share-strm:/media/share
-      # 不使用 CloudDrive2 时可以删除下面这一行
-      - /path/to/cloud:/media/cloud:rslave
+
+      # 本地影视库（需要执行治理/清理，因此保持 rw）
+      - /你的本地影视库:/media/local:rw
+
+      # 分享影视库（需要执行治理/清理，因此保持 rw）
+      - /你的分享影视库:/media/share:rw
+
+      # CloudDrive2 挂载：不用时可以删除这一行；使用联动删除时保留
+      - /你的CloudDrive2影视库:/media/cloud:rslave
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
     healthcheck:
       test: ["CMD", "python", "/app/scripts/healthcheck.py"]
       interval: 30s

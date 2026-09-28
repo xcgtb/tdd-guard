@@ -26,44 +26,56 @@
 
 ## 推荐部署：GHCR 预构建镜像
 
-复制配置：
+正式用户不需要下载源码，也不需要自己 `build`。只需要准备一个 `docker-compose.yml`，直接从 GHCR 拉取预构建镜像即可。
+
+### 1. 准备目录
+
+例如在 NAS 上：
 
 ```bash
-git clone https://github.com/xcgtb/tdd-guard.git
-cd tdd-guard
-cp .env.example .env
-cp docker-compose.yml.example docker-compose.yml
+mkdir -p /vol1/1000/docker/tdd-guard/data
+cd /vol1/1000/docker/tdd-guard
 ```
 
-编辑 `.env`，至少修改：
+### 2. 准备 `docker-compose.yml`
 
-```dotenv
-WEB_USER=admin
-WEB_PASSWORD=请改成你自己的强密码
-TZ=Asia/Shanghai
-```
+把仓库里的 `docker-compose.yml.example` 复制成 `docker-compose.yml`，然后只修改：
 
-编辑 `docker-compose.yml`，把以下三个宿主机路径换成实际路径：
+- `WEB_PASSWORD`：改成自己的强密码。
+- `/你的本地影视库`：改成本地影视库实际路径。
+- `/你的分享影视库`：改成分享影视库实际路径。
+- 如果不使用 CloudDrive2 联动，删除 `/media/cloud` 那一行，并保持 `ENABLE_CD2_WATCHDOG: "0"`。
+- 如果使用 CloudDrive2 联动，把 `/你的CloudDrive2影视库` 改成实际挂载路径，并将 `ENABLE_CD2_WATCHDOG` 改为 `"1"`。
+
+例如：
 
 ```yaml
-- /你的数据目录:/data
-- /你的本地STRM目录:/media/local
-- /你的分享STRM目录:/media/share
+services:
+  tdd-guard:
+    image: ghcr.io/xcgtb/tdd-guard:latest
+    container_name: tdd-guard
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+      WEB_USER: admin
+      WEB_PASSWORD: 请修改成自己的强密码
+      AGENT_DATA: /data
+      L_ROOT: /media/local
+      S_ROOT: /media/share
+      CLOUD_L_ROOT: /media/cloud
+      ENABLE_CD2_WATCHDOG: "0"
+    volumes:
+      - ./data:/data
+      - /你的本地影视库:/media/local:rw
+      - /你的分享影视库:/media/share:rw
+      # 使用 CloudDrive2 联动时保留
+      - /你的CloudDrive2影视库:/media/cloud:rslave
 ```
 
-如果使用 CloudDrive2 联动，再保留：
+> **安全提示：** `WEB_PASSWORD` 不要使用示例密码。真实部署时密码只保存在你自己的 NAS `docker-compose.yml` / `.env` 中，不要提交到 GitHub。
 
-```yaml
-- /你的CloudDrive2媒体挂载:/media/cloud:rslave
-```
-
-并在 `.env` 中：
-
-```dotenv
-ENABLE_CD2_WATCHDOG=1
-```
-
-启动：
+### 3. 启动
 
 ```bash
 docker compose pull
@@ -76,6 +88,12 @@ docker compose ps
 ```text
 http://NAS-IP:8321
 ```
+
+### 4. 可选：使用 `.env` 管理密钥
+
+如果不希望把 Web 密码、Emby Key、TMDB Key 等写进 compose 文件，也可以继续使用 `.env`。仓库提供 `.env.example` 作为模板，真实 `.env` 已被 `.gitignore` 排除，不应提交到 GitHub。
+
+运行时环境变量中的 `EMBY_*`、`TMDB_KEY`、`TG_*` 会优先于 `/data/config.json` 中的历史配置。
 
 ## 本地构建
 
@@ -145,14 +163,14 @@ docker compose up -d
 指定版本：
 
 ```yaml
-image: ghcr.io/xcgtb/tdd-guard:1.2.0
+image: ghcr.io/xcgtb/tdd-guard:1.2.1
 ```
 
 正式发布版本使用 Git tag，例如：
 
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 GitHub Actions 会构建并推送 `linux/amd64` 与 `linux/arm64` 镜像。

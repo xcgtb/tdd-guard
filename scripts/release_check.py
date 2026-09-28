@@ -6,6 +6,9 @@ import re, sys
 ROOT = Path(__file__).resolve().parent.parent
 FORBIDDEN = {'.git', '.pytest_cache', '__pycache__', 'data', '.env'}
 BAD_EXT = {'.pyc', '.pyo'}
+
+# Compose 示例只能放在仓库根目录，不能放进 .github/workflows/，否则会被 GitHub 当成 Actions workflow。
+BAD_WORKFLOW_FILES = {'.github/workflows/docker-compose.yml', '.github/workflows/docker-compose.yaml', '.github/workflows/docker-compose.example.yml'}
 def is_placeholder_secret(name: str, value: str) -> bool:
     value = value.strip().strip('"').strip("'")
     return not value or value in {
@@ -14,6 +17,9 @@ def is_placeholder_secret(name: str, value: str) -> bool:
     }
 
 errors = []
+for bad in BAD_WORKFLOW_FILES:
+    if (ROOT / bad).exists():
+        errors.append(f'forbidden workflow file: {bad}')
 for p in ROOT.rglob('*'):
     rel = p.relative_to(ROOT)
     if any(part in FORBIDDEN for part in rel.parts) or p.suffix in BAD_EXT:
