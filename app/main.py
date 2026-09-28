@@ -586,7 +586,8 @@ def dashboard():
                              'total': len(data.get('keys', []))}
         except Exception: pass
         bs = bot.status()
-        return {'localCount': f'{l_count:,}', 'shareCount': f'{s_count:,}',
+        return {'version': app.version,
+                'localCount': f'{l_count:,}', 'shareCount': f'{s_count:,}',
                 'services': {
                     'emby': {'ok': emby_ok, 'host': engine.EMBY_HOST},
                     'tmdb': {'ok': tmdb_ok},
@@ -810,6 +811,29 @@ def api_clean_orphan_dirs(body: dict = None):
     paths = body.get('paths') or []
     dry_run = bool(body.get('dry_run', True))
     return engine.clean_orphan_dirs(paths, dry_run=dry_run)
+
+
+@app.post('/api/cache/refresh', dependencies=[Depends(auth)])
+def api_cache_refresh():
+    """清除全部内存缓存并触发后台重建（STRM 计数 / 片库映射 / 统计 / 分集 / Emby 索引）。
+    磁盘缓存文件保留作为兜底，后台重建完成后自动覆盖。"""
+    try:
+        engine.invalidate_stats_cache()
+        engine._strm_count_cache['ts'] = 0
+        engine._ep_cache['ts'] = 0
+        engine._ep_cache['data'] = None
+        engine._emby_index_cache['ts'] = 0
+        engine._emby_index_cache['data'] = None
+        engine._emby_lib_cache['ts'] = 0
+        engine._emby_lib_cache['data'] = None
+        engine._invalidate_lib_cache()
+        threading.Thread(target=engine._overview_bg_refresh, daemon=True,
+                         name='cache-refresh-overview').start()
+        threading.Thread(target=engine._strm_count_bg_refresh, daemon=True,
+                         name='cache-refresh-strm').start()
+        return {'status': 'success', 'message': '缓存已清除，后台正在重建'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
 
 # ═══════════════════ 治理策略 ═══════════════════
 @app.get('/api/strategy', dependencies=[Depends(auth)])

@@ -1156,7 +1156,7 @@ window.addEventListener('unhandledrejection', function(e){
 <div class="app-wrap">
   <div class="mask" id="mask" onclick="toggleSidebar(false)"></div>
   <aside class="sidebar" id="sidebar">
-    <div class="side-title" id="sideTitle">TTD Guard <span class="v">V1.1</span></div>
+    <div class="side-title" id="sideTitle">TTD Guard <span class="v" id="sideVersion">V1.3.3</span></div>
     <nav id="menu"></nav>
     <div class="side-foot">
       <button data-icon="logout">退出系统</button>
@@ -1219,6 +1219,7 @@ window.addEventListener('unhandledrejection', function(e){
             <button class="btn" id="scanBtn" onclick="scanLibrary()" data-icon="refresh">立即扫描双库</button>
             <button class="btn gray" onclick="switchTab('governance')" data-icon="scale">查看治理清单</button>
             <button class="btn gray" onclick="switchTab('settings')" data-icon="gear">规则设置</button>
+            <button class="btn gray" onclick="refreshCaches()" data-icon="database">刷新缓存</button>
           </div>
         </div>
         <div class="panel">
@@ -1558,32 +1559,24 @@ window.addEventListener('unhandledrejection', function(e){
         <div id="plansList"><div class="list-empty">加载中...</div></div>
       </section>
 
-      <!-- 孤儿文件 -->
+      <!-- 洗版残留 -->
       <section class="tab" id="tab-orphans">
         <div class="panel">
           <div class="row-between">
-            <h3 data-icon="alert">孤儿文件扫描</h3>
+            <h3 data-icon="alert">洗版残留扫描</h3>
             <div style="display:flex;gap:8px;align-items:center">
-              <input type="number" id="orphansDepth" value="3" min="1" max="10" style="width:70px;padding:6px 10px">
+              <input type="number" id="orphansDepth" value="5" min="1" max="10" style="width:70px;padding:6px 10px">
               <button class="btn" onclick="loadOrphans()" data-icon="search">开始扫描</button>
             </div>
           </div>
           <p style="font-size:12px;color:#6b7280;line-height:1.7">
-            扫描两库中的未知文件（非 STRM、非视频、非 metadata）。<b>只报告，不删除。</b>
+            扫描两库中更名洗版后残留的目录：治理清理 STRM 时留下的字幕/元数据目录（目录内已无任何 STRM）。
+            只列出最顶层目录，删除会连同内部子目录（Season 等）一并清理。<b>删除需勾选确认。</b>
           </p>
-        </div>
-        <div class="cards" id="orphansStats" style="display:none">
-          <div class="card"><div class="label" data-icon="file">未知文件总数</div><div class="value amber" id="orph-total">0</div></div>
-          <div class="card"><div class="label" data-icon="database">本地库</div><div class="value blue" id="orph-local">0</div></div>
-          <div class="card"><div class="label" data-icon="share">分享库</div><div class="value indigo" id="orph-share">0</div></div>
-        </div>
-        <div class="panel">
-          <h3 data-icon="list">文件列表</h3>
-          <div id="orphansList"><div class="list-empty">点击右上角「开始扫描」</div></div>
         </div>
         <div class="panel" id="orphanDirsPanel" style="display:none">
           <div class="row-between">
-            <h3 data-icon="database">洗版残留（无 STRM 目录）</h3>
+            <h3 data-icon="database">残留目录</h3>
             <div style="display:flex;gap:10px;align-items:center">
               <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
                 <input type="checkbox" id="orphanDirsSelectAll" onchange="toggleAllOrphanDirs(this)"> 全选
@@ -1591,11 +1584,7 @@ window.addEventListener('unhandledrejection', function(e){
               <button class="btn danger" id="cleanOrphanDirsBtn" onclick="cleanOrphanDirs()" data-icon="trash">删除选中目录</button>
             </div>
           </div>
-          <p style="font-size:12px;color:#6b7280;line-height:1.7">
-            更名洗版后，治理清理 STRM 时残留的字幕/元数据目录（目录内已无任何 STRM）。
-            只列出最顶层目录，删除会连同内部子目录（Season 等）一并清理。<b>删除不可恢复，请谨慎。</b>
-          </p>
-          <div id="orphanDirsList"><div class="list-empty">无</div></div>
+          <div id="orphanDirsList"><div class="list-empty">点击右上角「开始扫描」</div></div>
         </div>
       </section>
 
@@ -2015,7 +2004,7 @@ var MENU = [
   { id: 'morning',    name: '每日晨报', icon: 'sun' },
   { id: 'daily',      name: '每日汇报', icon: 'file' },
   { id: 'plans',      name: '治理计划', icon: 'bookmark' },
-  { id: 'orphans',    name: '孤儿文件', icon: 'alert' },
+  { id: 'orphans',    name: '洗版残留', icon: 'alert' },
   { id: 'history',    name: '执行记录', icon: 'list' },
   { id: 'settings',   name: '规则设置', icon: 'gear' }
 ];
@@ -2361,14 +2350,14 @@ function renderLibraryStats(r){
 }
 
 async function loadDashboard(){
-  try {
-    var d = await api('/api/dashboard');
-    renderDashboard(d);
-    saveDashboardCache(d);
+  /* 策略快照数据量极小，与 dashboard 并行加载——
+     /api/dashboard 要统计全库 STRM（大库较慢），串行会拖得策略快照一直"加载中" */
+  var pStrategy = api('/api/strategy').catch(function(e){ console.warn('strategy 失败', e); return null; });
+  var pDash = api('/api/dashboard').catch(function(e){ console.warn('dashboard 失败', e); return null; });
 
-    // 策略快照
-    var st = await api('/api/strategy');
-    var s = st.strategy || {};
+  var st = await pStrategy;
+  if (st && st.strategy) {
+    var s = st.strategy;
     var decisionLabel = { quality_first: '画质优先', keep_local: '保留本地', keep_share: '保留分享', balanced: '严格画质' }[s.decision] || s.decision;
     var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
     var mspLabel = { off: '关闭', compare: '开启', full: '全量豁免' }[s.multi_season_protect] || '开启';
@@ -2378,11 +2367,19 @@ async function loadDashboard(){
       '<div class="path-row"><span class="name">特别篇策略</span><span class="path" style="color:#8b5cf6;border:none">' + spLabel + '</span></div>' +
       '<div class="path-row"><span class="name">平局策略</span><span class="path" style="color:#6b7280;border:none">' + (s.tie_keep_local ? '保留本地' : '保留分享') + '</span></div>' +
       '<div class="path-row"><span class="name">白名单</span><span class="path" style="border:none;color:#6b7280">' + (s.exempt_keywords || []).join(', ') + '</span></div>';
-  } catch(e){ console.warn('dashboard 失败', e); }
+  }
+
+  var d = await pDash;
+  if (d) {
+    renderDashboard(d);
+    saveDashboardCache(d);
+  }
 }
 function renderDashboard(d){
     $('stat-local').textContent = d.localCount || '-';
     $('stat-share').textContent = d.shareCount || '-';
+    /* 侧边栏版本号跟随后端（之前硬编码 V1.1 不同步） */
+    if (d.version) { var sv = $('sideVersion'); if (sv) sv.textContent = 'V' + d.version; }
     var embyOk = d.services && d.services.emby && d.services.emby.ok;
     $('svc-emby').innerHTML = embyOk ? statusOk('在线') : statusNo('离线');
     $('svc-emby-host').textContent = (d.services && d.services.emby && d.services.emby.host) || '—';
@@ -2416,6 +2413,17 @@ function renderDashboard(d){
 }
 
 /* ═══════════ 扫描 ═══════════ */
+async function refreshCaches(){
+  try {
+    var r = await api('/api/cache/refresh', { method: 'POST' });
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    toast('缓存已清除，后台重建中', 'success');
+    loadDashboard();
+  } catch(e){
+    toast('刷新失败: ' + e.message, 'error');
+  }
+}
+
 async function scanLibrary(){
   var btn1 = $('scanBtn'), btn2 = $('govScanBtn');
   [btn1, btn2].forEach(function(b){ if(b) b.disabled = true; });
@@ -4074,64 +4082,32 @@ async function showPlanDetail(planId){
   }
 }
 
-/* ═══════════ 孤儿文件 ═══════════ */
-function orphFmt(n){ return Number(n || 0).toLocaleString('en-US'); }
-function orphScanBlock(r){
-  var sc = r.scan || {}, libs = sc.libs || [], h = '';
-  libs.forEach(function(l){
-    var name = l.lib === 'local' ? '本地库' : '分享库';
-    if (!l.exists) {
-      h += '<div class="orph-lib bad"><b>' + name + '</b> 路径不存在：' + esc(l.root) + '</div>';
-      return;
-    }
-    h += '<div class="orph-lib"><b>' + name + '</b>　看了 ' + orphFmt(l.dirs) + ' 个目录 · ' + orphFmt(l.files) + ' 个文件'
-       + '<div class="orph-kinds">STRM ' + orphFmt(l.strm) + ' · 视频 ' + orphFmt(l.video) + ' · 元数据 ' + orphFmt(l.meta)
-       + ' · 忽略 ' + orphFmt(l.ignored) + ' · <b class="' + (l.unknown ? 'hit' : '') + '">未知 ' + orphFmt(l.unknown) + '</b></div></div>';
-  });
-  if (libs.length) h += '<div class="orph-meta">扫描深度 ' + (sc.depth || '?') + ' 层 · 耗时 ' + (sc.elapsed != null ? sc.elapsed : '?') + ' 秒</div>';
-  (r.warnings || []).forEach(function(w){ h += '<div class="orph-warn">⚠️ ' + esc(w) + '</div>'; });
-  return '<div class="orph-scan">' + h + '</div>';
-}
+/* ═══════════ 洗版残留 ═══════════ */
 async function loadOrphans(){
-  var depth = parseInt($('orphansDepth').value) || 3;
-  $('orphansList').innerHTML = '<div class="list-empty">扫描中（大库可能较慢）...</div>';
-  $('orphansStats').style.display = 'none';
+  var depth = parseInt($('orphansDepth').value) || 5;
+  var panel = $('orphanDirsPanel');
+  panel.style.display = '';
+  $('orphanDirsList').innerHTML = '<div class="list-empty">扫描中（大库可能较慢）...</div>';
+  var selectAll = $('orphanDirsSelectAll');
+  if (selectAll) selectAll.checked = false;
   try {
     var r = await api('/api/orphans?max_depth=' + depth);
-    if (r.status === 'busy') throw new Error(r.message || '已有孤儿扫描任务在跑，请稍候');
+    if (r.status === 'busy') throw new Error(r.message || '已有扫描任务在跑，请稍候');
     if (r.status !== 'success') throw new Error(r.message || '失败');
-    $('orphansStats').style.display = '';
-    $('orph-total').textContent = r.count || 0;
-    var bl = r.by_lib || {};
-    $('orph-local').textContent = bl.local || 0;
-    $('orph-share').textContent = bl.share || 0;
-    renderOrphanDirs(r.orphan_dirs || []);
-    var items = r.items || [];
-    var totalFiles = ((r.scan || {}).libs || []).reduce(function(a, l){ return a + (l.files || 0); }, 0);
-    var block = orphScanBlock(r);
-    if (!items.length) {
-      var okMsg = totalFiles > 0
-        ? '<div class="list-empty">✅ 未发现未知文件<br><span style="font-size:12px">共检查了 ' + orphFmt(totalFiles) + ' 个文件，全部是 STRM / 视频 / 元数据</span></div>'
-        : '<div class="list-empty">⚠️ 没有扫描到任何文件，这不代表没有孤儿文件，请先看上面的提示</div>';
-      $('orphansList').innerHTML = block + okMsg;
+    var warnHtml = '';
+    if ((r.warnings || []).length) {
+      warnHtml = '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">'
+        + r.warnings.slice(0, 5).map(function(w){ return '⚠️ ' + esc(w); }).join('<br>') + '</div>';
+    }
+    var dirs = r.orphan_dirs || [];
+    if (!dirs.length) {
+      $('orphanDirsList').innerHTML = warnHtml + '<div class="list-empty">✅ 未发现洗版残留</div>';
       return;
     }
-    var byExt = r.by_ext || {};
-    var extLine = Object.keys(byExt).sort(function(a,b){ return byExt[b]-byExt[a]; })
-      .slice(0, 8).map(function(k){ return esc(k) + ' ×' + byExt[k]; }).join(' · ');
-    $('orphansList').innerHTML = block + '<div style="font-size:12px;color:var(--text-mid);margin:10px 0">扩展名分布: ' + extLine + (r.count > items.length ? '　(仅显示前 ' + items.length + ' 条)' : '') + '</div>'
-      + items.map(function(it){
-        var sz = it.size ? (it.size < 1024 ? it.size + ' B' : it.size < 1048576 ? (it.size/1024).toFixed(1) + ' KB' : (it.size/1048576).toFixed(2) + ' MB') : '?';
-        var libCls = it.lib === 'local' ? 'loc' : 'shr';
-        var fname = it.path.split('/').pop();
-        return '<div class="list-item ' + libCls + '">'
-          + '<div class="t">' + esc(fname) + '</div>'
-          + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(it.lib) + '</span>' + sz + '　' + esc(it.path) + '</div>'
-          + '</div>';
-      }).join('');
+    renderOrphanDirs(dirs);
+    $('orphanDirsList').innerHTML = warnHtml + $('orphanDirsList').innerHTML;
   } catch(e){
-    $('orphansStats').style.display = 'none';
-    $('orphansList').innerHTML = '<div class="list-empty">扫描失败: ' + esc(e.message) + '</div>';
+    $('orphanDirsList').innerHTML = '<div class="list-empty">扫描失败: ' + esc(e.message) + '</div>';
   }
 }
 

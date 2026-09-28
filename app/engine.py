@@ -814,7 +814,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
 _ORPHAN_IGNORE_NAMES = {'thumbs.db', 'desktop.ini', '.ds_store'}
 
 
-def _clamp_depth(v, default=3):
+def _clamp_depth(v, default=5):
     try:
         v = int(v)
     except (ValueError, TypeError):
@@ -822,7 +822,7 @@ def _clamp_depth(v, default=3):
     return max(1, min(10, v))
 
 
-def scan_orphans(max_depth=3, diag=None):
+def scan_orphans(max_depth=5, diag=None):
     """
     扫描两库，返回未知文件（只报告不删，白皮书 §16）。
     用 os.walk + 深度剪枝，避免遍历大库下所有 STRM。
@@ -890,7 +890,7 @@ def scan_orphans(max_depth=3, diag=None):
     return orphans
 
 
-def scan_orphan_dirs(max_depth=3):
+def scan_orphan_dirs(max_depth=5):
     """扫描两库中的「洗版残留」：更名洗版后，治理删除 STRM 时残留的
     字幕/元数据所在目录（目录内已无任何 .strm）。
 
@@ -1000,7 +1000,7 @@ def clean_orphan_dirs(paths, dry_run=True):
 
 
 def action_scan_orphans(args):
-    depth = _clamp_depth(getattr(args, 'max_depth', 3))
+    depth = _clamp_depth(getattr(args, "max_depth", 5))
     diag = {}
     items = scan_orphans(max_depth=depth, diag=diag)
     orphan_dirs = scan_orphan_dirs(max_depth=depth)
@@ -1925,9 +1925,72 @@ def action_explore(args):
 _emby_lib_cache = {'ts': 0, 'data': None}
 
 
+_EMBY_OVERVIEW_CACHE_FILE = STATE_DIR / 'emby_overview_cache.json'
+_overview_refresh_lock = threading.Lock()
+
+
+def _save_overview_disk(out):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _EMBY_OVERVIEW_CACHE_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'ts': time.time(), 'data': out}, ensure_ascii=False),
+                       encoding='utf-8')
+        tmp.replace(_EMBY_OVERVIEW_CACHE_FILE)
+    except (OSError, TypeError) as e:
+        log.warning('片库映射缓存写入失败: %s', e)
+
+
+def _load_overview_disk():
+    """返回 {'ts': float, 'data': {...}} 或 None"""
+    try:
+        raw = json.loads(_EMBY_OVERVIEW_CACHE_FILE.read_text(encoding='utf-8'))
+        data = raw.get('data')
+        if isinstance(data, dict) and 'series' in data:
+            return {'ts': float(raw.get('ts', 0)), 'data': data}
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _overview_bg_refresh():
+    """后台重建片库映射数据（单飞），完成后更新内存+磁盘缓存"""
+    if not _overview_refresh_lock.acquire(blocking=False):
+        return
+    try:
+        out = _build_emby_library_overview()
+        _emby_lib_cache['ts'] = time.time()
+        _emby_lib_cache['data'] = out
+        _save_overview_disk(out)
+        log.info('片库映射缓存后台刷新完成：剧集 %d / 电影 %d',
+                 len(out.get('series', [])), len(out.get('movies', [])))
+    except Exception as e:
+        log.warning('片库映射后台刷新失败: %s', e)
+    finally:
+        _overview_refresh_lock.release()
+
+
 def emby_library_overview(force=False):
-    if not force and _emby_lib_cache['data'] and time.time() - _emby_lib_cache['ts'] < 300:
-        return _emby_lib_cache['data']
+    """片库映射数据三级缓存：内存(5分钟) → 磁盘(立即返回+后台刷新) → 同步构建。
+    全量拉取 Emby 分集很慢，磁盘缓存保证每次进页面秒开，后台静默更新。"""
+    if not force:
+        if _emby_lib_cache['data'] and time.time() - _emby_lib_cache['ts'] < _CACHE_TTL:
+            return _emby_lib_cache['data']
+        disk = _load_overview_disk()
+        if disk is not None:
+            _emby_lib_cache['data'] = disk['data']
+            _emby_lib_cache['ts'] = disk['ts']
+            if time.time() - disk['ts'] >= _CACHE_TTL:
+                threading.Thread(target=_overview_bg_refresh, daemon=True,
+                                 name='emby-overview-refresh').start()
+            return _emby_lib_cache['data']
+    out = _build_emby_library_overview()
+    _emby_lib_cache['ts'] = time.time()
+    _emby_lib_cache['data'] = out
+    _save_overview_disk(out)
+    return out
+
+
+def _build_emby_library_overview():
     out = {'series': [], 'movies': []}
     series_data = emby_request('/Items', {
         'Recursive': 'true', 'IncludeItemTypes': 'Series',
@@ -2005,8 +2068,6 @@ def emby_library_overview(force=False):
             'in_local': '影视媒体库' in path, 'in_share': '分享影视库' in path,
             'path': path, 'has_image': 'Primary' in (m.get('ImageTags') or {}),
         })
-    _emby_lib_cache['ts'] = time.time()
-    _emby_lib_cache['data'] = out
     return out
 
 
@@ -2934,14 +2995,65 @@ _lib_stats_cache = {'ts': 0, 'data': None}
 _CACHE_TTL = 300
 
 
+_strm_count_cache = {'ts': 0, 'local': 0, 'share': 0}
+_STRM_COUNT_CACHE_FILE = STATE_DIR / 'strm_count_cache.json'
+_strm_count_refreshing = threading.Lock()
+
+
+def _load_strm_count_disk():
+    try:
+        data = json.loads(_STRM_COUNT_CACHE_FILE.read_text(encoding='utf-8'))
+        return int(data.get('local', 0)), int(data.get('share', 0)), float(data.get('ts', 0))
+    except (OSError, ValueError):
+        return None
+
+
+def _save_strm_count_disk(local, share):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _STRM_COUNT_CACHE_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'ts': time.time(), 'local': local, 'share': share}),
+                       encoding='utf-8')
+        tmp.replace(_STRM_COUNT_CACHE_FILE)
+    except OSError as e:
+        log.warning('STRM 计数缓存写入失败: %s', e)
+
+
+def _strm_count_bg_refresh():
+    """后台重算 STRM 总数（单飞），完成后更新内存+磁盘缓存"""
+    if not _strm_count_refreshing.acquire(blocking=False):
+        return
+    try:
+        l = sum(1 for _ in L_ROOT.rglob('*.strm')) if L_ROOT.exists() else 0
+        s_ = sum(1 for _ in S_ROOT.rglob('*.strm')) if S_ROOT.exists() else 0
+        _strm_count_cache.update({'ts': time.time(), 'local': l, 'share': s_})
+        _save_strm_count_disk(l, s_)
+        log.info('后台刷新 STRM 计数: local=%d share=%d', l, s_)
+    except Exception as e:
+        log.warning('STRM 计数后台刷新失败: %s', e)
+    finally:
+        _strm_count_refreshing.release()
+
+
 def _get_strm_counts():
-    """缓存 STRM 总数（5 分钟）"""
+    """STRM 总数三级缓存：内存(5分钟) → 磁盘(立即返回+后台刷新) → 同步首算。
+    大库 rglob 全量遍历很慢，磁盘缓存保证总览页秒开，后台静默刷新。"""
     now = time.time()
     if now - _strm_count_cache['ts'] < _CACHE_TTL and _strm_count_cache['ts'] > 0:
         return _strm_count_cache['local'], _strm_count_cache['share']
+    disk = _load_strm_count_disk()
+    if disk is not None:
+        l, s_, ts = disk
+        _strm_count_cache.update({'ts': ts or (now - _CACHE_TTL), 'local': l, 'share': s_})
+        if time.time() - _strm_count_cache['ts'] >= _CACHE_TTL:
+            threading.Thread(target=_strm_count_bg_refresh, daemon=True,
+                             name='strm-count-refresh').start()
+        return _strm_count_cache['local'], _strm_count_cache['share']
+    # 首次无任何缓存：同步算一次并落盘
     l = sum(1 for _ in L_ROOT.rglob('*.strm')) if L_ROOT.exists() else 0
     s_ = sum(1 for _ in S_ROOT.rglob('*.strm')) if S_ROOT.exists() else 0
     _strm_count_cache.update({'ts': now, 'local': l, 'share': s_})
+    _save_strm_count_disk(l, s_)
     log.info('缓存刷新 STRM 计数: local=%d share=%d', l, s_)
     return l, s_
 
