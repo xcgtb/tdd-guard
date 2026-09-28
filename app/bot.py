@@ -6,7 +6,7 @@
   - 用户命令消息 10 秒自动删除
   - 欢迎提示 15 秒即焚，只保留最新一条
 """
-import json, re, time, logging, threading, urllib.request, urllib.parse
+import json, re, time, html, logging, threading, urllib.request, urllib.parse
 from argparse import Namespace
 
 try:
@@ -95,7 +95,7 @@ def _cleanup_loop():
 def _send(token, chat_id, text, keyboard=None, reply_to=None,
           ttl=None, delete_user_msg=None):
     params = {
-        'chat_id': str(chat_id), 'text': text[:4000],
+        'chat_id': str(chat_id), 'text': text[:4090],
         'parse_mode': 'HTML', 'disable_web_page_preview': 'true',
     }
     if reply_to: params['reply_to_message_id'] = reply_to
@@ -225,11 +225,42 @@ HELP_TEXT = (
 
 
 # ═══════════════════ 任务派生 ═══════════════════
+LIST_MSG_TTL = 600  # 带折叠清单的消息保留 10 分钟，够展开/收起慢慢看
+
+
+def _send_long(token, chat_id, text, ttl=None):
+    """超长消息自动切段；切在折叠引用块里时每段都补全 blockquote 标签。"""
+    for part in engine.split_telegram_html(text):
+        _send(token, chat_id, part, ttl=ttl)
+
+
+def _bq(lines):
+    """折叠引用块：默认只露几行，点一下展开全部，再点收起。"""
+    return '<blockquote expandable>' + '\n'.join(lines) + '</blockquote>'
+
+
+def _esc(x):
+    return html.escape(str(x or ''))
+
+
+def _busy_msg():
+    cur = _get_current_task()
+    if cur is not None and cur.status == 'running':
+        return f'⏳ 已有任务 [{cur.kind}] 正在执行，请稍候'
+    return ''
+
+
 def _spawn_and_watch(kind, action_fn, chat_id, message_id=None,
                      user_msg_id=None, **kwargs):
     token = (load_config().get('telegram_bot_token') or '').strip()
     if not token: return
-    args = Namespace(kw='', plan='', dry_run=False, **kwargs)
+    # 先放默认值再用调用方参数覆盖。之前写成 Namespace(kw='', ..., **kwargs)，
+    # 只要调用方也传 kw / plan / dry_run（搜片、/logs、/ingest、清理确认），
+    # 就会抛 "multiple values for keyword argument"，而且是在线程启动前抛出，
+    # 用户看不到任何回复。
+    _defaults = dict(kw='', plan='', dry_run=False)
+    _defaults.update(kwargs)
+    args = Namespace(**_defaults)
 
     def worker():
         try:
@@ -284,6 +315,9 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
         else: _send(token, chat_id, s)
 
     elif action == 'check':
+        bm = _busy_msg()
+        if bm:
+            _send(token, chat_id, bm); return
         if message_id:
             _edit(token, chat_id, message_id, '⏳ 正在扫描双库...', {'inline_keyboard': []})
             _spawn_and_watch('check', engine.ACTIONS['inter_check'], chat_id, message_id=message_id)
@@ -307,18 +341,18 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
         if force:
             _send(token, chat_id, '⏳ 正在强制刷新入库统计（现场扫 Emby）...')
         _spawn_and_watch('ingest', engine.ACTIONS['stats'], chat_id,
-                         kw='force' if force else '')
+                         kw='full force' if force else 'full')
 
     elif action == 'played':
         _spawn_and_watch('played', engine.ACTIONS['played'], chat_id)
 
     elif action == 'emby':
         _send(token, chat_id, '⏳ 正在拉取 Emby 库...')
-        _spawn_and_watch('emby', engine.action_emby_library, chat_id)
+        _spawn_and_watch('emby', lambda _a: engine.gap_report(), chat_id)
 
     elif action == 'gap':
         _send(token, chat_id, '⏳ 正在检测缺集（首次可能较慢）...')
-        _spawn_and_watch('gap', engine.action_emby_library, chat_id, with_tmdb=True)
+        _spawn_and_watch('gap', lambda _a: engine.gap_report(), chat_id)
 
     elif action == 'logs':
         _spawn_and_watch('logs', engine.ACTIONS['logs'], chat_id, kw='20')
@@ -393,6 +427,33 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
 
 
 # ═══════════════════ 结果渲染 ═══════════════════
+def notify_auto_scan(res, error=None):
+    """定时巡检结果推送（带「查看清单 / 执行清理」按钮）。返回是否发送成功。"""
+    token = (engine.RUNTIME_CFG.get('telegram_bot_token') or '').strip()
+    chat_id = (engine.RUNTIME_CFG.get('telegram_chat_id') or '').strip()
+    if not token or not chat_id:
+        return False
+    if error:
+        r = _send(token, chat_id, f'⚠️ <b>定时巡检失败</b>\n{_esc(error)}')
+        return bool(r and r.get('ok'))
+    loc, shr = res.get('del_local_cnt', 0), res.get('del_share_cnt', 0)
+    text = ('⏰ <b>双库定时巡检</b>\n━━━━━━━━━━━━━━━━━━\n'
+            f'待清理本地: <b>{loc}</b> 项\n'
+            f'待淘汰分享: <b>{shr}</b> 项\n'
+            f'受保护: <b>{len(res.get("protected_items", []))}</b> 项\n'
+            f'白名单豁免: <b>{len(res.get("exempted_items", []))}</b> 项\n')
+    pid = res.get('plan_id')
+    if loc + shr == 0:
+        text += '\n✅ 双库状态良好，无需清理'
+        kb = {'inline_keyboard': []}
+    else:
+        text += (f'\n清单 {engine.PLAN_TTL // 3600} 小时内有效，过期需重新扫描；'
+                 '清理不会自动执行，确认后请点下方按钮')
+        kb = _plan_keyboard(pid) if pid else {'inline_keyboard': []}
+    r = _send(token, chat_id, text, kb, ttl=43200)
+    return bool(r and r.get('ok'))
+
+
 def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None):
     if not isinstance(res, dict):
         _send(token, chat_id, f'⚠️ {kind} 返回异常'); return
@@ -417,10 +478,18 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
         else: _send(token, chat_id, text, kb)
 
     elif kind == 'clean':
+        if res.get('status') == 'busy':
+            txt = f"⏳ {res.get('message') or '已有治理任务正在执行，请稍后再试'}"
+            if message_id: _edit(token, chat_id, message_id, txt, {'inline_keyboard': []})
+            else: _send(token, chat_id, txt)
+            return
+        skipped = res.get('skipped') or []
         text = (f'🗑️ <b>清理完成</b>\n━━━━━━━━━━━━━━━━━━\n'
                 f'释放本地: <b>{res.get("loc_cnt", 0)}</b> 项\n'
                 f'淘汰分享: <b>{res.get("sh_cnt", 0)}</b> 项\n'
                 f'Emby 刷新: {"✅" if res.get("refreshed") else "❌"}\n')
+        if skipped:
+            text += f'跳过: <b>{len(skipped)}</b> 项（状态已变化，未执行）\n'
         if message_id: _edit(token, chat_id, message_id, text, {'inline_keyboard': []})
         else: _send(token, chat_id, text)
 
@@ -430,8 +499,10 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
 
     elif kind == 'ingest':
         st = res.get('stats') or {}
+        tree = res.get('tree') or {}
+        tv_tree = tree.get('tv') or {}
+        mov_tree = tree.get('mov') or {}
         cache_ts = res.get('cache_ts') or 0
-        from_cache = res.get('from_cache')
         age = int(time.time() - cache_ts) if cache_ts else None
         if age is None: age_str = '—'
         elif age < 60: age_str = f'{age} 秒前'
@@ -440,9 +511,28 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
         text = (f'📊 <b>24H 入库</b>\n'
                 f'━━━━━━━━━━━━━━━━━━\n'
                 f'🎬 电影 +<b>{st.get("movies", 0)}</b> 部\n'
-                f'📺 剧集 +<b>{st.get("series", 0)}</b> 部 / +<b>{st.get("episodes", 0)}</b> 集\n\n'
-                f'<i>{"📦 来自缓存" if from_cache else "🔄 现场扫描"} · {age_str}</i>')
-        _send(token, chat_id, text)
+                f'📺 剧集 +<b>{st.get("series", 0)}</b> 部 / +<b>{st.get("episodes", 0)}</b> 集\n'
+                f'<i>{"📦 来自缓存" if res.get("from_cache") else "🔄 现场扫描"} · {age_str}</i>')
+        # 完整清单放进折叠引用：默认收起，点一下展开全部，再点收起
+        tv_lines = []
+        for src in ('本地影视库', '分享影视库'):
+            for cat in sorted(tv_tree.get(src, {})):
+                shows = tv_tree[src][cat]
+                tv_lines.append(f'<b>📂 {_esc(src)} · {_esc(cat)}</b> ({len(shows)}部)')
+                for n, c in sorted(shows.items(), key=lambda x: x[1], reverse=True):
+                    tv_lines.append(f'• 《{_esc(n)}》+{c}集')
+        mov_lines = []
+        for src in ('本地影视库', '分享影视库'):
+            for cat in sorted(mov_tree.get(src, {})):
+                names = mov_tree[src][cat]
+                mov_lines.append(f'<b>📂 {_esc(src)} · {_esc(cat)}</b> ({len(names)}部)')
+                for n in names:
+                    mov_lines.append(f'• 《{_esc(n)}》')
+        if tv_lines:
+            text += f'\n\n📺 <b>剧集明细</b>（点开展开全部 / 再点收起）\n' + _bq(tv_lines)
+        if mov_lines:
+            text += f'\n\n🎬 <b>电影明细</b>（点开展开全部 / 再点收起）\n' + _bq(mov_lines)
+        _send_long(token, chat_id, text, ttl=LIST_MSG_TTL)
 
     elif kind == 'played':
         alerts = res.get('alerts') or []
@@ -466,33 +556,40 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
         _send(token, chat_id, f'📜 <b>审计日志</b>\n\n<pre>{text[:3500]}</pre>')
 
     elif kind == 'emby':
+        # 与网页「片库映射」同一口径（TMDB 对照缓存），不再用编号空洞判断缺集
+        if res.get('status') == 'error':
+            _send(token, chat_id, f"❌ Emby 库总览失败: {res.get('message')}"); return
         st = res.get('stats') or {}
+        broken = res.get('missing') or []
         text = (f'📺 <b>Emby 库总览</b>\n━━━━━━━━━━━━━━━━━━\n'
-                f'剧集总数: <b>{st.get("total_series", 0)}</b>\n'
-                f'完整: <b>{st.get("complete_series", 0)}</b>\n'
-                f'缺集: <b>{st.get("incomplete_series", 0)}</b>\n'
-                f'电影总数: <b>{st.get("total_movies", 0)}</b>\n')
-        broken = [s for s in (res.get('series') or []) if not s.get('complete')]
+                f'剧集总数: <b>{st.get("total", 0)}</b>\n'
+                f'对齐: <b>{st.get("aligned", 0)}</b>　在更: <b>{st.get("ongoing", 0)}</b>\n'
+                f'缺集: <b>{st.get("missing", 0)}</b>　超集: <b>{st.get("extra", 0)}</b>　未匹配: <b>{st.get("unmatched", 0)}</b>\n'
+                f'电影总数: <b>{res.get("movies_total", 0)}</b>')
         if broken:
-            text += '\n<b>缺集 TOP 5:</b>\n'
-            for s in broken[:5]:
-                text += f'• 《{s.get("name")}》缺 {s.get("missing_eps")} 集\n'
-        _send(token, chat_id, text)
+            text += f'\n\n<b>全部缺集（{len(broken)} 部）</b>（点开展开 / 再点收起）\n' + _bq(
+                [f'• 《{_esc(s.get("name"))}》缺 {abs((s.get("tmdb_info") or {}).get("diff") or 0)} 集' for s in broken])
+        _send_long(token, chat_id, text, ttl=LIST_MSG_TTL)
 
     elif kind == 'gap':
+        # 与网页「片库映射」同一口径：TMDB 对照，读同一份缓存
+        if res.get('status') == 'error':
+            _send(token, chat_id, f"❌ 缺集检测失败: {res.get('message')}"); return
         st = res.get('stats') or {}
-        series = res.get('series') or []
-        broken = sorted([s for s in series if not s.get('complete')],
-                        key=lambda x: -(x.get('missing_eps') or 0))
-        text = (f'🧩 <b>缺集检测</b>\n━━━━━━━━━━━━━━━━━━\n'
-                f'剧集总数: <b>{st.get("total_series", 0)}</b>\n'
-                f'完整: <b>{st.get("complete_series", 0)}</b>\n'
-                f'缺集: <b>{st.get("incomplete_series", 0)}</b>\n')
+        broken = res.get('missing') or []
+        ts = res.get('cache_ts') or 0
+        age = int(time.time() - ts) if ts else None
+        if age is None: age_str = '刚刚对照'
+        elif age < 3600: age_str = f'{max(age // 60, 0)} 分钟前'
+        else: age_str = f'{age // 3600} 小时前'
+        text = (f'🧩 <b>缺集检测</b>（TMDB 对照，{age_str}）\n━━━━━━━━━━━━━━━━━━\n'
+                f'剧集总数: <b>{st.get("total", 0)}</b>\n'
+                f'对齐: <b>{st.get("aligned", 0)}</b>　在更: <b>{st.get("ongoing", 0)}</b>\n'
+                f'缺集: <b>{st.get("missing", 0)}</b>　超集: <b>{st.get("extra", 0)}</b>　未匹配: <b>{st.get("unmatched", 0)}</b>')
         if broken:
-            text += '\n<b>缺集 TOP 10:</b>\n'
-            for s in broken[:10]:
-                text += f'• 《{s.get("name")}》缺 <b>{s.get("missing_eps")}</b> 集\n'
-        _send(token, chat_id, text)
+            text += f'\n\n<b>全部缺集（{len(broken)} 部）</b>（点开展开 / 再点收起）\n' + _bq(
+                [f'• 《{_esc(s.get("name"))}》缺 {abs((s.get("tmdb_info") or {}).get("diff") or 0)} 集' for s in broken])
+        _send_long(token, chat_id, text, ttl=LIST_MSG_TTL)
 
 
 # ═══════════════════ 消息处理 ═══════════════════
@@ -578,9 +675,13 @@ def _handle_callback(token, cb):
 
     elif data.startswith('clean_do:'):
         plan_id = data[9:]
+        bm = _busy_msg()
+        if bm:
+            _edit(token, chat_id, message_id, bm, {'inline_keyboard': []}); return
         _edit(token, chat_id, message_id, '⏳ 正在执行清理...', {'inline_keyboard': []})
         _spawn_and_watch('clean', engine.ACTIONS['inter_clean'], chat_id,
-                         message_id=message_id, plan=plan_id, dry_run=False)
+                         message_id=message_id, plan=plan_id, dry_run=False,
+                         notify=False)  # Bot 自己编辑确认消息，引擎不再另发一条
 
     elif data == 'dismiss':
         _try_delete(token, chat_id, message_id)

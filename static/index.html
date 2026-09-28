@@ -617,6 +617,8 @@ html[data-theme="dark"] .list-item.exempt{color:#93c5fd}
 .list-item.clickable:hover{filter:brightness(.97)}
 
 .list-empty{color:var(--text-dim);font-size:13px;text-align:center;padding:32px 0}
+/* 提示文字放进海报网格时要横跨整行，否则只占一格 */
+.poster-grid > .list-empty{grid-column:1/-1}
 .list-empty::before{
   content:"";display:block;width:44px;height:44px;margin:0 auto 12px;
   border-radius:50%;
@@ -1324,6 +1326,7 @@ window.addEventListener('unhandledrejection', function(e){
           <p style="font-size:12px;color:#6b7280;line-height:1.7">
             扫描对双库全量对比，生成待清理清单。执行清理会按清单删除本地 STRM（含 115 云端源）和分享 STRM。
           </p>
+          <div id="govBanner" style="display:none;font-size:12px;margin-top:8px"></div>
         </div>
         <div class="cards" id="govStats" style="display:none">
           <div class="card clickable" onclick="setGovFilter('keep')">
@@ -1676,6 +1679,43 @@ window.addEventListener('unhandledrejection', function(e){
           <div id="ingStatus" style="font-size:11px;color:#9ca3af;margin-top:8px">加载中...</div>
         </div>
 
+        <!-- 双库治理定时巡检 -->
+        <div class="panel">
+          <h3 data-icon="scale">双库定时巡检</h3>
+          <p style="font-size:12px;color:#6b7280;margin-bottom:12px">后台定期扫描双库，发现待清理项时通过 Telegram Bot 通知你；只扫描不删除，清理需你在 Bot 里点按钮确认</p>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">启用定时巡检</div>
+              <div class="desc">需已配置 Telegram Bot Token 和 Chat ID</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="govAutoEnabled" onchange="saveGovAuto()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">巡检间隔（小时）</div>
+              <div class="desc">1 ~ 168，建议 6</div>
+            </div>
+            <div style="width:100px">
+              <input type="number" id="govAutoInterval" min="1" max="168" value="6" onchange="saveGovAuto()">
+            </div>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">清单无变化不重复通知</div>
+              <div class="desc">待清理清单与上次通知相同时保持安静</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="govAutoOnChange" onchange="saveGovAuto()"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">无待清理项也通知</div>
+              <div class="desc">默认只在有待清理项时通知</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="govAutoNotifyClean" onchange="saveGovAuto()"><span class="slider"></span></label>
+          </div>
+          <div id="govAutoStatus" style="font-size:11px;color:#9ca3af;margin-top:8px">加载中...</div>
+        </div>
+
         <!-- 白名单 -->
         <div class="panel">
           <h3 data-icon="shield">白名单（豁免词）</h3>
@@ -1982,6 +2022,70 @@ function restoreGovStateFromSession(){
     return true;
   } catch(e){ return false; }
 }
+/* ── 清单时效：Web 与 Bot/定时巡检共用同一份「最近扫描」，超过时效即作废，需重新扫描 ── */
+var govPlanExpireAt = 0, govScanTs = 0, govPlanTtlMs = 2 * 3600 * 1000;
+function fmtGovAgo(sec){
+  sec = Math.max(0, Math.floor(sec));
+  if (sec < 60) return sec + ' 秒前';
+  if (sec < 3600) return Math.floor(sec / 60) + ' 分钟前';
+  return Math.floor(sec / 3600) + ' 小时' + Math.floor(sec % 3600 / 60) + ' 分钟前';
+}
+function setGovBanner(text, warn){
+  var el = $('govBanner'); if (!el) return;
+  if (!text){ el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.style.color = warn ? '#f59e0b' : '#9ca3af';
+  el.textContent = text;
+}
+function expireGovPlan(){
+  currentPlan = null; govPlanExpireAt = 0;
+  if ($('govExecBtn')) $('govExecBtn').disabled = true;
+  clearGovStateSession();
+  setGovBanner('⌛ 清单已过期，库内容可能已变化，请点「重新扫描」后再执行', true);
+}
+function tickGovBanner(){
+  if (!currentPlan || !govPlanExpireAt) return;
+  var leftMs = govPlanExpireAt - Date.now();
+  if (leftMs <= 0){ expireGovPlan(); return; }
+  setGovBanner('🕒 扫描于 ' + fmtGovAgo(Date.now() / 1000 - govScanTs) + ' · 清单约剩 ' +
+               Math.ceil(leftMs / 60000) + ' 分钟有效，过期需重新扫描');
+}
+setInterval(tickGovBanner, 30000);
+async function loadLatestGov(){
+  try {
+    var r = await api('/api/governance/latest');
+    if (r.status !== 'success' || !r.found) return false;
+    govPlanTtlMs = (r.ttl_sec || 7200) * 1000;
+    govScanTs = Date.now() / 1000 - (r.age_sec || 0);
+    if (!r.usable){
+      currentPlan = null; govPlanExpireAt = 0;
+      govData = { loc: [], shr: [], keep: [], exempt: [] };
+      clearGovStateSession();
+      if ($('govExecBtn')) $('govExecBtn').disabled = true;
+      $('govStats').style.display = 'none';
+      var why = { expired: '上次扫描已过期', used: '上次清单已执行完毕', running: '清理正在执行中' }[r.reason] || '清单不可用';
+      $('planList').innerHTML = '<div class="list-empty">' + why + '，请点「重新扫描」获取最新状态</div>';
+      setGovBanner('⌛ ' + why + '（扫描于 ' + fmtGovAgo(r.age_sec) + '），请重新扫描', true);
+      return false;
+    }
+    var res = r.result || {};
+    currentPlan = res.plan_id || null;
+    govData = { loc: res.del_local_items || [], shr: res.del_share_items || [],
+                keep: res.protected_items || [], exempt: res.exempted_items || [] };
+    govPlanExpireAt = currentPlan ? Date.now() + (r.remaining_sec || 0) * 1000 : 0;
+    if ($('govExecBtn')) $('govExecBtn').disabled = !currentPlan;
+    $('govStats').style.display = '';
+    $('gov-keep').textContent  = govData.keep.length;
+    $('gov-loc').textContent   = govData.loc.length;
+    $('gov-shr').textContent   = govData.shr.length;
+    $('gov-exempt').textContent = govData.exempt.length;
+    renderGovList();
+    saveGovStateToSession();
+    if (currentPlan) tickGovBanner();
+    else setGovBanner('扫描于 ' + fmtGovAgo(r.age_sec) + ' · 无待清理项');
+    return true;
+  } catch(e){ return false; }
+}
 function clearGovStateSession(){
   try { sessionStorage.removeItem('govState'); } catch(e){}
 }
@@ -2016,14 +2120,42 @@ function closeModal(){ $('modalBg').classList.remove('show'); }
 function getHeaders(){
   return { 'Content-Type': 'application/json' };
 }
+var __loginShown = false;
+function showLoginOverlay(){
+  if (__loginShown) return;
+  __loginShown = true;
+  var d = document.createElement('div');
+  d.id = 'loginOverlay';
+  d.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(10,14,26,.92);display:flex;align-items:center;justify-content:center;padding:20px';
+  d.innerHTML = '<div style="background:var(--surface,#fff);color:var(--text,#111);border-radius:16px;padding:24px;width:100%;max-width:340px;box-shadow:0 10px 40px rgba(0,0,0,.4)">'
+    + '<div style="font-size:18px;font-weight:700;margin-bottom:16px">登录 TDD Guard</div>'
+    + '<input id="loginUser" type="text" name="username" autocomplete="username" placeholder="用户名" value="admin" style="width:100%;margin-bottom:10px;font-size:16px;padding:10px">'
+    + '<input id="loginPass" type="password" name="password" autocomplete="current-password" placeholder="密码" style="width:100%;margin-bottom:10px;font-size:16px;padding:10px">'
+    + '<div id="loginErr" style="color:#ef4444;font-size:13px;min-height:18px;margin-bottom:6px"></div>'
+    + '<button class="btn" id="loginBtn" style="width:100%;padding:11px;font-size:15px">登录</button>'
+    + '</div>';
+  document.body.appendChild(d);
+  var go = async function(){
+    $('loginErr').textContent = '';
+    try {
+      var r = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ username: $('loginUser').value, password: $('loginPass').value }) });
+      if (!r.ok) { $('loginErr').textContent = '用户名或密码错误'; return; }
+      location.reload();
+    } catch(e){ $('loginErr').textContent = '登录失败：' + e.message; }
+  };
+  $('loginBtn').onclick = go;
+  $('loginPass').addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
+  setTimeout(function(){ $('loginPass').focus(); }, 50);
+}
 async function api(path, opts){
   opts = opts || {};
   var headers = Object.assign(getHeaders(), opts.headers || {});
   var r = await fetch(path, Object.assign({}, opts, { headers: headers }));
   if (r.status === 401) {
-    // 浏览器在收到 401 + WWW-Authenticate 时会自动弹原生登录框并重试；
-    // 走到这里说明用户取消了登录框或凭证仍然错误。
-    throw new Error('未授权：用户名或密码错误');
+    // 未登录或会话过期：弹出自带登录页（登录一次后 30 天免输）
+    showLoginOverlay();
+    throw new Error('未登录或登录已过期');
   }
   var j = await r.json().catch(function(){ return { detail: '响应解析失败' }; });
   if (!r.ok) throw new Error(j.detail || j.message || ('HTTP ' + r.status));
@@ -2133,9 +2265,9 @@ function switchTab(id){
   try { sessionStorage.setItem('lastTab', id); } catch(e){}
 
   if (id === 'dashboard')  loadDashboard();
-  if (id === 'governance' && !currentPlan) restoreGovStateFromSession();
+  if (id === 'governance') { if (!currentPlan) restoreGovStateFromSession(); loadLatestGov(); }
   if (id === 'explore')    loadExplore();
-  if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); }
+  if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); loadGovAuto(); }
   if (id === 'mapping')    ensureEmbyLoaded();
   if (id === 'subscribe')  loadSubscriptions();
   if (id === 'morning')    loadMorning();
@@ -2268,6 +2400,9 @@ async function scanLibrary(){
     if (t.status !== 'success') throw new Error(t.error || '诊断失败');
     var r = t.result;
     currentPlan = r.plan_id;
+    govScanTs = Date.now() / 1000;
+    govPlanExpireAt = currentPlan ? Date.now() + govPlanTtlMs : 0;
+    if (currentPlan) tickGovBanner(); else setGovBanner('刚刚扫描 · 无待清理项');
     if ($('govExecBtn')) $('govExecBtn').disabled = !currentPlan;
     govData = {
       loc: r.del_local_items || [],
@@ -2343,6 +2478,7 @@ function showGovDetail(d){
 }
 async function runClean(){
   if (!currentPlan) return toast('请先扫描双库', 'error');
+  if (govPlanExpireAt && Date.now() > govPlanExpireAt){ expireGovPlan(); return toast('清单已过期，请重新扫描', 'error', 4000); }
   if (!(confirm('确认执行清理？将按清单删除文件'))) return;
   if ($('govExecBtn')) $('govExecBtn').disabled = true;
   try {
@@ -3556,6 +3692,42 @@ async function saveIngest(){
     })});
     toast('已保存', 'success');
     loadIngest();
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+
+/* ═══════════ 双库定时巡检 ═══════════ */
+function _fmtGovTime(ts){
+  if (!ts) return '—';
+  var d = new Date(ts * 1000);
+  var p = function(n){ return (n < 10 ? '0' : '') + n; };
+  return (d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+async function loadGovAuto(){
+  try {
+    var r = await api('/api/governance/auto');
+    if (r.status !== 'success') throw new Error(r.message || '失败');
+    var s = r.settings || {};
+    $('govAutoEnabled').checked = !!s.enabled;
+    $('govAutoInterval').value = s.interval_hours || 6;
+    $('govAutoOnChange').checked = !!s.only_on_change;
+    $('govAutoNotifyClean').checked = !!s.notify_when_clean;
+    var line = s.running ? '⏳ 正在巡检中...' : (s.last_run
+      ? '🕒 上次巡检 ' + _fmtGovTime(s.last_run) + (s.last_status ? ' · ' + s.last_status : '')
+      : '⚪ 尚未巡检');
+    if (s.enabled && !s.running) line += s.next_run ? ' · 下次约 ' + _fmtGovTime(s.next_run) : ' · 即将开始首次巡检';
+    $('govAutoStatus').textContent = line;
+  } catch(e){ toast('加载巡检设置失败: ' + e.message, 'error'); }
+}
+async function saveGovAuto(){
+  try {
+    await api('/api/governance/auto', { method: 'POST', body: JSON.stringify({
+      enabled: $('govAutoEnabled').checked,
+      interval_hours: parseInt($('govAutoInterval').value) || 6,
+      only_on_change: $('govAutoOnChange').checked,
+      notify_when_clean: $('govAutoNotifyClean').checked,
+    })});
+    toast('已保存', 'success');
+    loadGovAuto();
   } catch(e){ toast('保存失败: ' + e.message, 'error'); }
 }
 

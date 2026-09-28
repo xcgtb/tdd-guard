@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """media_agent.py —— 飞牛 NAS 端治理引擎"""
+import html
 import os, re, sys, json, threading, shlex, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -189,21 +190,48 @@ def notify_emby_refresh():
     return False
 
 
+def split_telegram_html(text, limit=3800):
+    """按行切分超长 Telegram HTML 消息；切分点若落在可折叠引用块 <blockquote expandable>
+    里，会在上一段补 </blockquote>、下一段重新打开，保证每段都是合法的折叠块。"""
+    if len(text) <= limit:
+        return [text]
+    bq_open = '<blockquote expandable>'
+    chunks, cur, curlen, in_bq = [], [], 0, False
+    for line in text.split('\n'):
+        add = len(line) + 1
+        if cur and curlen + add + 14 > limit:
+            chunk = '\n'.join(cur) + ('\n</blockquote>' if in_bq else '')
+            chunks.append(chunk)
+            cur = [bq_open] if in_bq else []
+            curlen = sum(len(x) + 1 for x in cur)
+        cur.append(line); curlen += add
+        if '<blockquote' in line:
+            in_bq = '</blockquote>' not in line
+        elif '</blockquote>' in line:
+            in_bq = False
+    if cur:
+        chunks.append('\n'.join(cur))
+    return chunks
+
+
 def notify_telegram(text, chat_id=None):
     token = (RUNTIME_CFG.get('telegram_bot_token') or '').strip()
     cid = chat_id or (RUNTIME_CFG.get('telegram_chat_id') or '').strip()
     if not token or not cid:
         return False
-    try:
-        url = f'https://api.telegram.org/bot{token}/sendMessage'
-        data = urllib.parse.urlencode({'chat_id': cid, 'text': text, 'parse_mode': 'HTML',
-                                       'disable_web_page_preview': 'true'}).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return 200 <= r.status < 300
-    except Exception as e:
-        log.warning('Telegram 推送失败: %s', e)
-        return False
+    ok_all = True
+    for part in split_telegram_html(text):
+        try:
+            url = f'https://api.telegram.org/bot{token}/sendMessage'
+            data = urllib.parse.urlencode({'chat_id': cid, 'text': part, 'parse_mode': 'HTML',
+                                           'disable_web_page_preview': 'true'}).encode()
+            req = urllib.request.Request(url, data=data, method='POST')
+            with urllib.request.urlopen(req, timeout=10) as r:
+                ok_all = ok_all and (200 <= r.status < 300)
+        except Exception as e:
+            log.warning('Telegram 推送失败: %s', e)
+            ok_all = False
+    return ok_all
 
 
 def parse_dt(s):
@@ -1049,6 +1077,28 @@ def save_plan_state(plan_id, state, extra=None):
         return False
 
 
+GOV_LATEST_FILE = STATE_DIR / 'gov_latest.json'
+
+
+def save_latest_scan(plan_id, result):
+    """把最近一次扫描的完整结果落盘，Web 治理页据此载入 Bot/定时巡检生成的清单。"""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = GOV_LATEST_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'ts': time.time(), 'plan_id': plan_id, 'result': result},
+                                  ensure_ascii=False), encoding='utf-8')
+        tmp.replace(GOV_LATEST_FILE)
+    except OSError as ex:
+        log.warning('保存最近扫描结果失败: %s', ex)
+
+
+def load_latest_scan():
+    try:
+        return json.loads(GOV_LATEST_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
 def action_inter_check(args):
     acts = build_plan()
 
@@ -1068,9 +1118,9 @@ def action_inter_check(args):
     pid = save_plan(acts)
     write_audit_log('库间查重巡检',
                     f'扫描完成：待清理本地 {len(loc)} 项, 待清理分享 {len(shr)} 项, 保护 {len(keep)} 项, 豁免 {len(exempted)} 项')
-    if loc or shr:
+    if (loc or shr) and not getattr(args, 'silent', False):
         notify_telegram(f'🔍 <b>双库扫描完成</b>\n待清理本地: {len(loc)}\n待淘汰分享: {len(shr)}\n受保护: {len(keep)}\n豁免: {len(exempted)}')
-    return {
+    result = {
         'status': 'success', 'plan_id': pid,
         'total_clean_cnt': len(loc) + len(shr),
         'del_local_cnt': len(loc), 'del_share_cnt': len(shr),
@@ -1079,6 +1129,8 @@ def action_inter_check(args):
         'protected_items': [_act_to_dict(a) for a in keep],
         'exempted_items':  [_act_to_dict(a) for a in exempted],
     }
+    save_latest_scan(pid, result)
+    return result
 
 
 def action_inter_clean(args):
@@ -1187,7 +1239,8 @@ def _action_inter_clean_locked(args):
         write_audit_log('执行跨库清理',
                         f'释放本地 {n_loc} 项, 淘汰分享 {n_sh} 项 (Emby刷新: {refreshed})',
                         detail + [f'⚠️ {w}' for w in warns])
-        if n_loc or n_sh:
+        # Bot 端发起的清理会传 notify=False：由 Bot 自己编辑确认消息，避免重复弹两条
+        if (n_loc or n_sh) and getattr(args, 'notify', True):
             notify_telegram(f'🗑️ <b>清理完成</b>\n释放本地: {n_loc}\n淘汰分享: {n_sh}\nEmby刷新: {"✅" if refreshed else "❌"}')
         if args.plan:
             save_plan_state(args.plan, 'done', {
@@ -1517,6 +1570,37 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
     return {'match_status': status, 'tmdb_status': tmdb_status,
             'local_total': local_total, 'tmdb_total': tmdb_total,
             'diff': local_total - tmdb_total, 'seasons': season_diff}
+
+
+def gap_report(max_age=6 * 3600):
+    """缺集检测的统一口径：与网页「片库映射 → 缺集」一致，按 TMDB 对照判断。
+    优先读网页同一份对照缓存；缓存过期/不存在时现场对照一次。
+    返回 {'missing': [...], 'stats': {...}, 'from_cache': bool, 'cache_ts': float}"""
+    data = read_emby_lib_cache(max_age=max_age)
+    from_cache = bool(data)
+    if not data:
+        from argparse import Namespace as _NS
+        data = action_emby_library(_NS(force=False, with_tmdb=True))
+        if data.get('status') == 'error':
+            return {'status': 'error', 'message': data.get('message', '')}
+        try:
+            save_emby_lib_cache(data)  # 落盘，让网页读到的也是这一份，两边数据一致
+            data['ts'] = time.time()
+        except Exception:
+            pass
+    series = data.get('series') or []
+    stats = {'total': len(series), 'aligned': 0, 'missing': 0, 'extra': 0,
+             'ongoing': 0, 'unmatched': 0}
+    missing = []
+    for s_ in series:
+        st = (s_.get('tmdb_info') or {}).get('match_status', 'unmatched')
+        if st == 'no_tmdb': st = 'unmatched'
+        if st in stats: stats[st] += 1
+        if st == 'missing': missing.append(s_)
+    missing.sort(key=lambda x: (x.get('tmdb_info') or {}).get('diff') or 0)  # diff 为负，越小缺得越多
+    return {'status': 'success', 'missing': missing, 'stats': stats,
+            'movies_total': len(data.get('movies') or []),
+            'from_cache': from_cache, 'cache_ts': data.get('ts') or 0}
 
 
 def action_emby_library(args):
@@ -2036,14 +2120,17 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
 
     if 'emby_gap' in items:
         try:
-            data = emby_library_overview(force=False)
-            broken = [s for s in data.get('series', []) if not s.get('complete')]
+            rep = gap_report()
+            if rep.get('status') == 'error':
+                raise RuntimeError(rep.get('message'))
+            broken = rep['missing']
             lines.append('')
             lines.append(f"📺 <b>Emby 缺集</b> ({len(broken)} 部)")
-            for s in broken[:8]:
-                lines.append(f"  ⚠️ 《{s.get('name')}》缺 {s.get('missing_eps')} 集")
-            if len(broken) > 8:
-                lines.append(f"  … 共 {len(broken)} 部")
+            if broken:
+                # 折叠引用：默认只露几行，点一下展开全部，再点收起
+                lines.append('<blockquote expandable>' + '\n'.join(
+                    f"⚠️ 《{html.escape(str(x.get('name') or ''))}》缺 {abs((x.get('tmdb_info') or {}).get('diff') or 0)} 集"
+                    for x in broken) + '</blockquote>')
         except Exception as e:
             lines.append(f'📺 Emby 检查失败: {e}')
 

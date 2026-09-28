@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Media Agent Web 层 —— FastAPI 后端"""
-import os, sys, time, uuid, json, logging, threading, traceback, secrets
+import os, sys, time, uuid, json, logging, threading, traceback, secrets, hmac, hashlib
 import urllib.parse, urllib.request
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -127,17 +127,69 @@ except Exception as _e:
 
 _security = HTTPBasic(auto_error=False)
 
+# ── Cookie 会话登录 ──
+# 原来只有浏览器原生 Basic 弹框，手机 Safari 经常不记住，每次都要重输。
+# 现在登录一次后写入 30 天有效的签名 Cookie；Basic 头依然兼容（脚本/curl 可继续用）。
+SESSION_COOKIE = 'tdd_session'
+SESSION_DAYS = int(os.environ.get('SESSION_DAYS', '30') or 30)
+_SESSION_KEY = (os.environ.get('SESSION_SECRET', '').strip() or WEB_PASSWORD or 'noauth').encode()
 
-def auth(credentials: HTTPBasicCredentials = Depends(_security)):
+
+def _sign_session(user: str, exp: int) -> str:
+    msg = ('%s|%d' % (user, exp)).encode()
+    sig = hmac.new(_SESSION_KEY, msg, hashlib.sha256).hexdigest()
+    return '%s|%d|%s' % (user, exp, sig)
+
+
+def _verify_session(token: str) -> bool:
+    try:
+        user, exp, sig = token.split('|')
+        if int(exp) < time.time():
+            return False
+        good = hmac.new(_SESSION_KEY, ('%s|%s' % (user, exp)).encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, good) and hmac.compare_digest(user, WEB_USER)
+    except Exception:
+        return False
+
+
+def auth(request: Request, credentials: HTTPBasicCredentials = Depends(_security)):
     if not WEB_PASSWORD:
         return True  # 仅当 ALLOW_NO_AUTH=1 放行启动时才会走到这里
+    tok = request.cookies.get(SESSION_COOKIE)
+    if tok and _verify_session(tok):
+        return True
     ok = bool(credentials) and \
         secrets.compare_digest(credentials.username, WEB_USER) and \
         secrets.compare_digest(credentials.password, WEB_PASSWORD)
     if not ok:
-        raise HTTPException(status_code=401, detail='用户名或密码错误',
-                            headers={'WWW-Authenticate': 'Basic realm="TDD Guard"'})
+        # 故意不返回 WWW-Authenticate：否则浏览器会弹原生登录框，前端改用自带登录页
+        raise HTTPException(status_code=401, detail='未登录或登录已过期')
     return True
+
+
+@app.post('/api/login')
+async def api_login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    u = str(body.get('username', '')); p = str(body.get('password', ''))
+    if not WEB_PASSWORD or (secrets.compare_digest(u, WEB_USER) and secrets.compare_digest(p, WEB_PASSWORD)):
+        exp = int(time.time()) + SESSION_DAYS * 86400
+        resp = JSONResponse({'status': 'success'})
+        secure = (request.headers.get('x-forwarded-proto', request.url.scheme) == 'https')
+        resp.set_cookie(SESSION_COOKIE, _sign_session(WEB_USER, exp), max_age=SESSION_DAYS * 86400,
+                        httponly=True, samesite='lax', secure=secure, path='/')
+        return resp
+    time.sleep(1)  # 简单减缓暴力猜测
+    return JSONResponse({'status': 'error', 'detail': '用户名或密码错误'}, status_code=401)
+
+
+@app.post('/api/logout')
+def api_logout():
+    resp = JSONResponse({'status': 'success'})
+    resp.delete_cookie(SESSION_COOKIE, path='/')
+    return resp
 
 
 # ═══════════════════ 任务系统 ═══════════════════
@@ -243,7 +295,8 @@ def spawn(kind, fn, *fargs):
         try:
             res = fn(*fargs)
             t.result = res
-            t.status = 'error' if isinstance(res, dict) and res.get('status') == 'error' else 'success'
+            # busy（跨入口文件锁被占用）也按失败处理，否则网页会当成"执行成功"，显示 0 项/undefined
+            t.status = 'error' if isinstance(res, dict) and res.get('status') in ('error', 'busy') else 'success'
             if t.status == 'error': t.error = res.get('message', '未知错误')
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
@@ -282,6 +335,103 @@ _bg_state = {
     'last_morning_date': '',
     'last_morning_prescan_date': '',
 }
+
+
+# ═══════════════════ 双库治理：定时巡检（只扫描+通知，不自动清理） ═══════════════════
+GOV_AUTO_FILE = engine.DATA_DIR / 'gov_auto.json'
+_GOV_AUTO_DEFAULT = {
+    'enabled': False,
+    'interval_hours': 6,
+    'notify_when_clean': False,
+    'only_on_change': True,
+    'last_run': 0,
+    'last_status': '',
+    'last_sig': '',
+}
+_gov_auto_lock = threading.Lock()
+_gov_auto_running = {'v': False}
+
+
+def _gov_auto_load() -> dict:
+    d = dict(_GOV_AUTO_DEFAULT)
+    try:
+        d.update(json.loads(GOV_AUTO_FILE.read_text(encoding='utf-8')))
+    except (OSError, ValueError):
+        pass
+    return d
+
+
+def _gov_auto_save(d: dict):
+    with _gov_auto_lock:
+        try:
+            engine.DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = GOV_AUTO_FILE.with_suffix('.tmp')
+            tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
+            tmp.replace(GOV_AUTO_FILE)
+        except OSError as e:
+            engine.log.warning('保存治理巡检设置失败: %s', e)
+
+
+def _gov_auto_sig(res: dict) -> str:
+    keys = []
+    for k in ('del_local_items', 'del_share_items'):
+        for it in res.get(k) or []:
+            keys.append('%s|%s|%s' % (k, it.get('title', ''), it.get('text', '')))
+    keys.sort()
+    return hashlib.sha1('\n'.join(keys).encode('utf-8')).hexdigest()
+
+
+def _gov_auto_run():
+    """后台线程：执行一次静默扫描，按设置决定是否推送 Telegram。"""
+    try:
+        try:
+            t = spawn('inter_check', engine.ACTIONS['inter_check'], Args(silent=True))
+        except HTTPException:
+            engine.log.info('治理巡检：已有任务在执行，稍后重试')
+            return
+        while t.status == 'running':
+            time.sleep(2)
+        cfg = _gov_auto_load()
+        cfg['last_run'] = time.time()
+        if t.status != 'success' or not isinstance(t.result, dict):
+            cfg['last_status'] = '扫描失败: %s' % (t.error or '未知错误')
+            _gov_auto_save(cfg)
+            bot.notify_auto_scan(None, error=cfg['last_status'])
+            return
+        res = t.result
+        total = res.get('total_clean_cnt', 0)
+        sig = _gov_auto_sig(res) if total else ''
+        cfg['last_status'] = '待清理本地 %d / 待淘汰分享 %d' % (res.get('del_local_cnt', 0), res.get('del_share_cnt', 0))
+        should = False
+        if total > 0:
+            should = (not cfg.get('only_on_change')) or sig != cfg.get('last_sig', '')
+        elif cfg.get('notify_when_clean'):
+            should = True
+        if should and bot.notify_auto_scan(res):
+            cfg['last_sig'] = sig
+        elif total == 0:
+            cfg['last_sig'] = ''
+        _gov_auto_save(cfg)
+    except Exception as e:
+        engine.log.warning('治理巡检异常: %s', e)
+    finally:
+        _gov_auto_running['v'] = False
+
+
+def _gov_auto_tick(now: float):
+    if _gov_auto_running['v']:
+        return
+    cfg = _gov_auto_load()
+    if not cfg.get('enabled'):
+        return
+    try:
+        interval = max(1, min(168, int(cfg.get('interval_hours') or 6))) * 3600
+    except (ValueError, TypeError):
+        interval = 6 * 3600
+    if now - float(cfg.get('last_run') or 0) < interval:
+        return
+    _gov_auto_running['v'] = True
+    threading.Thread(target=_gov_auto_run, daemon=True, name='gov-auto').start()
 
 
 def _bg_loop():
@@ -330,6 +480,12 @@ def _bg_loop():
                     engine.check_subscriptions(send_notify=True)
                 except Exception as e:
                     engine.log.warning('订阅检查失败: %s', e)
+
+            # ── 双库治理定时巡检 ──
+            try:
+                _gov_auto_tick(now)
+            except Exception as e:
+                engine.log.warning('治理巡检调度失败: %s', e)
 
             # ── 晨报预扫 + 发送 ──
             try:
@@ -764,6 +920,73 @@ def api_subs_check_now():
     return {'status': 'success', **r}
 
 
+# ═══════════════════ 双库治理：最近一次扫描清单（含时效） ═══════════════════
+@app.get('/api/governance/latest', dependencies=[Depends(auth)])
+def api_gov_latest():
+    d = engine.load_latest_scan()
+    if not d or not isinstance(d.get('result'), dict):
+        return {'status': 'success', 'found': False}
+    ts = float(d.get('ts') or 0)
+    age = time.time() - ts
+    ttl = engine.PLAN_TTL
+    pid = d.get('plan_id')
+    usable, reason = True, ''
+    if age > ttl:
+        usable, reason = False, 'expired'
+    elif pid:
+        p = engine.load_plan(pid)
+        st = (p or {}).get('state') if p else 'missing'
+        if st == 'executing':
+            usable, reason = False, 'running'
+        elif st != 'pending':
+            usable, reason = False, ('used' if st in ('done', 'failed') else 'expired')
+    return {'status': 'success', 'found': True, 'usable': usable, 'reason': reason,
+            'plan_id': pid, 'ts': ts, 'age_sec': int(age),
+            'remaining_sec': max(0, int(ttl - age)), 'ttl_sec': int(ttl),
+            'result': d['result'] if usable else None}
+
+
+# ═══════════════════ 双库治理：定时巡检设置 ═══════════════════
+def _gov_auto_view() -> dict:
+    d = _gov_auto_load()
+    last = float(d.get('last_run') or 0)
+    interval = max(1, int(d.get('interval_hours') or 6)) * 3600
+    return {
+        'enabled': bool(d['enabled']),
+        'interval_hours': int(d['interval_hours']),
+        'notify_when_clean': bool(d['notify_when_clean']),
+        'only_on_change': bool(d['only_on_change']),
+        'last_run': last,
+        'last_status': d.get('last_status', ''),
+        'next_run': (last + interval) if (d['enabled'] and last) else 0,
+        'running': _gov_auto_running['v'],
+    }
+
+
+@app.get('/api/governance/auto', dependencies=[Depends(auth)])
+def api_get_gov_auto():
+    return {'status': 'success', 'settings': _gov_auto_view()}
+
+
+@app.post('/api/governance/auto', dependencies=[Depends(auth)])
+def api_set_gov_auto(body: dict = None):
+    body = body or {}
+    d = _gov_auto_load()
+    if 'enabled' in body:
+        d['enabled'] = bool(body['enabled'])
+    if 'interval_hours' in body:
+        try:
+            d['interval_hours'] = max(1, min(168, int(body['interval_hours'])))
+        except (ValueError, TypeError):
+            d['interval_hours'] = 6
+    if 'notify_when_clean' in body:
+        d['notify_when_clean'] = bool(body['notify_when_clean'])
+    if 'only_on_change' in body:
+        d['only_on_change'] = bool(body['only_on_change'])
+    _gov_auto_save(d)
+    return {'status': 'success', 'settings': _gov_auto_view()}
+
+
 # ═══════════════════ 入库监控设置 ═══════════════════
 @app.get('/api/ingest/settings', dependencies=[Depends(auth)])
 def api_get_ingest_settings():
@@ -817,6 +1040,8 @@ def api_preview_morning(body: dict = None):
         text = engine.build_morning_report(items, force_refresh=force)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
+    import re as _re, html as _html
+    text = _html.unescape(_re.sub(r'</?(?:b|i|code|pre|blockquote)[^>]*>', '', text))  # 网页预览按纯文本显示，去掉 Telegram 标记
     return {'status': 'success', 'text': text, 'force': force}
 
 
