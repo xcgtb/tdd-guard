@@ -69,6 +69,34 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='%(asctime)s %
 log = logging.getLogger('media_agent')
 
 
+def _ensure_tz():
+    """统一时区：读 TZ 环境变量，缺省 Asia/Shanghai。
+    镜像里没有 tzdata 时 TZ=Asia/Shanghai 会静默退回 UTC，这里检测到就改用 POSIX 写法 CST-8（不依赖 tzdata）。"""
+    tz = (os.environ.get('TZ') or '').strip() or 'Asia/Shanghai'
+    os.environ['TZ'] = tz
+    try:
+        time.tzset()
+        if tz == 'Asia/Shanghai' and time.localtime().tm_gmtoff != 8 * 3600:
+            log.warning('时区 Asia/Shanghai 未生效（镜像缺少 tzdata？），改用 CST-8')
+            os.environ['TZ'] = 'CST-8'
+            time.tzset()
+    except (AttributeError, OSError) as e:
+        log.warning('设置时区失败: %s', e)
+
+
+_ensure_tz()
+
+
+def tz_info():
+    """当前进程使用的时区，供前端/健康检查核对（晨报、巡检都按这个时区算）"""
+    lt = time.localtime()
+    off = int(getattr(lt, 'tm_gmtoff', 0) or 0)
+    sign = '+' if off >= 0 else '-'
+    off = abs(off)
+    return {'name': os.environ.get('TZ', ''), 'offset': f'UTC{sign}{off // 3600:02d}:{off % 3600 // 60:02d}',
+            'now': time.strftime('%Y-%m-%d %H:%M:%S', lt)}
+
+
 RUNTIME_CFG = _cfg.load_config()
 EMBY_HOST = RUNTIME_CFG['emby_host']
 EMBY_KEY  = RUNTIME_CFG['emby_key']
@@ -108,6 +136,35 @@ def _exempt(name):
 def _exempt_hit(name):
     kws = _exempt_keywords()
     return [k for k in kws if k in str(name)]
+
+
+def _nat_key(text):
+    """自然排序：Season 9 < Season 10"""
+    return [int(t) if t.isdigit() else t for t in re.split(r'(\d+)', str(text))]
+
+
+def _split_root(path):
+    """返回 (库标签, 相对根目录的路径)；不在两个库内则 ('', None)"""
+    p = Path(path)
+    for root, label in ((L_ROOT, '本地'), (S_ROOT, '分享')):
+        try:
+            return label, p.relative_to(root)
+        except ValueError:
+            continue
+    return '', None
+
+
+def _exempt_group_of(path, kws):
+    """命中白名单的目录层级名，如 综艺/百家讲坛/Season 451/x.strm -> ('百家讲坛', 关键词)。
+    只看目录层，不看文件名；找不到返回 (None, None)"""
+    _, rel = _split_root(path)
+    if rel is None:
+        return None, None
+    for part in rel.parts[:-1]:
+        for k in kws:
+            if k in part:
+                return part, k
+    return None, None
 
 def _analyze(eps, name=''):
     return analyze_season_episodes(eps, name, _exempt_keywords())
@@ -190,6 +247,35 @@ def notify_emby_refresh():
     return False
 
 
+# ═══════════════════ Telegram 排版助手 ═══════════════════
+_WEEK = '一二三四五六日'
+
+
+def tg_title(icon, title, sub=''):
+    """消息标题：粗体标题 + 斜体副标题（不再用 ━━ 分隔线，宽度在不同字体下对不齐）"""
+    return f'{icon} <b>{title}</b>' + (f'\n<i>{sub}</i>' if sub else '')
+
+
+def tg_row(icon, label, value, note=''):
+    return f'{icon} {label}　<b>{value}</b>' + (f'　<i>{note}</i>' if note else '')
+
+
+def tg_stamp():
+    n = datetime.datetime.now()
+    return n.strftime('%m-%d %H:%M')
+
+
+def fmt_scan_text(icon, title, loc, shr, keep, ex_cnt, ex_groups=0, sub=''):
+    note = f'合并为 {ex_groups} 组' if ex_groups and ex_groups != ex_cnt else ''
+    return '\n'.join([
+        tg_title(icon, title, sub or tg_stamp()), '',
+        tg_row('🧹', '待清理本地', loc),
+        tg_row('📤', '待淘汰分享', shr),
+        tg_row('🛡️', '受保护', keep),
+        tg_row('🏷️', '白名单豁免', ex_cnt, note),
+    ])
+
+
 def split_telegram_html(text, limit=3800):
     """按行切分超长 Telegram HTML 消息；切分点若落在可折叠引用块 <blockquote expandable>
     里，会在上一段补 </blockquote>、下一段重新打开，保证每段都是合法的折叠块。"""
@@ -202,8 +288,11 @@ def split_telegram_html(text, limit=3800):
         if cur and curlen + add + 14 > limit:
             chunk = '\n'.join(cur) + ('\n</blockquote>' if in_bq else '')
             chunks.append(chunk)
-            cur = [bq_open] if in_bq else []
-            curlen = sum(len(x) + 1 for x in cur)
+            cur = []
+            curlen = 0
+            if in_bq:
+                line = bq_open + line  # 和第一行拼在同一行，避免引用块开头多一个空行
+                add = len(line) + 1
         cur.append(line); curlen += add
         if '<blockquote' in line:
             in_bq = '</blockquote>' not in line
@@ -650,70 +739,124 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     return st
 
 
-def scan_orphans(max_depth=3):
+_ORPHAN_IGNORE_NAMES = {'thumbs.db', 'desktop.ini', '.ds_store'}
+
+
+def _clamp_depth(v, default=3):
+    try:
+        v = int(v)
+    except (ValueError, TypeError):
+        v = default
+    return max(1, min(10, v))
+
+
+def scan_orphans(max_depth=3, diag=None):
     """
     扫描两库，返回未知文件（只报告不删，白皮书 §16）。
     用 os.walk + 深度剪枝，避免遍历大库下所有 STRM。
+    diag（dict，可选）会被填入扫描诊断：每个库的路径是否存在、看过多少目录/文件、
+    各类文件的数量、被深度限制跳过的目录数、读取错误、耗时。
+    有了这些数字，「没结果」才分得清是真没有，还是没扫到。
     """
+    t0 = time.time()
     orphans = []
-    try:
-        max_depth = int(max_depth)
-    except (ValueError, TypeError):
-        max_depth = 3
-    if max_depth < 1: max_depth = 1
-    if max_depth > 10: max_depth = 10
+    max_depth = _clamp_depth(max_depth)
+    libs = []
 
     for root, lib_name in ((L_ROOT, 'local'), (S_ROOT, 'share')):
-        if not root.exists():
+        info = {'lib': lib_name, 'root': str(root), 'exists': root.exists(),
+                'dirs': 0, 'files': 0, 'strm': 0, 'video': 0, 'meta': 0,
+                'ignored': 0, 'unknown': 0, 'pruned_dirs': 0, 'errors': []}
+        libs.append(info)
+        if not info['exists']:
             continue
         root_parts = len(root.parts)
+
+        def _onerr(e, _info=info):
+            if len(_info['errors']) < 5:
+                _info['errors'].append(f'{e.filename}: {e.strerror or e}')
+
         try:
-            for dp, dns, fns in os.walk(root, topdown=True):
+            for dp, dns, fns in os.walk(root, topdown=True, onerror=_onerr):
                 cur_depth = len(Path(dp).parts) - root_parts
-                if cur_depth > max_depth:
+                info['dirs'] += 1
+                if cur_depth >= max_depth:
+                    # 本层文件照常检查，但不再往下走；记下有多少子目录没看
+                    info['pruned_dirs'] += len(dns)
                     dns[:] = []
-                    continue
                 for fn in fns:
+                    info['files'] += 1
+                    low = fn.lower()
                     ext = os.path.splitext(fn)[1].lower()
-                    if (not ext) or ext == '.strm' \
-                       or ext in VIDEO_EXTS or ext in _METADATA_EXTS:
+                    if low.startswith('.') or low in _ORPHAN_IGNORE_NAMES:
+                        info['ignored'] += 1
+                        continue
+                    if ext == '.strm':
+                        info['strm'] += 1
+                        continue
+                    if ext in VIDEO_EXTS:
+                        info['video'] += 1
+                        continue
+                    if ext in _METADATA_EXTS:
+                        info['meta'] += 1
                         continue
                     fp = os.path.join(dp, fn)
                     try:
                         sz = os.path.getsize(fp)
                     except OSError:
                         sz = 0
-                    orphans.append({
-                        'lib': lib_name,
-                        'path': fp,
-                        'ext': ext,
-                        'size': sz,
-                    })
+                    info['unknown'] += 1
+                    orphans.append({'lib': lib_name, 'path': fp,
+                                    'ext': ext or '(无扩展名)', 'size': sz})
         except OSError as e:
             log.warning('孤儿扫描失败 %s: %s', root, e)
+            info['errors'].append(str(e))
+
+    if diag is not None:
+        diag.update({'depth': max_depth, 'libs': libs,
+                     'elapsed': round(time.time() - t0, 2)})
     return orphans
 
 
 def action_scan_orphans(args):
-    depth = getattr(args, 'max_depth', 3)
-    try:
-        depth = int(depth)
-    except (ValueError, TypeError):
-        depth = 3
-    if depth < 1: depth = 1
-    if depth > 10: depth = 10
-    items = scan_orphans(max_depth=depth)
+    depth = _clamp_depth(getattr(args, 'max_depth', 3))
+    diag = {}
+    items = scan_orphans(max_depth=depth, diag=diag)
+    libs = diag.get('libs', [])
+
+    warnings = []
+    missing = [l for l in libs if not l['exists']]
+    if len(missing) == len(libs):
+        return {'status': 'error',
+                'message': '两个媒体库路径都不存在，没有扫描任何文件：'
+                           + '；'.join(l['root'] for l in libs)
+                           + '。请检查 docker-compose 的挂载和 L_ROOT / S_ROOT。'}
+    for l in missing:
+        warnings.append(f"{'本地' if l['lib'] == 'local' else '分享'}库路径不存在，已跳过：{l['root']}")
+    for l in libs:
+        if l['exists'] and l['files'] == 0:
+            warnings.append(f"{'本地' if l['lib'] == 'local' else '分享'}库里一个文件都没读到，"
+                            '可能是挂载为空或权限不足')
+        for er in l['errors']:
+            warnings.append(f"读取出错：{er}")
+        if l['pruned_dirs']:
+            warnings.append(f"{'本地' if l['lib'] == 'local' else '分享'}库有 {l['pruned_dirs']} 个子目录"
+                            f"超过深度 {depth}，未扫描（可调大深度）")
+
     by_lib = defaultdict(int)
     by_ext = defaultdict(int)
     for it in items:
         by_lib[it['lib']] += 1
         by_ext[it['ext']] += 1
+    items.sort(key=lambda x: (x['lib'], x['path']))
     return {
         'status': 'success',
         'count': len(items),
         'by_lib': dict(by_lib),
         'by_ext': dict(by_ext),
         'items': items[:200],
+        'scan': {'depth': depth, 'elapsed': diag.get('elapsed', 0), 'libs': libs},
+        'warnings': warnings,
     }
 
 
@@ -773,6 +916,65 @@ def _act_to_dict(a: Act) -> dict:
         'season': a.meta.get('season'),
         'meta': a.meta, 'files_count': len(a.files),
     }
+
+
+def _group_exempt_acts(acts):
+    """把白名单豁免项按命中的目录聚合。
+    一个节目下有几百个 Season 目录时，只出一条「《百家讲坛》· N 项」，明细放进 meta.members。
+    只有单条的分组保持原样输出。"""
+    kws = _exempt_keywords()
+    groups = {}
+    order = []
+    for a in acts:
+        title = a.meta.get('title') or ''
+        gname = None
+        libs = set()
+        for i, f in enumerate(a.files):
+            lib, _ = _split_root(f)
+            if lib:
+                libs.add(lib)
+            if gname is None:
+                gname, _k = _exempt_group_of(f, kws)
+            if (gname or i >= 200) and libs:
+                break
+        gname = gname or title or a.text
+        if gname not in groups:
+            groups[gname] = []
+            order.append(gname)
+        groups[gname].append((a, libs))
+    out = []
+    for gname in order:
+        items = groups[gname]
+        if len(items) == 1:
+            out.append(_act_to_dict(items[0][0]))
+            continue
+        members, kwset, libset, files = [], set(), set(), 0
+        for a, libs in items:
+            sn = a.meta.get('season')
+            t = a.meta.get('title') or ''
+            if re.fullmatch(r'(?i)season\s*\d+', t.strip()):
+                tag = t.strip()  # 目录名本身就是「Season 451」，S01 是文件名解析的假季号
+            else:
+                tag = f'《{t}》' + (f'S{int(sn):02d}' if sn is not None else '')
+            if tag not in members:
+                members.append(tag)
+            kwset.update(a.meta.get('keywords') or [])
+            libset |= libs
+            files += len(a.files)
+        members.sort(key=_nat_key)
+        kw_txt = ','.join(sorted(kwset))
+        out.append({
+            'text': f'🛡️ 《{gname}》 (白名单豁免)',
+            'detail': f'命中白名单 [{kw_txt}] ➔ 跳过清理 · 共 {len(members)} 项',
+            'reason': 'whitelist', 'reason_label': '白名单豁免',
+            'title': gname, 'season': None,
+            'meta': {'reason': 'whitelist', 'reason_label': '白名单豁免',
+                     'title': gname, 'keywords': sorted(kwset),
+                     'libs': sorted(libset), 'member_count': len(members),
+                     'members': members[:300]},
+            'files_count': files,
+        })
+    return out
 
 
 def build_plan():
@@ -1119,7 +1321,8 @@ def action_inter_check(args):
     write_audit_log('库间查重巡检',
                     f'扫描完成：待清理本地 {len(loc)} 项, 待清理分享 {len(shr)} 项, 保护 {len(keep)} 项, 豁免 {len(exempted)} 项')
     if (loc or shr) and not getattr(args, 'silent', False):
-        notify_telegram(f'🔍 <b>双库扫描完成</b>\n待清理本地: {len(loc)}\n待淘汰分享: {len(shr)}\n受保护: {len(keep)}\n豁免: {len(exempted)}')
+        notify_telegram(fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
+                                      len(_group_exempt_acts(exempted))))
     result = {
         'status': 'success', 'plan_id': pid,
         'total_clean_cnt': len(loc) + len(shr),
@@ -1127,7 +1330,8 @@ def action_inter_check(args):
         'del_local_items': [_act_to_dict(a) for a in loc],
         'del_share_items': [_act_to_dict(a) for a in shr],
         'protected_items': [_act_to_dict(a) for a in keep],
-        'exempted_items':  [_act_to_dict(a) for a in exempted],
+        'exempted_items':  _group_exempt_acts(exempted),
+        'exempted_count':  len(exempted),
     }
     save_latest_scan(pid, result)
     return result
@@ -1241,7 +1445,11 @@ def _action_inter_clean_locked(args):
                         detail + [f'⚠️ {w}' for w in warns])
         # Bot 端发起的清理会传 notify=False：由 Bot 自己编辑确认消息，避免重复弹两条
         if (n_loc or n_sh) and getattr(args, 'notify', True):
-            notify_telegram(f'🗑️ <b>清理完成</b>\n释放本地: {n_loc}\n淘汰分享: {n_sh}\nEmby刷新: {"✅" if refreshed else "❌"}')
+            notify_telegram('\n'.join([
+                tg_title('🗑️', '清理完成', tg_stamp()), '',
+                tg_row('💾', '释放本地', n_loc),
+                tg_row('📤', '淘汰分享', n_sh),
+                tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
         if args.plan:
             save_plan_state(args.plan, 'done', {
                 'executed_at': time.time(),
@@ -2070,69 +2278,81 @@ def check_subscriptions(send_notify=True) -> dict:
     _save_sub_state(state)
 
     if send_notify and updates:
-        lines = ['🔔 <b>追更订阅</b>', '━━━━━━━━━━━━━━━━━━']
+        lines = [tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
         for u in updates:
-            lines.append(f"📺 《{u['name']}》")
+            lines.append('')
+            lines.append(f"📺 <b>《{html.escape(str(u['name'] or ''))}》</b>")
             if u.get('new_ep'):
-                lines.append(f"   🆕 新集入库 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
+                lines.append(f"　🆕 新集入库 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
             if u.get('missing'):
                 m = u['missing']
-                lines.append(f"   ⚠️ 缺 {m['diff']} 集（TMDB 已播 {m['tmdb_total']}）")
+                lines.append(f"　⚠️ 缺 <b>{m['diff']}</b> 集（TMDB 已播 {m['tmdb_total']}）")
         notify_telegram('\n'.join(lines))
 
     return {'updates': updates, 'total': len(subs)}
 
 
 # ═══════════════════ 晨报 ═══════════════════
+MORNING_GAP_TOP = 50   # 晨报里最多列出多少部缺集剧（按缺得最多排序），完整清单看 Web
+
+
 def build_morning_report(items: list, force_refresh: bool = False) -> str:
-    lines = [f'☀️ <b>TDD Guard 晨报</b> · {datetime.datetime.now().strftime("%Y-%m-%d")}',
-             '━━━━━━━━━━━━━━━━━━']
+    now = datetime.datetime.now()
+    lines = [tg_title('☀️', 'TDD Guard 晨报', f'{now:%Y-%m-%d} 周{_WEEK[now.weekday()]}')]
 
     if 'stats' in items:
         try:
             # 晨报使用强制刷新（或读缓存）
             s_res = action_stats(argparse.Namespace(kw='force' if force_refresh else ''))
             st = s_res.get('stats') or {}
-            lines.append('')
-            lines.append('📊 <b>近 24h 入库</b>')
-            lines.append(f"  🎬 电影 +{st.get('movies', 0)} 部")
-            lines.append(f"  📺 剧集 +{st.get('series', 0)} 部 / +{st.get('episodes', 0)} 集")
+            lines += ['', '📊 <b>近 24 小时入库</b>',
+                      f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
+                      f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
         except Exception as e:
-            lines.append(f'📊 入库统计失败: {e}')
+            lines += ['', f'📊 入库统计失败: {html.escape(str(e))}']
 
     if 'subscriptions' in items:
         try:
             r = check_subscriptions(send_notify=False)
-            lines.append('')
-            lines.append(f"🔔 <b>订阅更新</b> ({r.get('total', 0)} 部订阅)")
+            lines += ['', f"🔔 <b>订阅更新</b>　<i>{r.get('total', 0)} 部订阅</i>"]
             ups = r.get('updates') or []
             if ups:
                 for u in ups[:10]:
+                    name = html.escape(str(u.get('name') or ''))
                     if u.get('new_ep'):
-                        lines.append(f"  📺 《{u['name']}》 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
+                        lines.append(f"📺 《{name}》 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
                     if u.get('missing'):
-                        m = u['missing']
-                        lines.append(f"  ⚠️ 《{u['name']}》缺 {m['diff']} 集")
+                        lines.append(f"⚠️ 《{name}》缺 <b>{u['missing']['diff']}</b> 集")
+                if len(ups) > 10:
+                    lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
             else:
-                lines.append('  ✅ 无变化')
+                lines.append('✅ 无变化')
         except Exception as e:
-            lines.append(f'🔔 订阅检查失败: {e}')
+            lines += ['', f'🔔 订阅检查失败: {html.escape(str(e))}']
 
     if 'emby_gap' in items:
         try:
             rep = gap_report()
             if rep.get('status') == 'error':
                 raise RuntimeError(rep.get('message'))
-            broken = rep['missing']
-            lines.append('')
-            lines.append(f"📺 <b>Emby 缺集</b> ({len(broken)} 部)")
+
+            def _diff(x):
+                return abs((x.get('tmdb_info') or {}).get('diff') or 0)
+            broken = sorted(rep['missing'], key=_diff, reverse=True)
+            total_gap = sum(_diff(x) for x in broken)
+            lines += ['', f"🧩 <b>Emby 缺集</b>　<i>{len(broken)} 部 · 共缺 {total_gap} 集</i>"]
             if broken:
-                # 折叠引用：默认只露几行，点一下展开全部，再点收起
+                shown = broken[:MORNING_GAP_TOP]
+                # 折叠引用：默认只露前几行（缺得最多的排最前），点一下展开，再点收起
                 lines.append('<blockquote expandable>' + '\n'.join(
-                    f"⚠️ 《{html.escape(str(x.get('name') or ''))}》缺 {abs((x.get('tmdb_info') or {}).get('diff') or 0)} 集"
-                    for x in broken) + '</blockquote>')
+                    f"• 《{html.escape(str(x.get('name') or ''))}》缺 <b>{_diff(x)}</b> 集" for x in shown)
+                    + '</blockquote>')
+                if len(broken) > len(shown):
+                    lines.append(f'<i>…另有 {len(broken) - len(shown)} 部，完整清单见 Web「片库映射」</i>')
+            else:
+                lines.append('✅ 全部对齐')
         except Exception as e:
-            lines.append(f'📺 Emby 检查失败: {e}')
+            lines += ['', f'🧩 Emby 检查失败: {html.escape(str(e))}']
 
     return '\n'.join(lines)
 
@@ -2288,29 +2508,66 @@ def refresh_tmdb_scan():
 
 
 def scan_exempt_matches():
-    """扫描双库，返回命中白名单的条目"""
+    """扫描双库，返回命中白名单的条目。
+    口径与 build_plan 一致：剧名、所在目录、文件路径任一命中都算；
+    同一个命中目录（如「百家讲坛」）下的多个 Season 目录聚合成一条。"""
     kws = _exempt_keywords()
     if not kws:
         return []
     results = {}
+
+    def hit_of(disp, files):
+        h = _exempt_hit(disp)
+        if h:
+            return h
+        for f in files:
+            h = _exempt_hit(str(f))
+            if h:
+                return h
+        return []
+
     for root, lib_name in ((L_ROOT, '本地'), (S_ROOT, '分享')):
         if not root.exists():
             continue
-        for entry in root.iterdir():
-            if not entry.is_dir():
-                continue
-            hits = [k for k in kws if k in entry.name]
+        lib = _get_lib(root)
+        entries = []  # (key, [files], 季号或None)
+        for key, files in lib.mov.items():
+            entries.append((key, files, None))
+        for key, seasons in lib.tv.items():
+            for sn, files in seasons.items():
+                entries.append((key, files, sn))
+        for key, files, sn in entries:
+            disp = lib.meta[key][0]
+            hits = hit_of(disp, files)
             if not hits:
                 continue
-            seasons = sorted(
-                s for s in (parse_season_dir(d.name) for d in entry.iterdir()
-                            if d.is_dir()) if s is not None
-            )
-            r = results.setdefault(entry.name,
-                {'title': entry.name, 'keyword': hits[0], 'libs': [], 'seasons': []})
-            r['libs'].append(lib_name)
-            r['seasons'] = sorted(set(r['seasons']) | set(seasons))
-    return list(results.values())
+            gname = None
+            for f in files[:200]:
+                gname, _k = _exempt_group_of(f, kws)
+                if gname:
+                    break
+            gname = gname or disp
+            r = results.setdefault(gname, {
+                'title': gname, 'keyword': hits[0], 'libs': [],
+                'members': set(), 'seasons': set(), 'strm': 0})
+            if lib_name not in r['libs']:
+                r['libs'].append(lib_name)
+            r['members'].add(disp)
+            if sn is not None:
+                r['seasons'].add(sn)
+            r['strm'] += len(files)
+    out = []
+    for r in results.values():
+        members = sorted(r['members'], key=_nat_key)
+        out.append({
+            'title': r['title'], 'keyword': r['keyword'], 'libs': r['libs'],
+            # 只有单个节目时季号才有意义；多个 Season 目录时用 members 展示
+            'seasons': sorted(r['seasons']) if len(members) == 1 else [],
+            'member_count': len(members), 'members': members[:300],
+            'strm_count': r['strm'],
+        })
+    out.sort(key=lambda x: _nat_key(x['title']))
+    return out
 
 
 
