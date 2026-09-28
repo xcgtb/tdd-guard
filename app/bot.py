@@ -202,25 +202,29 @@ def _init_bot(token):
 
 HELP_TEXT = (
     '🎬 <b>TDD Guard</b>\n'
-    '━━━━━━━━━━━━━━━━━━\n'
-    '点输入框左侧 <b>☰</b> 或直接输命令：\n\n'
-    '<b>治理</b>\n'
-    '• /check — 扫描双库\n'
-    '• /clean — 清理最近计划\n'
-    '<b>统计</b>\n'
-    '• /ingest — 24H 入库（/ingest force 强制刷新）\n'
-    '• /played — 24H 播放\n'
-    '• /emby — Emby 库总览\n'
-    '• /gap — 缺集检测\n'
-    '<b>订阅 / 晨报</b>\n'
-    '• /sub — 查看订阅 / /sub check 立即检查\n'
-    '• /morning — 立即发送晨报\n'
-    '<b>其它</b>\n'
-    '• /search 关键词 — 搜片\n'
-    '• /logs [n] — 审计日志\n'
-    '• /menu /reset — 菜单\n'
-    '• /help — 帮助\n'
-    '\n💡 反馈卡片 60 秒后自动销毁'
+    '<i>点输入框左侧 ☰ 选功能，或直接输命令</i>\n'
+    '\n'
+    '🧹 <b>治理</b>\n'
+    '/check　扫描双库\n'
+    '/clean　清理最近一次计划\n'
+    '\n'
+    '📊 <b>统计</b>\n'
+    '/ingest　24 小时入库（/ingest force 强制刷新）\n'
+    '/played　24 小时播放\n'
+    '/emby　Emby 库总览\n'
+    '/gap　缺集检测\n'
+    '\n'
+    '🔔 <b>订阅 · 晨报</b>\n'
+    '/sub　查看订阅（/sub check 立即检查）\n'
+    '/morning　立即发送晨报\n'
+    '\n'
+    '🔧 <b>其它</b>\n'
+    '/search 关键词　搜片\n'
+    '/logs [n]　审计日志\n'
+    '/menu　/reset　菜单\n'
+    '/help　帮助\n'
+    '\n'
+    '<i>💡 反馈卡片 60 秒后自动销毁</i>'
 )
 
 
@@ -367,16 +371,17 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
                     ups = r.get('updates') or []
                     if not ups:
                         _send(token, chat_id,
-                              f"🔔 <b>订阅检查完成</b>\n共 {r.get('total', 0)} 部\n\n✅ 无新集、无缺集")
+                              engine.tg_title('🔔', '订阅检查完成', f"共 {r.get('total', 0)} 部") + '\n\n✅ 无新集、无缺集')
                     else:
-                        lines = ['🔔 <b>订阅检查 · 变化</b>', '━━━━━━━━━━━━━━━━━━']
+                        lines = [engine.tg_title('🔔', '订阅检查', f'{len(ups)} 部有变化')]
                         for u in ups:
-                            lines.append(f"📺 《{u['name']}》")
+                            lines.append('')
+                            lines.append(f"📺 <b>《{_esc(u['name'])}》</b>")
                             if u.get('new_ep'):
-                                lines.append(f"   🆕 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
+                                lines.append(f"　🆕 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
                             if u.get('missing'):
                                 m = u['missing']
-                                lines.append(f"   ⚠️ 缺 {m['diff']} 集（TMDB 已播 {m['tmdb_total']}）")
+                                lines.append(f"　⚠️ 缺 <b>{m['diff']}</b> 集（TMDB 已播 {m['tmdb_total']}）")
                         _send(token, chat_id, '\n'.join(lines))
                 except Exception as e:
                     _send(token, chat_id, f'❌ 检查失败: {e}')
@@ -388,7 +393,7 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
                 _send(token, chat_id,
                       '🔔 暂无订阅。\n在 Web「追更订阅」页添加，或从「影视探索」点订阅按钮。')
             else:
-                lines = [f'🔔 <b>追更订阅</b>（{len(subs)} 部）', '━━━━━━━━━━━━━━━━━━']
+                lines = [engine.tg_title('🔔', '追更订阅', f'共 {len(subs)} 部'), '']
                 for s in subs[:20]:
                     sid = s.get('id') or s.get('tmdb_id') or s.get('name')
                     st = state.get(sid) or {}
@@ -396,7 +401,7 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
                     tmdb_total = st.get('tmdb_total') or 0
                     flag = '' if s.get('enabled', True) else ' (已暂停)'
                     extra = f" · TMDB {tmdb_total} 集" if tmdb_total else ''
-                    lines.append(f"• 《{s['name']}》 <code>{cur_ep}</code>{extra}{flag}")
+                    lines.append(f"• 《{_esc(s['name'])}》 <code>{_esc(cur_ep)}</code>{extra}{flag}")
                 if len(subs) > 20:
                     lines.append(f'… 共 {len(subs)} 部')
                 _send(token, chat_id, '\n'.join(lines))
@@ -427,6 +432,24 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
 
 
 # ═══════════════════ 结果渲染 ═══════════════════
+def _scan_text(icon, title, res):
+    ex_items = res.get('exempted_items') or []
+    ex_cnt = res.get('exempted_count', len(ex_items))   # 豁免项按节目合并后条数变少，总数用 exempted_count
+    return engine.fmt_scan_text(icon, title, res.get('del_local_cnt', 0), res.get('del_share_cnt', 0),
+                                len(res.get('protected_items') or []), ex_cnt, len(ex_items))
+
+
+def _gap_stats_text(icon, title, st, sub='', extra=''):
+    rows = [engine.tg_title(icon, title, sub), '',
+            engine.tg_row('📚', '剧集总数', st.get('total', 0)),
+            engine.tg_row('✅', '对齐', st.get('aligned', 0), f'在更 {st.get("ongoing", 0)}'),
+            engine.tg_row('⚠️', '缺集', st.get('missing', 0),
+                          f'超集 {st.get("extra", 0)} · 未匹配 {st.get("unmatched", 0)}')]
+    if extra:
+        rows.append(extra)
+    return '\n'.join(rows)
+
+
 def notify_auto_scan(res, error=None):
     """定时巡检结果推送（带「查看清单 / 执行清理」按钮）。返回是否发送成功。"""
     token = (engine.RUNTIME_CFG.get('telegram_bot_token') or '').strip()
@@ -437,18 +460,14 @@ def notify_auto_scan(res, error=None):
         r = _send(token, chat_id, f'⚠️ <b>定时巡检失败</b>\n{_esc(error)}')
         return bool(r and r.get('ok'))
     loc, shr = res.get('del_local_cnt', 0), res.get('del_share_cnt', 0)
-    text = ('⏰ <b>双库定时巡检</b>\n━━━━━━━━━━━━━━━━━━\n'
-            f'待清理本地: <b>{loc}</b> 项\n'
-            f'待淘汰分享: <b>{shr}</b> 项\n'
-            f'受保护: <b>{len(res.get("protected_items", []))}</b> 项\n'
-            f'白名单豁免: <b>{len(res.get("exempted_items", []))}</b> 项\n')
+    text = _scan_text('⏰', '双库定时巡检', res)
     pid = res.get('plan_id')
     if loc + shr == 0:
-        text += '\n✅ 双库状态良好，无需清理'
+        text += '\n\n✅ 双库状态良好，无需清理'
         kb = {'inline_keyboard': []}
     else:
-        text += (f'\n清单 {engine.PLAN_TTL // 3600} 小时内有效，过期需重新扫描；'
-                 '清理不会自动执行，确认后请点下方按钮')
+        text += (f'\n\n<i>清单 {engine.PLAN_TTL // 3600} 小时内有效，过期需重新扫描；'
+                 '清理不会自动执行，确认后请点下方按钮</i>')
         kb = _plan_keyboard(pid) if pid else {'inline_keyboard': []}
     r = _send(token, chat_id, text, kb, ttl=43200)
     return bool(r and r.get('ok'))
@@ -463,14 +482,9 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
     if kind == 'check':
         pid = res.get('plan_id')
         total = res.get('del_local_cnt', 0) + res.get('del_share_cnt', 0)
-        text = (f'🔍 <b>扫描完成</b>\n'
-                f'━━━━━━━━━━━━━━━━━━\n'
-                f'待清理本地: <b>{res.get("del_local_cnt", 0)}</b> 项\n'
-                f'待淘汰分享: <b>{res.get("del_share_cnt", 0)}</b> 项\n'
-                f'受保护: <b>{len(res.get("protected_items", []))}</b> 项\n'
-                f'白名单豁免: <b>{len(res.get("exempted_items", []))}</b> 项\n')
+        text = _scan_text('🔍', '扫描完成', res)
         if total == 0:
-            text += '\n✅ 双库状态良好，无需清理'
+            text += '\n\n✅ 双库状态良好，无需清理'
             kb = {'inline_keyboard': []}
         else:
             kb = _plan_keyboard(pid) if pid else {'inline_keyboard': []}
@@ -484,12 +498,12 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
             else: _send(token, chat_id, txt)
             return
         skipped = res.get('skipped') or []
-        text = (f'🗑️ <b>清理完成</b>\n━━━━━━━━━━━━━━━━━━\n'
-                f'释放本地: <b>{res.get("loc_cnt", 0)}</b> 项\n'
-                f'淘汰分享: <b>{res.get("sh_cnt", 0)}</b> 项\n'
-                f'Emby 刷新: {"✅" if res.get("refreshed") else "❌"}\n')
+        text = '\n'.join([engine.tg_title('🗑️', '清理完成', engine.tg_stamp()), '',
+                          engine.tg_row('💾', '释放本地', res.get('loc_cnt', 0)),
+                          engine.tg_row('📤', '淘汰分享', res.get('sh_cnt', 0)),
+                          engine.tg_row('🔄', 'Emby 刷新', '✅' if res.get('refreshed') else '❌')])
         if skipped:
-            text += f'跳过: <b>{len(skipped)}</b> 项（状态已变化，未执行）\n'
+            text += '\n' + engine.tg_row('⏭️', '跳过', len(skipped), '状态已变化，未执行')
         if message_id: _edit(token, chat_id, message_id, text, {'inline_keyboard': []})
         else: _send(token, chat_id, text)
 
@@ -508,11 +522,10 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
         elif age < 60: age_str = f'{age} 秒前'
         elif age < 3600: age_str = f'{age // 60} 分钟前'
         else: age_str = f'{age // 3600} 小时前'
-        text = (f'📊 <b>24H 入库</b>\n'
-                f'━━━━━━━━━━━━━━━━━━\n'
-                f'🎬 电影 +<b>{st.get("movies", 0)}</b> 部\n'
-                f'📺 剧集 +<b>{st.get("series", 0)}</b> 部 / +<b>{st.get("episodes", 0)}</b> 集\n'
-                f'<i>{"📦 来自缓存" if res.get("from_cache") else "🔄 现场扫描"} · {age_str}</i>')
+        text = '\n'.join([engine.tg_title('📊', '24 小时入库',
+                                          f'{"📦 来自缓存" if res.get("from_cache") else "🔄 现场扫描"} · {age_str}'), '',
+                          engine.tg_row('🎬', '电影', f'+{st.get("movies", 0)} 部'),
+                          engine.tg_row('📺', '剧集', f'+{st.get("series", 0)} 部', f'+{st.get("episodes", 0)} 集')])
         # 完整清单放进折叠引用：默认收起，点一下展开全部，再点收起
         tv_lines = []
         for src in ('本地影视库', '分享影视库'):
@@ -561,14 +574,11 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
             _send(token, chat_id, f"❌ Emby 库总览失败: {res.get('message')}"); return
         st = res.get('stats') or {}
         broken = res.get('missing') or []
-        text = (f'📺 <b>Emby 库总览</b>\n━━━━━━━━━━━━━━━━━━\n'
-                f'剧集总数: <b>{st.get("total", 0)}</b>\n'
-                f'对齐: <b>{st.get("aligned", 0)}</b>　在更: <b>{st.get("ongoing", 0)}</b>\n'
-                f'缺集: <b>{st.get("missing", 0)}</b>　超集: <b>{st.get("extra", 0)}</b>　未匹配: <b>{st.get("unmatched", 0)}</b>\n'
-                f'电影总数: <b>{res.get("movies_total", 0)}</b>')
+        text = _gap_stats_text('📺', 'Emby 库总览', st, extra=engine.tg_row('🎬', '电影总数', res.get('movies_total', 0)))
         if broken:
             text += f'\n\n<b>全部缺集（{len(broken)} 部）</b>（点开展开 / 再点收起）\n' + _bq(
-                [f'• 《{_esc(s.get("name"))}》缺 {abs((s.get("tmdb_info") or {}).get("diff") or 0)} 集' for s in broken])
+                [f'• 《{_esc(s.get("name"))}》缺 <b>{abs((s.get("tmdb_info") or {}).get("diff") or 0)}</b> 集'
+                 for s in sorted(broken, key=lambda x: -abs((x.get("tmdb_info") or {}).get("diff") or 0))])
         _send_long(token, chat_id, text, ttl=LIST_MSG_TTL)
 
     elif kind == 'gap':
@@ -582,13 +592,11 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
         if age is None: age_str = '刚刚对照'
         elif age < 3600: age_str = f'{max(age // 60, 0)} 分钟前'
         else: age_str = f'{age // 3600} 小时前'
-        text = (f'🧩 <b>缺集检测</b>（TMDB 对照，{age_str}）\n━━━━━━━━━━━━━━━━━━\n'
-                f'剧集总数: <b>{st.get("total", 0)}</b>\n'
-                f'对齐: <b>{st.get("aligned", 0)}</b>　在更: <b>{st.get("ongoing", 0)}</b>\n'
-                f'缺集: <b>{st.get("missing", 0)}</b>　超集: <b>{st.get("extra", 0)}</b>　未匹配: <b>{st.get("unmatched", 0)}</b>')
+        text = _gap_stats_text('🧩', '缺集检测', st, sub=f'TMDB 对照 · {age_str}')
         if broken:
             text += f'\n\n<b>全部缺集（{len(broken)} 部）</b>（点开展开 / 再点收起）\n' + _bq(
-                [f'• 《{_esc(s.get("name"))}》缺 {abs((s.get("tmdb_info") or {}).get("diff") or 0)} 集' for s in broken])
+                [f'• 《{_esc(s.get("name"))}》缺 <b>{abs((s.get("tmdb_info") or {}).get("diff") or 0)}</b> 集'
+                 for s in sorted(broken, key=lambda x: -abs((x.get("tmdb_info") or {}).get("diff") or 0))])
         _send_long(token, chat_id, text, ttl=LIST_MSG_TTL)
 
 

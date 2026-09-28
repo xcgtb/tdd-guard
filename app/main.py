@@ -541,7 +541,7 @@ threading.Thread(target=_bg_loop, daemon=True, name='bg-poller').start()
 # ═══════════════════ 健康 / 仪表盘 ═══════════════════
 @app.get('/api/health')
 def health():
-    return {'status': 'ok', 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+    return {'status': 'ok', 'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'tz': engine.tz_info(),
             'paths': {
                 'L_ROOT':       str(engine.L_ROOT) + (' ✅' if engine.L_ROOT.exists() else ' ❌'),
                 'S_ROOT':       str(engine.S_ROOT) + (' ✅' if engine.S_ROOT.exists() else ' ❌'),
@@ -1020,7 +1020,7 @@ def api_set_ingest_settings(body: dict = None):
 # ═══════════════════ 晨报 ═══════════════════
 @app.get('/api/morning', dependencies=[Depends(auth)])
 def api_get_morning():
-    return {'status': 'success', 'morning': get_morning_report()}
+    return {'status': 'success', 'morning': get_morning_report(), 'tz': engine.tz_info()}
 
 
 @app.post('/api/morning', dependencies=[Depends(auth)])
