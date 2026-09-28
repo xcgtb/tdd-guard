@@ -465,7 +465,7 @@ def _fetch_all_episodes(force=False):
             data = emby_request('/Items', {
                 'Recursive': 'true',
                 'IncludeItemTypes': 'Episode',
-                'Fields': 'SeriesId,ParentIndexNumber,IndexNumber',
+                'Fields': 'SeriesId,ParentIndexNumber,IndexNumber,Path',
                 'StartIndex': start,
                 'Limit': page_size,
             }) or {}
@@ -1832,6 +1832,22 @@ def action_explore(args):
         return {'status': 'error', 'message': str(e)}
 
     emby_index = emby_library_index()
+    # 分库集数映射：tmdb_id -> {local_eps, share_eps, have_eps}，仅 tv 用
+    eps_map = {}
+    if media == 'tv':
+        try:
+            ov = emby_library_overview()
+            for sr in ov.get('series', []):
+                tid = sr.get('tmdb_id')
+                if tid:
+                    eps_map[tid] = {
+                        'local_eps': sr.get('local_eps', 0),
+                        'share_eps': sr.get('share_eps', 0),
+                        'have_eps': sr.get('have_eps', 0),
+                    }
+        except Exception as e:
+            log.warning('探索页分库集数缓存构建失败: %s', e)
+
     cards = []
     for item in (res.get('results') or [])[:40]:
         tmdb_id = str(item.get('id', ''))
@@ -1847,12 +1863,33 @@ def action_explore(args):
         if poster: poster_url = f'{TMDB_IMG}{poster}'
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
+
+        # 入库进度（仅剧集）：分库集数 + TMDB 总集数
+        eps = None
+        if media == 'tv' and in_emby:
+            e = eps_map.get(tmdb_id) or {'local_eps': 0, 'share_eps': 0, 'have_eps': 0}
+            tmdb_total = 0
+            try:
+                info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
+                tmdb_total = sum(
+                    (s.get('episode_count') or 0)
+                    for s in (info or {}).get('seasons', [])
+                    if (s.get('season_number') or 0) > 0
+                )
+            except (TmdbError, Exception):
+                tmdb_total = 0
+            eps = {
+                'local': e['local_eps'], 'share': e['share_eps'],
+                'have': e['have_eps'], 'total': tmdb_total,
+            }
+
         cards.append({
             'tmdb_id': tmdb_id, 'title': title, 'year': year_str,
             'rating': round(rating, 1) if rating else None, 'poster': poster_url,
             'in_emby': in_emby, 'in_local': in_local, 'in_share': in_share,
             'emby_id': emby_hit['id'] if emby_hit else None,
             'type': 'tv' if media == 'tv' else 'movie',
+            'eps': eps,
         })
 
     t.save()
@@ -1889,10 +1926,18 @@ def emby_library_overview(force=False):
         if not eps_by_series.get(sid):
             continue
         season_map = {}
+        # 分库集号：local_eps / share_eps 各自去重，union_eps 合并去重
+        local_eps_set = set()
+        share_eps_set = set()
         for ep in eps_by_series.get(sid, []):
             sn = ep.get('ParentIndexNumber'); en = ep.get('IndexNumber')
             if sn is None or en is None: continue
             season_map.setdefault(sn, set()).add(en)
+            ep_path = ep.get('Path', '') or ''
+            if '影视媒体库' in ep_path:
+                local_eps_set.add((sn, en))
+            elif '分享影视库' in ep_path:
+                share_eps_set.add((sn, en))
         if not season_map:
             continue
         seasons = []
@@ -1916,6 +1961,9 @@ def emby_library_overview(force=False):
             'has_image': 'Primary' in (s.get('ImageTags') or {}),
             'seasons': seasons, 'total_seasons': len(seasons),
             'total_episodes': sum(x['episodes'] for x in seasons),
+            'local_eps': len(local_eps_set),
+            'share_eps': len(share_eps_set),
+            'have_eps': len(local_eps_set | share_eps_set),
             'missing_eps': total_missing,
             'complete': total_missing == 0 and len(seasons) > 0,
         })

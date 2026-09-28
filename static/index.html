@@ -523,6 +523,7 @@ input:focus,select:focus,textarea:focus{
 .badge-status.no{background:rgba(100,116,139,.75)}
 .badge-status.local{background:rgba(59,130,246,.92)}
 .badge-status.share{background:rgba(139,92,246,.92)}
+.badge-status.partial{background:rgba(245,158,11,.92)}
 
 .poster-card .info{padding:10px 12px 12px}
 .poster-card .t{font-size:12.5px;font-weight:600;letter-spacing:-.1px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2676,11 +2677,8 @@ function appendExploreCards(cards){
   var grid = $('exploreGrid');
   var subSet = _subscribedTmdbIds();
   var html = cards.map(function(c){
-    var status, cls;
-    if (c.in_local && c.in_share) { status = '两库全入库'; cls = 'ok'; }
-    else if (c.in_local) { status = '仅本地'; cls = 'local'; }
-    else if (c.in_share) { status = '仅分享'; cls = 'share'; }
-    else { status = '未入库'; cls = 'no'; }
+    var st = exploreStatus(c);
+    var status = st.status, cls = st.cls;
     var typeLabel = c.type === 'tv' ? '剧集' : '电影';
     var posterHtml;
     if (!c.poster) {
@@ -2732,16 +2730,36 @@ function _subscribedTmdbIds(){
   currentSubs.forEach(function(s){ if (s.tmdb_id) set[String(s.tmdb_id)] = true; });
   return set;
 }
+function exploreStatus(c){
+  // 剧集：带集数进度
+  if (c.type === 'tv' && c.eps) {
+    if (!c.eps.have || c.eps.have <= 0) return { status: '未入库', cls: 'no' };
+    if (c.eps.total > 0) {
+      if (c.eps.have >= c.eps.total) {
+        // 超集显示数字（如 已完整 45/40），刚好集齐只显示「已完整」
+        if (c.eps.have > c.eps.total) return { status: '已完整 ' + c.eps.have + '/' + c.eps.total, cls: 'ok' };
+        return { status: '已完整', cls: 'ok' };
+      }
+      return { status: '连载中 · 已入库' + c.eps.have + '/' + c.eps.total + '集', cls: 'partial' };
+    }
+    // TMDB 无总集数：退化为分库显示
+    if (c.in_local && c.in_share) return { status: '本地 ' + (c.eps.local || 0) + ' / 分享 ' + (c.eps.share || 0), cls: 'local' };
+    if (c.in_local) return { status: '本地 ' + (c.eps.local || 0) + ' 集', cls: 'local' };
+    if (c.in_share) return { status: '分享 ' + (c.eps.share || 0) + ' 集', cls: 'share' };
+    return { status: '未入库', cls: 'no' };
+  }
+  // 电影：单体文件，二元状态（参考图口径）
+  if (c.in_local || c.in_share) return { status: '已完整', cls: 'ok' };
+  return { status: '未入库', cls: 'no' };
+}
+
 function renderExploreCards(cards){
   var grid = $('exploreGrid');
   if (!cards.length) { grid.innerHTML = '<div class="list-empty">无结果</div>'; return; }
   var subSet = _subscribedTmdbIds();
   grid.innerHTML = cards.map(function(c){
-    var status, cls;
-    if (c.in_local && c.in_share) { status = '两库全入库'; cls = 'ok'; }
-    else if (c.in_local) { status = '仅本地'; cls = 'local'; }
-    else if (c.in_share) { status = '仅分享'; cls = 'share'; }
-    else { status = '未入库'; cls = 'no'; }
+    var st = exploreStatus(c);
+    var status = st.status, cls = st.cls;
     var typeLabel = c.type === 'tv' ? '剧集' : '电影';
     /* poster 有两种来源：
        1) TMDB 图片 → 直接 <img src>
@@ -3030,6 +3048,16 @@ function renderSeriesCard(s){
     : '<div class="no-img">暂无海报</div>';
 
   var epInfo = (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+  // 入库进度：已入库 have/total（TMDB 总数），分库时显示 本地/分享
+  var tmdbTotal = ti.tmdb_total || 0;
+  var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
+  if (tmdbTotal > 0) {
+    epInfo = '已入库 ' + have + '/' + tmdbTotal + ' 集';
+  } else if (s.in_local && s.in_share) {
+    epInfo = '本地 ' + (s.local_eps || 0) + ' / 分享 ' + (s.share_eps || 0) + ' 集';
+  } else {
+    epInfo = (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+  }
 
   return '<div class="poster-card emby-poster-card st-' + mst + '" onclick="showEmbyDetailById(\'' + esc(s.id) + '\')">'
     + '<div class="poster-wrap">' + poster
@@ -3147,8 +3175,14 @@ function showEmbyDetailById(id){
   if (s.year) html += '<span class="emby-badge gen">' + s.year + '</span>';
   html += '</div>';
   html += '<div style="margin-top:8px;font-size:12px;color:#6b7280">';
-  html += 'Emby ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
-  if (ti.tmdb_total != null) html += '　|　TMDB ' + ti.tmdb_total + ' 集';
+  if (ti.tmdb_total != null && ti.tmdb_total > 0) {
+    var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
+    html += '已入库 ' + have + '/' + ti.tmdb_total + ' 集';
+  } else if (s.in_local && s.in_share) {
+    html += '本地 ' + (s.local_eps || 0) + ' / 分享 ' + (s.share_eps || 0) + ' 集';
+  } else {
+    html += 'Emby ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+  }
   html += '</div>';
   html += '</div></div>';
 
