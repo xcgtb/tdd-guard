@@ -2726,7 +2726,10 @@ def _save_sub_state(state: dict):
 
 
 def _emby_series_latest_ep(series_tmdb_id: str):
-    """查 Emby 里某剧（按 tmdb_id）的最新集"""
+    """查 Emby 里某剧（按 tmdb_id）的已有集与最新集。
+    最新集 = 已有集里 (季, 集) 最大的一集，不按 DateCreated——洗版 / 重新入库的旧集
+    DateCreated 最新，按它取会让「最新集」倒退，下次刷新又把旧集当新集播报。
+    同一集常在本地 + 分享两库各有一份，按 (季, 集) 去重。"""
     if not series_tmdb_id: return None
     try:
         data = emby_request('/Items', {
@@ -2756,31 +2759,47 @@ def _emby_series_latest_ep(series_tmdb_id: str):
     try:
         eps = emby_request('/Items', {
             'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-            'Fields': 'ParentIndexNumber,IndexNumber,DateCreated',
-            'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'Limit': 1,
+            'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated',
+            'Limit': 5000,
         }) or {}
     except Exception:
         return None
-    ep_items = eps.get('Items') or []
-    if not ep_items: return None
-    ep = ep_items[0]
+    # 收集去重后的 (季, 集)；S00 特别篇、无集号的条目不计
+    have = set()
+    created = {}
+    for ep in eps.get('Items') or []:
+        try:
+            sn = int(ep.get('ParentIndexNumber') or 0)
+            en = int(ep.get('IndexNumber') or 0)
+            en_end = int(ep.get('IndexNumberEnd') or en)
+        except (TypeError, ValueError):
+            continue
+        if sn <= 0 or en <= 0: continue
+        # 合集文件（E01-E02）按区间逐集计入，避免被当成缺集
+        for e in range(en, max(en, en_end) + 1):
+            have.add((sn, e))
+        created[(sn, en)] = max(created.get((sn, en), ''), ep.get('DateCreated') or '')
+    if not have: return None
+    sn, en = max(have)
     return {
         'series_id': sid, 'series_name': sname,
-        'season': ep.get('ParentIndexNumber') or 0,
-        'episode': ep.get('IndexNumber') or 0,
-        'date_created': ep.get('DateCreated') or '',
+        'season': sn,
+        'episode': en,
+        'date_created': created.get((sn, en), ''),
+        'episodes': have,   # {(季, 集)}，缺集判定逐集对照用
     }
 
 
 def _tmdb_series_info(tmdb_id):
-    """查 TMDB 已播集数、状态、季结构"""
+    """查 TMDB 已播集数、状态、季结构。
+    已播集以 last_episode_to_air 为界：之前的季整季计入，最后播出的季只计到该集；
+    连载季 episode_count 含未播集，直接求和会让在更的剧永远「缺集」。
+    缺 last_episode_to_air 时退回旧口径（各季 episode_count 全部计入）。"""
     try:
         t = Tmdb()
         info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
         t.save()
         if not info: return None
-        # 计算已播集（截止今天）
-        today = datetime.date.today().isoformat()
         aired_seasons = {}
         for s in (info.get('seasons') or []):
             sn = s.get('season_number')
@@ -2789,11 +2808,27 @@ def _tmdb_series_info(tmdb_id):
                 'episode_count': s.get('episode_count', 0) or 0,
                 'air_date': s.get('air_date') or '',
             }
+        last = info.get('last_episode_to_air') or {}
+        try:
+            last_s = int(last.get('season_number') or 0)
+            last_e = int(last.get('episode_number') or 0)
+        except (TypeError, ValueError):
+            last_s = last_e = 0
+        aired = set()
+        for sn, v in aired_seasons.items():
+            if last_s > 0 and last_e > 0:
+                if sn < last_s: n = v['episode_count']
+                elif sn == last_s: n = last_e
+                else: continue          # 尚未开播的新季
+            else:
+                n = v['episode_count']  # 无 last_episode_to_air：旧口径
+            aired.update((sn, e) for e in range(1, n + 1))
         return {
             'name': info.get('name'),
             'status': info.get('status', ''),
             'seasons': aired_seasons,
-            'total_episodes': sum(v['episode_count'] for v in aired_seasons.values()),
+            'total_episodes': len(aired),   # 已播集数（不含未播集 / S00）
+            'aired': aired,                 # {(季, 集)}
         }
     except Exception as e:
         log.warning('TMDB 订阅查询失败 %s: %s', tmdb_id, e)
@@ -2808,8 +2843,8 @@ def _ep_key_num(k):
 def check_subscriptions(send_notify=True) -> dict:
     """
     改进版：
-      1. 拿 Emby 最新集（新集判定）
-      2. 拿 TMDB 已播集（缺集判定）
+      1. 拿 Emby 已有集 + 最大集号（新集判定）
+      2. 拿 TMDB 已播集，与 Emby 已有集逐集对照（缺集判定）
       3. 双向提醒
     """
     cfg = _cfg.load_config()
@@ -2847,22 +2882,24 @@ def check_subscriptions(send_notify=True) -> dict:
         new_ep_update = None
         missing_update = None
 
-        # 新集判定
+        # 新集判定：只认比上次更大的集号；latest_ep 只进不退（下架 / 删集不回退）
         if prev_key and cur_key and cur_key != prev_key:
             if _ep_key_num(cur_key) > _ep_key_num(prev_key):
                 new_ep_update = {'old': prev_key, 'new': cur_key}
+            else:
+                cur_key = prev_key
 
-        # 缺集判定
+        # 缺集判定：TMDB 已播集逐集对照 Emby 已有集，Emby 多出来的集不抵扣缺口
         if tmdb_info and latest:
-            tmdb_total = tmdb_info.get('total_episodes', 0) or 0
-            # 本地总共 = Emby 现有
-            emby_seasons = {latest['season']: latest['episode']}
-            emby_total = sum(emby_seasons.values()) if emby_seasons else 0
-            if tmdb_total > emby_total:
+            aired = tmdb_info.get('aired') or set()
+            have = latest.get('episodes') or set()
+            lack = aired - have
+            if lack:
                 missing_update = {
-                    'tmdb_total': tmdb_total,
-                    'emby_total': emby_total,
-                    'diff': tmdb_total - emby_total,
+                    'tmdb_total': len(aired),
+                    # emby_total 取「已播范围内 Emby 有的集数」，保证 tmdb_total - emby_total == diff
+                    'emby_total': len(aired & have),
+                    'diff': len(lack),
                 }
 
         state[sid] = {
