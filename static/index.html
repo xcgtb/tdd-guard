@@ -2178,10 +2178,16 @@ async function api(path, opts){
 }
 async function pollTask(taskId, hintText){
   showTaskHint(hintText || '任务中...');
-  for(;;){
-    var t = await api('/api/task/' + taskId);
-    if (t.status !== 'running') { hideTaskHint(); return t; }
-    await new Promise(function(r){ setTimeout(r, 1200); });
+  var t0 = Date.now(), POLL_MAX_MS = 15 * 60 * 1000;
+  try {
+    for(;;){
+      var t = await api('/api/task/' + taskId);
+      if (t.status !== 'running') return t;
+      if (Date.now() - t0 > POLL_MAX_MS) throw new Error('任务超时（15 分钟未完成），请稍后重试');
+      await new Promise(function(r){ setTimeout(r, 1200); });
+    }
+  } finally {
+    hideTaskHint();
   }
 }
 function statusOk(txt){ return '<span class="status-badge ok">' + icon('check') + txt + '</span>'; }

@@ -261,20 +261,21 @@ def _season_compare(s_files, l_files):
             s_better += 1
         else:
             l_better += 1
-    # 合并后集号是否完整（前序缺 1 或中间断层均视为不完整残次品）
-    union = s_keys | l_keys
-    complete = True
-    if union:
-        lo, hi = min(union), max(union)
-        # 前序缺失：最小集号不是 1；中间断层：1..hi 之间有缺
-        if lo > 1 or len(union) < (hi - lo + 1):
-            complete = False
+    # 独立判定完整性：本地、分享各自看是否从 E01 起连续无断层。
+    # 前序缺失（min>1）或中间断层（1..hi 有缺）均为残次品，两边各自独立判定，不合并。
+    def _side_complete(keys):
+        if not keys:
+            return False
+        lo, hi = min(keys), max(keys)
+        return lo == 1 and len(keys) == (hi - lo + 1)
     return {
         's_eps': s_eps, 'l_eps': l_eps,
         's_only': sorted(s_keys - l_keys),
         'l_only': sorted(l_keys - s_keys),
         'common': common, 's_better': s_better, 'l_better': l_better,
-        'complete': complete,
+        's_complete': _side_complete(s_keys),
+        'l_complete': _side_complete(l_keys),
+        'complete': _side_complete(s_keys) and _side_complete(l_keys),
     }
 
 
@@ -1393,22 +1394,24 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
     s_better = cmp['s_better']
     l_better = cmp['l_better']
 
-    # ── 不完整 = 残次品：两边都删 ──
-    if not cmp['complete'] and common > 0:
-        if l_files:
-            acts.append(Act('loc', f'⚠️ {tag} (残次品：集数不完整 → 删本地)',
-                            f'├─ ⚠️ {tag}: 前序缺失/中间断层 ➔ CD2联动删除115网盘旧源',
-                            l_files,
-                            meta={'reason': 'incomplete_delete_local',
-                                  'reason_label': '残次品-删本地',
-                                  'title': disp, 'season': sn}))
-        if s_files:
-            acts.append(Act('shr', f'⚠️ {tag} (残次品：集数不完整 → 删分享)',
-                            f'├─ ⚠️ {tag}: 前序缺失/中间断层 ➔ 清理分享影视库strm',
-                            s_files,
-                            meta={'reason': 'incomplete_delete_share',
-                                  'reason_label': '残次品-删分享',
-                                  'title': disp, 'season': sn}))
+    # ── 残次品：本地、分享各自独立判定，谁不完整删谁 ──
+    # 前序缺失（缺 E01）或中间断层（疑似被和谐）的那一份判定为残次品删除，
+    # 不做双库合并对照；完整的那一份正常进入画质对比。
+    if not cmp['l_complete'] and l_files:
+        acts.append(Act('loc', f'⚠️ {tag} (残次品：本地前序缺失/断层 → 删本地)',
+                        f'├─ ⚠️ {tag}: 本地不完整 ➔ CD2联动删除115网盘旧源',
+                        l_files,
+                        meta={'reason': 'incomplete_delete_local',
+                              'reason_label': '残次品-删本地',
+                              'title': disp, 'season': sn}))
+    if not cmp['s_complete'] and s_files:
+        acts.append(Act('shr', f'⚠️ {tag} (残次品：分享前序缺失/断层 → 删分享)',
+                        f'├─ ⚠️ {tag}: 分享不完整 ➔ 清理分享影视库strm',
+                        s_files,
+                        meta={'reason': 'incomplete_delete_share',
+                              'reason_label': '残次品-删分享',
+                              'title': disp, 'season': sn}))
+    if not cmp['l_complete'] or not cmp['s_complete']:
         return
 
     if common == 0:
@@ -1429,22 +1432,35 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
                               'share_better': s_better, 'local_better': l_better,
                               'share_total': s_total, 'local_total': l_total}))
     else:
-        acts.append(Act('shr', f'📺 {tag} (本地更优 {l_better}/{common} 集 → 淘汰分享)',
-                        f'├─ 📺 {tag}: 本地达标率 {(l_better/common):.0%} ({l_better}/{common}集) ➔ 清理分享影视库strm',
-                        s_files,
-                        meta={'reason': 'local_wins',
-                              'reason_label': '本地择优-删分享',
-                              'title': disp, 'season': sn,
-                              'share_better': s_better, 'local_better': l_better,
-                              'share_total': s_total, 'local_total': l_total}))
+        if s_total < l_total:
+            # 分享在共同集上画质虽好，但集数明显少于本地 → 按集数优先规则保留本地
+            acts.append(Act('shr', f'📺 {tag} (分享仅 {s_total} 集、本地 {l_total} 集 → 淘汰分享保留本地)',
+                            f'├─ 📺 {tag}: 共同 {common} 集中分享优 {s_better} 集，但本地集数更全 ➔ 清理分享影视库strm',
+                            s_files,
+                            meta={'reason': 'local_wins',
+                                  'reason_label': '本地更全-删分享',
+                                  'title': disp, 'season': sn,
+                                  'share_better': s_better, 'local_better': l_better,
+                                  'share_total': s_total, 'local_total': l_total}))
+        else:
+            acts.append(Act('shr', f'📺 {tag} (本地更优 {l_better}/{common} 集 → 淘汰分享)',
+                            f'├─ 📺 {tag}: 本地达标率 {(l_better/common):.0%} ({l_better}/{common}集) ➔ 清理分享影视库strm',
+                            s_files,
+                            meta={'reason': 'local_wins',
+                                  'reason_label': '本地择优-删分享',
+                                  'title': disp, 'season': sn,
+                                  'share_better': s_better, 'local_better': l_better,
+                                  'share_total': s_total, 'local_total': l_total}))
 
 
 def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
-    """多季保护 compare 档：本地多季合集。
+    """多季保护 compare 档（开启）：本地多季合集不被部分覆盖掏空。
 
-    仅当分享对本地「全部季」都逐集达标（每季交集集号对齐且分享达标率够高），
-    才整体删本地（腾网盘）；否则逐季独立择优（删分享里不达标的部分），
-    保护本地多季合集不被部分季掏空。
+    仅当分享对本地「全部季」都逐集达标（每季存在、集数不落后、达标率够高），
+    才整体删本地（腾网盘）；
+    否则本地「全季保护」——不删任何本地季（哪怕分享某季达标），
+    只清理分享中「劣于本地」的季副本（画质次级或集数不足）；
+    分享独有季静默；残次品（本地或分享各自独立判定不完整）优先于保护，谁不完整删谁。
     """
     all_pass = True
     for sn, l_files in l_proper.items():
@@ -1456,8 +1472,8 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
         if common == 0:
             all_pass = False
             break
-        # 不完整（残次品）不参与「整剧零和整体删本地」，交给逐季处理（两边都删）
-        if not cmp['complete']:
+        # 残次品（本地或分享任一不完整）不参与「整剧零和整体删本地」，交给逐季独立处理
+        if not cmp['l_complete'] or not cmp['s_complete']:
             all_pass = False
             break
         if cmp['s_better'] / common < SEASON_REPLACE_RATIO:
@@ -1479,11 +1495,49 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
                                   'share_seasons': len(s_proper)}))
         return
 
-    # 不满足全量替换 → 逐季独立择优（删分享里不达标的季，保护本地）
+    # 未达全量替换 → 多季保护生效：本地全季保留（不掏空合集）；
+    # 仅清理分享中「劣于本地」的季副本；残次品（两边都不完整）仍两边都删。
     for sn, s_files in sorted(s_proper.items()):
         if sn not in l_proper:
+            continue  # 分享独有季 → 静默
+        cmp = _season_compare(s_files, l_proper[sn])
+        common = len(cmp['common'])
+        if common == 0:
             continue
-        _emit_season_act(acts, disp, sn, s_files, l_proper[sn])
+        tag = f'《{disp}》S{sn:02d}'
+        # 残次品：本地、分享各自独立判定，谁不完整删谁（优先于多季保护）
+        if not cmp['l_complete'] and l_proper[sn]:
+            acts.append(Act('loc', f'⚠️ {tag} (残次品：本地前序缺失/断层 → 删本地)',
+                            f'├─ ⚠️ {tag}: 本地不完整 ➔ CD2联动删除115网盘旧源',
+                            l_proper[sn],
+                            meta={'reason': 'incomplete_delete_local',
+                                  'reason_label': '残次品-删本地',
+                                  'title': disp, 'season': sn}))
+        if not cmp['s_complete'] and s_files:
+            acts.append(Act('shr', f'⚠️ {tag} (残次品：分享前序缺失/断层 → 删分享)',
+                            f'├─ ⚠️ {tag}: 分享不完整 ➔ 清理分享影视库strm',
+                            s_files,
+                            meta={'reason': 'incomplete_delete_share',
+                                  'reason_label': '残次品-删分享',
+                                  'title': disp, 'season': sn}))
+        if not cmp['l_complete'] or not cmp['s_complete']:
+            continue
+        share_ratio = cmp['s_better'] / common if common else 0.0
+        if share_ratio >= SEASON_REPLACE_RATIO and len(cmp['s_eps']) >= len(cmp['l_eps']):
+            continue  # 分享该季达标 → 保留，待分享补齐全季后整体替换本地
+        # 分享该季劣于本地（画质次级或集数不足）→ 淘汰分享副本，本地受多季保护不动
+        if len(cmp['s_eps']) < len(cmp['l_eps']):
+            txt = f'📺 {tag} (分享仅 {len(cmp["s_eps"])} 集、本地 {len(cmp["l_eps"])} 集 → 多季保护，淘汰分享)'
+            det = f'├─ 📺 {tag}: 多季保护生效（本地全季保留）· 分享副本集数不足 ➔ 清理分享影视库strm'
+        else:
+            txt = f'📺 {tag} (本地更优 {cmp["l_better"]}/{common} 集 → 多季保护，淘汰分享)'
+            det = f'├─ 📺 {tag}: 多季保护生效（本地全季保留）· 分享画质次级 ({cmp["l_better"]}/{common}集) ➔ 清理分享影视库strm'
+        acts.append(Act('shr', txt, det, s_files,
+                        meta={'reason': 'multi_protect_share_clean',
+                              'reason_label': '多季保护-清分享劣本',
+                              'title': disp, 'season': sn,
+                              'local_seasons': n_local,
+                              'share_seasons': len(s_proper)}))
 
 
 def save_plan(acts):
