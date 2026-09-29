@@ -1307,11 +1307,11 @@ def build_plan():
             _emit_season_act(acts, disp, sn, s_files, l_files)
 
     # ── 库内多版本去重：同片/同集存在多份 strm 时，只留画质最优的一份 ──
-    _dedupe_lib_versions(acts)
+    _dedupe_lib_versions(acts, L, S)
     return acts
 
 
-def _dedupe_lib_versions(acts):
+def _dedupe_lib_versions(acts, L, S):
     """库内多版本去重（洗版/追更残留），只在本库内部对比，不跨库拆分：
       - 电影：同一 key（同 tmdb）下多份 strm → 留最优一份；
       - 剧集：同一季内同一集号多份 strm → 每集各留最优一份。
