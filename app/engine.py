@@ -42,7 +42,6 @@ CLOUD_L_ROOT = _p('CLOUD_L_ROOT', '/media/cloud')
 DATA_DIR = _cfg.DATA_DIR
 LOG_TXT = DATA_DIR / '媒体治理明细.log'
 STATE_DIR = DATA_DIR / 'state'
-TRASH_DIR = DATA_DIR / 'trash'
 LOCK_FILE = DATA_DIR / 'agent.lock'
 REPORT_DIR = DATA_DIR / 'reports'
 SUB_STATE_FILE = STATE_DIR / 'subscriptions_state.json'
@@ -63,8 +62,6 @@ _METADATA_EXTS = {
     '.srt', '.ass', '.ssa', '.sub', '.idx', '.sup',
     '.json', '.url', '.xml', '.md5', '.sha1',
 }
-TRASH_STRM = os.environ.get('TRASH_STRM', '1') == '1'
-TRASH_KEEP_DAYS = int(os.environ.get('TRASH_KEEP_DAYS', '14'))
 PLAN_TTL = 2 * 3600
 PRUNE_MIN_DEPTH = int(os.environ.get('PRUNE_MIN_DEPTH', '3'))
 
@@ -588,11 +585,13 @@ def _inside(p, root):
         return False
 
 
-def _remove_strm(f, base_root):
-    """删除 STRM（可进 trash 或彻底删），并彻底粉碎同目录下同 stem 的附属文件。
+def _remove_strm(f):
+    """彻底删除 STRM，并粉碎同目录下同 stem 的附属文件。
 
-    附属文件（-mediainfo.json / .nfo / .srt / .ass / .jpg 等）一律彻底删除（不进 trash），
+    附属文件（-mediainfo.json / .nfo / .srt / .ass / .jpg 等）一律彻底删除，
     只匹配与 STRM 同 stem 的文件，避免误删同目录下其他集的字幕。
+
+    ⚠️ STRM 一经删除不可恢复：本工具不保留任何副本、不提供回收站。
     """
     stem = f.stem
     for sibling in f.parent.iterdir():
@@ -606,12 +605,7 @@ def _remove_strm(f, base_root):
                 sibling.unlink()
             except OSError:
                 pass
-    if TRASH_STRM:
-        dest = TRASH_DIR / datetime.date.today().isoformat() / base_root.name / f.relative_to(base_root)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(f), str(dest))
-    else:
-        f.unlink()
+    f.unlink()
 
 
 def _classify_dir(path, base_root):
@@ -768,7 +762,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
             continue  # 云端没删成功 -> STRM 保留
 
         try:
-            _remove_strm(f, base_root); st['strm_removed'] += 1
+            _remove_strm(f); st['strm_removed'] += 1
             parents.add(f.parent)
         except OSError as e:
             st['errors'].append(f'{f.name}: {e}')
@@ -1025,13 +1019,7 @@ def action_clean_orphan_dirs(args):
 
 
 def purge_old():
-    cut = time.time() - TRASH_KEEP_DAYS * 86400
-    if TRASH_DIR.exists():
-        for d in TRASH_DIR.iterdir():
-            try:
-                if d.is_dir() and d.stat().st_mtime < cut:
-                    shutil.rmtree(d, ignore_errors=True)
-            except OSError: pass
+    """清理过期治理计划（保留 7 天供审计）。"""
     if STATE_DIR.exists():
         plan_cut = time.time() - 7 * 86400
         for f in STATE_DIR.glob('plan_*.json'):

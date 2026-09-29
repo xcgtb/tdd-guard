@@ -6,7 +6,6 @@ __pycache__
 *.pyc
 data
 state
-trash
 records
 *.log
 *.jsonl

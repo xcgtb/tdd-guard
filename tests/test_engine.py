@@ -804,3 +804,52 @@ class TestIngestQuietPeriod:
         _strm(engine.L_ROOT, '关闭静默 (2022)', '关闭静默.1080p.strm')
         _strm(engine.S_ROOT, '关闭静默 (2022)', '关闭静默.2160p.strm')
         assert len(_acts_for_title(engine.build_plan(), '关闭静默')) == 1
+
+class TestNoTrashRetention:
+    """STRM 删除即彻底删除，不保留任何副本、不产生回收站目录。
+
+    该机制（TRASH_STRM / TRASH_DIR / TRASH_KEEP_DAYS）已被显式移除，
+    本组测试用于防止它被无意间重新引入。
+    """
+
+    def test_no_trash_module_symbols(self):
+        """模块层不应再暴露任何 TRASH 相关配置"""
+        for attr in ('TRASH_STRM', 'TRASH_DIR', 'TRASH_KEEP_DAYS'):
+            assert not hasattr(engine, attr), '%s 应已移除' % attr
+
+    def test_remove_strm_deletes_permanently(self):
+        """STRM 与同 stem 附属文件被真删，且不在数据目录留下任何副本"""
+        _reset_libs()
+        d = engine.L_ROOT / '删除测试 (2021)'
+        d.mkdir(parents=True, exist_ok=True)
+        strm = d / '删除测试.2160p.strm'
+        strm.write_text('http://127.0.0.1/fake', encoding='utf-8')
+        meta = d / '删除测试.2160p-mediainfo.json'
+        meta.write_text('{}', encoding='utf-8')
+        sub = d / '删除测试.2160p.zh.srt'
+        sub.write_text('', encoding='utf-8')
+        other_ep = d / '删除测试.2160p.E02.strm'
+        other_ep.write_text('http://127.0.0.1/fake2', encoding='utf-8')
+
+        engine._remove_strm(strm)
+
+        assert not strm.exists(), 'STRM 应被彻底删除'
+        assert not meta.exists(), '同名 mediainfo 应被删除'
+        assert not sub.exists(), '同名字幕应被删除'
+        assert other_ep.exists(), '同目录其他集不应被误删'
+        assert not (engine.DATA_DIR / 'trash').exists(), '不应产生回收站目录'
+        if engine.DATA_DIR.exists():
+            assert list(engine.DATA_DIR.rglob('*.strm')) == [], '数据目录不应残留 STRM 副本'
+
+    def test_purge_old_still_cleans_expired_plans(self):
+        """移除回收站后，purge_old 仍须清理过期治理计划"""
+        _reset_libs()
+        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        stale = engine.STATE_DIR / 'plan_stale.json'
+        stale.write_text('{}', encoding='utf-8')
+        old = time.time() - 8 * 86400
+        os.utime(stale, (old, old))
+
+        engine.purge_old()
+
+        assert not stale.exists(), '超过 7 天的治理计划应被清理'
