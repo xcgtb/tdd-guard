@@ -32,8 +32,6 @@ except ImportError:
 def _p(env, default):
     return Path(os.environ.get(env, default))
 
-# 容器内路径固定：用户只需在 docker-compose 里把宿主机目录挂载到这三个位置。
-# 环境变量覆盖仅供测试使用（tests/ 用它指向临时目录），不对用户开放、不写入文档。
 L_ROOT = _p('L_ROOT', '/media/local')
 S_ROOT = _p('S_ROOT', '/media/share')
 CLOUD_L_ROOT = _p('CLOUD_L_ROOT', '/media/cloud')
@@ -1019,7 +1017,7 @@ def action_scan_orphans(args):
         return {'status': 'error',
                 'message': '两个媒体库路径都不存在，没有扫描任何文件：'
                            + '；'.join(l['root'] for l in libs)
-                           + '。请检查 docker-compose 里是否已挂载到 /media/local 和 /media/share。'}
+                           + '。请检查 docker-compose 的挂载和 L_ROOT / S_ROOT。'}
     for l in missing:
         warnings.append(f"{'本地' if l['lib'] == 'local' else '分享'}库路径不存在，已跳过：{l['root']}")
     for l in libs:
@@ -1305,7 +1303,76 @@ def build_plan():
                 continue
             l_files = l_proper[sn]
             _emit_season_act(acts, disp, sn, s_files, l_files)
+
+    # ── 库内多版本去重：同片/同集存在多份 strm 时，只留画质最优的一份 ──
+    _dedupe_lib_versions(acts)
     return acts
+
+
+def _dedupe_lib_versions(acts):
+    """库内多版本去重（洗版/追更残留）：
+      - 电影：同一 key（同 tmdb）下多份 strm → 留最优一份；
+      - 剧集：同一季内同一集号多份 strm → 每集各留最优一份。
+    已被库间治理覆盖（整组删除）的标题跳过；白名单跳过；S00 不参与。
+    本地低版本走 CD2 联动删源（腾空间），分享低版本直接删 strm。"""
+    covered = {(a.kind, a.media_key) for a in acts if a.kind in ('loc', 'shr')}
+    for lib, kind in ((L, 'loc'), (S, 'shr')):
+        # 电影
+        for key, files in lib.mov.items():
+            if len(files) < 2:
+                continue
+            disp = lib.meta[key][0]
+            if _exempt_hit(disp):
+                continue
+            if (kind, f'movie:{disp}') in covered:
+                continue
+            best = max(files, key=lambda f: get_score(f.name))
+            losers = [f for f in files if f is not best]
+            cloud_note = 'CD2联动删除115网盘低版本源' if kind == 'loc' else '清理分享影视库低版本strm'
+            acts.append(Act(kind, f'🎬 《{disp}》 (同片多版本 {len(files)} 份 → 留最优删其余)',
+                            f'├─ 🎬 《{disp}》: 库内多版本去重（保留 {quality_label(best.name)}） ➔ {cloud_note}',
+                            losers,
+                            meta={'reason': 'dup_version_local' if kind == 'loc' else 'dup_version_share',
+                                  'reason_label': '库内多版本-删低版',
+                                  'title': disp,
+                                  'keep_label': quality_label(best.name),
+                                  'dup_count': len(files)}))
+        # 剧集（S00 不参与，特别篇有独立策略）
+        for key, seasons in lib.tv.items():
+            disp = lib.meta[key][0]
+            if _exempt_hit(disp):
+                continue
+            for sn, files in seasons.items():
+                if sn <= 0 or len(files) < 2:
+                    continue
+                by_ep = defaultdict(list)
+                for f in files:
+                    ep = _ep(f)
+                    if not ep or ep[0] <= 0:
+                        continue
+                    by_ep[ep[1]].append(f)
+                dup_eps = {e: fs for e, fs in by_ep.items() if len(fs) > 1}
+                if not dup_eps:
+                    continue
+                mk = f'tv:{disp}:S{int(sn):02d}'
+                if (kind, mk) in covered:
+                    continue
+                losers = []
+                kept_labels = []
+                for e, fs in sorted(dup_eps.items()):
+                    best = max(fs, key=lambda f: get_score(f.name))
+                    losers.extend(f for f in fs if f is not best)
+                    kept_labels.append(f'E{e:02d}留{quality_label(best.name)}')
+                cloud_note = 'CD2联动删除115网盘低版本源' if kind == 'loc' else '清理分享影视库低版本strm'
+                tag = f'《{disp}》S{sn:02d}'
+                acts.append(Act(kind, f'📺 {tag} (同集多版本 {len(dup_eps)} 集 → 各留最优)',
+                                f'├─ 📺 {tag}: 库内多版本去重（{"；".join(kept_labels[:5])}） ➔ {cloud_note}',
+                                losers,
+                                meta={'reason': 'dup_version_local' if kind == 'loc' else 'dup_version_share',
+                                      'reason_label': '库内多版本-删低版',
+                                      'title': disp, 'season': sn,
+                                      'dup_eps': len(dup_eps),
+                                      'dup_count': len(files)}))
 
 
 def _emit_season_act(acts, disp, sn, s_files, l_files):
@@ -2089,8 +2156,14 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
     tmdb_map = {}
     for s in (tmdb_info.get('seasons') or []):
         sn = s.get('season_number')
-        if sn is None or sn <= 0: continue
-        tmdb_map[sn] = s.get('episode_count', 0) or 0
+        if sn is None or sn <= 0:
+            continue
+        # 只统计「有实际集数」的季；episode_count=0 的占位季（未播/预留）不计入，
+        # 否则会导致 tmdb_total 虚高、season_diff 里冒出本地根本没有的空季，误报缺集。
+        ec = s.get('episode_count', 0) or 0
+        if ec <= 0:
+            continue
+        tmdb_map[sn] = ec
     tmdb_total = sum(tmdb_map.values())
     season_diff = []
     for sn in sorted(set(local_map.keys()) | set(tmdb_map.keys())):
