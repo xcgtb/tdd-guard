@@ -293,7 +293,9 @@ ttd-guard/
 ├── app/                       # 后端核心代码
 │   ├── core.py                #   纯函数层（画质评分、集号解析、分类），无 IO
 │   ├── engine.py              #   治理引擎（扫描 / 择优 / 删除）
-│   ├── main.py                #   FastAPI Web 层
+│   ├── main.py                #   FastAPI Web 层（HTTP 接口 + 应用生命周期）
+│   ├── tasks.py               #   统一任务总线（Web / Bot / 定时巡检共用互斥）
+│   ├── scheduler.py           #   后台调度（入库 / 订阅 / 巡检 / 晨报 / TMDB 预热）
 │   ├── bot.py                 #   Telegram Bot
 │   ├── config.py              #   配置读写
 │   └── logger.py              #   JSONL 审计日志
