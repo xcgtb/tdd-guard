@@ -82,7 +82,7 @@
 - Dockerfile 增加 OCI source label，便于 GHCR 与 GitHub 仓库关联。
 - 统一应用版本号、README 和发布示例到 `1.2.1`。
 
-## 1.5.0
+## Unreleased
 
 ### Release preparation
 - 清理发布包中的运行时数据、缓存、`.git` 和本地配置。
