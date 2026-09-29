@@ -144,7 +144,7 @@ docker compose up -d
 固定版本：
 
 ```yaml
-image: ghcr.io/xcgtb/ttd-guard:1.3.6
+image: ghcr.io/xcgtb/ttd-guard:<版本号>   # 例如 1.3.6，版本号见 GitHub Releases
 ```
 
 ## 项目目录

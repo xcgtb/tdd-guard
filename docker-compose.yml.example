@@ -1,7 +1,7 @@
 services:
   ttd-guard:
     # GHCR 预构建镜像：不需要源码、不需要 build。
-    # 想固定版本可改成：ghcr.io/xcgtb/ttd-guard:1.3.6
+    # 想固定版本可改成：ghcr.io/xcgtb/ttd-guard:<版本号>（见 GitHub Releases）
     image: ghcr.io/xcgtb/ttd-guard:latest
     container_name: ttd-guard
     restart: unless-stopped

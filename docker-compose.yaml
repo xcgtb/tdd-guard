@@ -1,0 +1,27 @@
+services:
+  ttd-guard:
+    image: ghcr.io/xcgtb/ttd-guard:latest
+    container_name: ttd-guard
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+      WEB_USER: admin
+      WEB_PASSWORD: zzx123123
+      ENABLE_CD2_WATCHDOG: "1"
+    volumes:
+      - /vol1/1000/docker/ttd-guard/data:/data
+      - /vol1/1000/TgtoDrive/strm/115网盘/影视媒体库:/media/local
+      - /vol1/1000/TgtoDrive/strm/115网盘/分享影视库:/media/share
+      - /vol1/1000/docker/clouddrive2/CloudDrive/影视媒体库:/media/cloud:rslave
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

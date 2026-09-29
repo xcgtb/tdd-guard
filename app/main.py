@@ -40,7 +40,9 @@ if not WEB_PASSWORD:
         )
         raise SystemExit(1)
 
-app = FastAPI(title='TTD Guard', version='1.3.6')
+# 版本号由 Docker 构建时按 git tag 注入（APP_VERSION），本地直接运行显示 dev
+APP_VERSION = os.environ.get('APP_VERSION', 'dev')
+app = FastAPI(title='TTD Guard', version=APP_VERSION)
 
 TASKS = {}
 TASK_LOCK = threading.Lock()

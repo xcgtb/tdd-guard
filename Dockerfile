@@ -7,6 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     TZ=Asia/Shanghai
 
+# 版本号由 GitHub Actions 按 git tag 注入；本地手动 build 时默认为 dev
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
