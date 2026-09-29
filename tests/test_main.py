@@ -101,35 +101,86 @@ class TestStartupRequiresPassword:
         assert 'IMPORTED_OK' in r.stdout
 
 
-class TestPruneTasks:
-    def _fake_task(self, status, ts):
-        t = main.Task('fake')
-        t.status = status
-        t.ts = ts
-        return t
+class TestImportHasNoSideEffects:
+    def test_import_does_not_start_background_threads(self):
+        """后台轮询 / Bot / 看门狗只在应用生命周期（lifespan）里启动，导入模块不再起线程"""
+        env = dict(os.environ)
+        env['TG_BOT_TOKEN'] = 'fake-token'
+        code = (
+            "import sys, threading; sys.path.insert(0, %r)\n"
+            "import app.main\n"
+            "print('THREADS=' + ','.join(sorted(t.name for t in threading.enumerate())))\n"
+        ) % _REPO_ROOT
+        r = subprocess.run([sys.executable, '-c', code], env=env,
+                           capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0, r.stderr[-2000:]
+        line = [ln for ln in r.stdout.splitlines() if ln.startswith('THREADS=')][0]
+        assert line == 'THREADS=MainThread', line
 
-    def test_keeps_running_task_and_caps_finished(self):
-        main.TASKS.clear()
-        old_cap = main.TASKS_MAX_KEEP
-        main.TASKS_MAX_KEEP = 3
+
+# ═══════════════════ 生命周期 + 任务总线（HTTP 层） ═══════════════════
+import threading  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from app import scheduler, tasks  # noqa: E402
+
+_AUTH = ('admin', 'test-pass-123')
+
+
+class TestLifespan:
+    def test_scheduler_runs_only_inside_lifespan(self):
+        with TestClient(main.app) as c:
+            t = scheduler._thread['t']
+            assert t is not None and t.is_alive()
+            assert c.get('/api/health').status_code == 200
+        t.join(5)
+        assert not t.is_alive(), '应用退出时后台轮询线程应该停止'
+
+
+class TestTaskBus:
+    def test_second_scan_is_rejected_with_429(self):
+        gate = threading.Event()
+        orig = main.engine.ACTIONS['inter_check']
+        main.engine.ACTIONS['inter_check'] = lambda args: gate.wait(5) and {'status': 'success'}
         try:
-            running = self._fake_task('running', time.time())
-            main.TASKS[running.id] = running
-            finished = []
-            for i in range(6):
-                t = self._fake_task('success', time.time() + i)
-                main.TASKS[t.id] = t
-                finished.append(t)
-
-            main._prune_tasks()
-
-            assert running.id in main.TASKS, '正在运行的任务不该被清理'
-            remaining_finished = [t for t in finished if t.id in main.TASKS]
-            assert len(remaining_finished) == 3, \
-                f'完成态任务应该只保留 3 个，实际剩 {len(remaining_finished)}'
-            # 保留下来的应该是时间戳最新的那几个
-            kept_ts = sorted(t.ts for t in remaining_finished)
-            assert kept_ts == sorted(t.ts for t in finished)[-3:]
+            c = TestClient(main.app)
+            r1 = c.post('/api/check', auth=_AUTH)
+            assert r1.status_code == 200
+            tid = r1.json()['task_id']
+            r2 = c.post('/api/check', auth=_AUTH)
+            assert r2.status_code == 429
+            cur = c.get('/api/health').json()['current_task']
+            assert cur['id'] == tid and cur['source'] == 'web'
         finally:
-            main.TASKS_MAX_KEEP = old_cap
-            main.TASKS.clear()
+            gate.set()
+            main.engine.ACTIONS['inter_check'] = orig
+        assert tasks.manager.get(tid).done.wait(5)
+        assert c.get(f'/api/task/{tid}', auth=_AUTH).json()['status'] == 'success'
+
+
+class TestMovieDeleteEndpoint:
+    def _mk(self, rel):
+        p = main.engine.L_ROOT / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('x', encoding='utf-8')
+        return p
+
+    def test_exact_tmdb_match_and_busy_lock(self):
+        import fcntl
+        self._mk('电影/外语电影/片A {tmdb-77}/片A.strm')
+        self._mk('电影/外语电影/片B {tmdb-777}/片B.strm')
+        c = TestClient(main.app)
+        body = {'tmdb_id': '77', 'target': 'share', 'dry_run': True}
+        assert c.post('/api/emby/movie/delete_by_tmdb', json=body, auth=_AUTH).json()['count'] == 0
+        body['target'] = 'local'
+        assert c.post('/api/emby/movie/delete_by_tmdb', json=body, auth=_AUTH).json()['count'] == 1
+        main.engine.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        holder = open(main.engine.LOCK_FILE, 'w')
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            body['dry_run'] = False
+            r = c.post('/api/emby/movie/delete_by_tmdb', json=body, auth=_AUTH).json()
+            assert r['status'] == 'busy'
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            holder.close()
+        assert (main.engine.L_ROOT / '电影/外语电影/片A {tmdb-77}/片A.strm').exists()
