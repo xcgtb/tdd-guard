@@ -241,14 +241,15 @@ def _season_compare(s_files, l_files):
     s_eps, l_eps = {}, {}
     for f in (s_files or []):
         ep = _ep(f)
-        if not ep or ep[0] <= 0:
+        # ep[0]<=0: S00 目录；ep[1]<=0: E00 第0集（特别集）——均不参与对照与完整性判定
+        if not ep or ep[0] <= 0 or ep[1] <= 0:
             continue
         old = s_eps.get(ep[1])
         if old is None or get_score(f.name) > get_score(old.name):
             s_eps[ep[1]] = f
     for f in (l_files or []):
         ep = _ep(f)
-        if not ep or ep[0] <= 0:
+        if not ep or ep[0] <= 0 or ep[1] <= 0:
             continue
         old = l_eps.get(ep[1])
         if old is None or get_score(f.name) > get_score(old.name):
@@ -261,13 +262,14 @@ def _season_compare(s_files, l_files):
             s_better += 1
         else:
             l_better += 1
-    # 独立判定完整性：本地、分享各自看是否从 E01 起连续无断层。
-    # 前序缺失（min>1）或中间断层（1..hi 有缺）均为残次品，两边各自独立判定，不合并。
+    # 独立判定完整性：本地、分享各自看正片（E01 起）是否连续无断层。
+    # E00（第0集）是特别集，不参与；前序缺失（min>1）或中间断层均为残次品，两边各自独立判定。
     def _side_complete(keys):
-        if not keys:
+        ks = {k for k in keys if k > 0}
+        if not ks:
             return False
-        lo, hi = min(keys), max(keys)
-        return lo == 1 and len(keys) == (hi - lo + 1)
+        lo, hi = min(ks), max(ks)
+        return lo == 1 and len(ks) == (hi - lo + 1)
     return {
         's_eps': s_eps, 'l_eps': l_eps,
         's_only': sorted(s_keys - l_keys),
@@ -281,6 +283,13 @@ def _season_compare(s_files, l_files):
 
 # 逐集择优阈值：交集内分享画质达标集数占比 >= 该比例才删本地（否则删分享或保留）。
 SEASON_REPLACE_RATIO = 0.9
+
+
+def _side_gap_desc(keys):
+    """生成某侧缺失的具体描述，如：
+      '中间断层 (缺 E10，疑似被和谐)' / '缺失前序 (缺 E01-E05)'；完整返回 '完整'。"""
+    ok, reason = analyze_season_episodes(keys, '', ())
+    return reason
 
 
 # ═══════════════════ Emby ═══════════════════
@@ -1326,7 +1335,8 @@ def _dedupe_lib_versions(acts, L, S):
             if len(files) < 2:
                 continue
             disp = lib.meta[key][0]
-            if _exempt_hit(disp):
+            # 白名单：标题或任一文件路径命中都豁免（Season NNN 类目录标题不含关键字，必须查路径）
+            if _exempt_hit(disp) or any(_exempt_hit(str(f)) for f in files):
                 continue
             if (kind, f'movie:{disp}') in covered:
                 continue
@@ -1344,7 +1354,8 @@ def _dedupe_lib_versions(acts, L, S):
         # 剧集（S00 不参与，特别篇有独立策略）
         for key, seasons in lib.tv.items():
             disp = lib.meta[key][0]
-            if _exempt_hit(disp):
+            all_files = [f for fl in seasons.values() for f in fl]
+            if _exempt_hit(disp) or any(_exempt_hit(str(f)) for f in all_files):
                 continue
             for sn, files in seasons.items():
                 if sn <= 0 or len(files) < 2:
@@ -1394,19 +1405,19 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
     s_better = cmp['s_better']
     l_better = cmp['l_better']
 
-    # ── 残次品：本地、分享各自独立判定，谁不完整删谁 ──
-    # 前序缺失（缺 E01）或中间断层（疑似被和谐）的那一份判定为残次品删除，
-    # 不做双库合并对照；完整的那一份正常进入画质对比。
+    # ── 残次品：本地、分享各自独立判定，谁不完整删谁，并写明具体缺什么 ──
     if not cmp['l_complete'] and l_files:
-        acts.append(Act('loc', f'⚠️ {tag} (残次品：本地前序缺失/断层 → 删本地)',
-                        f'├─ ⚠️ {tag}: 本地不完整 ➔ CD2联动删除115网盘旧源',
+        gap = _side_gap_desc(cmp['l_eps'].keys())
+        acts.append(Act('loc', f'⚠️ {tag} (残次品：本地{gap} → 删本地)',
+                        f'├─ ⚠️ {tag}: 本地{gap} ➔ CD2联动删除115网盘旧源',
                         l_files,
                         meta={'reason': 'incomplete_delete_local',
                               'reason_label': '残次品-删本地',
                               'title': disp, 'season': sn}))
     if not cmp['s_complete'] and s_files:
-        acts.append(Act('shr', f'⚠️ {tag} (残次品：分享前序缺失/断层 → 删分享)',
-                        f'├─ ⚠️ {tag}: 分享不完整 ➔ 清理分享影视库strm',
+        gap = _side_gap_desc(cmp['s_eps'].keys())
+        acts.append(Act('shr', f'⚠️ {tag} (残次品：分享{gap} → 删分享)',
+                        f'├─ ⚠️ {tag}: 分享{gap} ➔ 清理分享影视库strm',
                         s_files,
                         meta={'reason': 'incomplete_delete_share',
                               'reason_label': '残次品-删分享',
@@ -1505,17 +1516,19 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
         if common == 0:
             continue
         tag = f'《{disp}》S{sn:02d}'
-        # 残次品：本地、分享各自独立判定，谁不完整删谁（优先于多季保护）
+        # 残次品：本地、分享各自独立判定，谁不完整删谁（优先于多季保护），写明具体缺什么
         if not cmp['l_complete'] and l_proper[sn]:
-            acts.append(Act('loc', f'⚠️ {tag} (残次品：本地前序缺失/断层 → 删本地)',
-                            f'├─ ⚠️ {tag}: 本地不完整 ➔ CD2联动删除115网盘旧源',
+            gap = _side_gap_desc(cmp['l_eps'].keys())
+            acts.append(Act('loc', f'⚠️ {tag} (残次品：本地{gap} → 删本地)',
+                            f'├─ ⚠️ {tag}: 本地{gap} ➔ CD2联动删除115网盘旧源',
                             l_proper[sn],
                             meta={'reason': 'incomplete_delete_local',
                                   'reason_label': '残次品-删本地',
                                   'title': disp, 'season': sn}))
         if not cmp['s_complete'] and s_files:
-            acts.append(Act('shr', f'⚠️ {tag} (残次品：分享前序缺失/断层 → 删分享)',
-                            f'├─ ⚠️ {tag}: 分享不完整 ➔ 清理分享影视库strm',
+            gap = _side_gap_desc(cmp['s_eps'].keys())
+            acts.append(Act('shr', f'⚠️ {tag} (残次品：分享{gap} → 删分享)',
+                            f'├─ ⚠️ {tag}: 分享{gap} ➔ 清理分享影视库strm',
                             s_files,
                             meta={'reason': 'incomplete_delete_share',
                                   'reason_label': '残次品-删分享',

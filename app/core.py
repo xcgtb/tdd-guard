@@ -7,7 +7,7 @@ import re
 from typing import Iterable, Optional, Sequence, Tuple
 
 # ═══════════════════ 正则常量 ═══════════════════
-RE_SEASON_DIR = re.compile(r'(?i)^(?:season[ ._-]*(\d{1,2})|s(\d{1,2})|第\s*(\d{1,2})\s*季)(?![0-9a-z])')
+RE_SEASON_DIR = re.compile(r'(?i)^(?:season[ ._-]*(\d{1,3})|s(\d{1,3})|第\s*(\d{1,3})\s*季)(?![0-9a-z])')
 RE_SPECIAL_DIR = re.compile(r'(?i)^(?:specials?|特别篇|特典)(?![0-9a-z])')
 RE_SXXEXX = re.compile(r'(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]*e(?:p)?[ ._-]*(\d{1,4})(?!\d)')
 RE_EP = re.compile(r'(?i)(?<![a-z0-9])(?:ep?|sp)[ ._-]*(\d{1,3})(?!\d)|第\s*(\d{1,4})\s*[集话話期]')

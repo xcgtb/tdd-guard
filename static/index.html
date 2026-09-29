@@ -1647,7 +1647,7 @@ window.addEventListener('unhandledrejection', function(e){
               <div class="lbl">平局保留本地</div>
               <div class="desc">仅在「画质优先」模式下生效</div>
             </div>
-            <label class="switch"><input type="checkbox" id="strTieLocal" onchange="saveStrategy()"><span class="slider"></span></label>
+            <label class="switch"><input type="checkbox" id="strTieLocal" onchange="onTieLocalToggle(this)"><span class="slider"></span></label>
           </div>
         </div>
 
@@ -3760,16 +3760,31 @@ function applyStrategyUI(){
   renderExempt();
 }
 function pickStrategy(v){
+  if (v === currentStrategy.decision) return;
+  var label = { quality_first:'画质优先', keep_local:'保留本地', keep_share:'保留分享' }[v] || v;
+  if (!confirm('确定将决策模型切换为「' + label + '」？\n\n这会影响双库治理的保留策略。')) {
+    applyStrategyUI(); return;
+  }
   currentStrategy.decision = v;
   applyStrategyUI();
   saveStrategy();
 }
 function pickSpecial(v){
+  if (v === currentStrategy.special_action) return;
+  var label = { compare:'画质对比', ignore:'忽略', delete:'清理' }[v] || v;
+  if (!confirm('确定将特别篇（S00）策略切换为「' + label + '」？')) {
+    applyStrategyUI(); return;
+  }
   currentStrategy.special_action = v;
   applyStrategyUI();
   saveStrategy();
 }
 function pickMultiProtect(v){
+  if (v === currentStrategy.multi_season_protect) return;
+  var label = { off:'关闭', compare:'开启', full:'全量豁免' }[v] || v;
+  if (!confirm('确定将多季合集保护切换为「' + label + '」？\n\n这会直接影响本地多季合集是否被删。')) {
+    applyStrategyUI(); return;
+  }
   currentStrategy.multi_season_protect = v;
   applyStrategyUI();
   saveStrategy();
@@ -3788,6 +3803,15 @@ async function saveStrategy(){
     applyStrategyUI();
     toast('策略已保存', 'success');
   } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+
+function onTieLocalToggle(cb){
+  var want = cb.checked;
+  if (!confirm('确定将「平局保留本地」切换为「' + (want ? '保留本地' : '保留分享') + '」？')) {
+    cb.checked = !want;  // 取消则回滚
+    return;
+  }
+  saveStrategy();
 }
 
 /* ═══════════ 白名单 ═══════════ */
