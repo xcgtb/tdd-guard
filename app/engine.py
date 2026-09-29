@@ -11,14 +11,14 @@ try:
     from .core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
         title_key, is_exempt, fmt_nums, analyze_season_episodes, is_seq,
-        parse_emby_library,
+        parse_emby_library, quality_label,
     )
     from . import config as _cfg
 except ImportError:
     from core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
         title_key, is_exempt, fmt_nums, analyze_season_episodes, is_seq,
-        parse_emby_library,
+        parse_emby_library, quality_label,
     )
     import config as _cfg
 
@@ -32,6 +32,8 @@ except ImportError:
 def _p(env, default):
     return Path(os.environ.get(env, default))
 
+# 容器内路径固定：用户只需在 docker-compose 里把宿主机目录挂载到这三个位置。
+# 环境变量覆盖仅供测试使用（tests/ 用它指向临时目录），不对用户开放、不写入文档。
 L_ROOT = _p('L_ROOT', '/media/local')
 S_ROOT = _p('S_ROOT', '/media/share')
 CLOUD_L_ROOT = _p('CLOUD_L_ROOT', '/media/cloud')
@@ -1017,7 +1019,7 @@ def action_scan_orphans(args):
         return {'status': 'error',
                 'message': '两个媒体库路径都不存在，没有扫描任何文件：'
                            + '；'.join(l['root'] for l in libs)
-                           + '。请检查 docker-compose 的挂载和 L_ROOT / S_ROOT。'}
+                           + '。请检查 docker-compose 里是否已挂载到 /media/local 和 /media/share。'}
     for l in missing:
         warnings.append(f"{'本地' if l['lib'] == 'local' else '分享'}库路径不存在，已跳过：{l['root']}")
     for l in libs:
@@ -1310,11 +1312,12 @@ def build_plan():
 
 
 def _dedupe_lib_versions(acts):
-    """库内多版本去重（洗版/追更残留）：
+    """库内多版本去重（洗版/追更残留），只在本库内部对比，不跨库拆分：
       - 电影：同一 key（同 tmdb）下多份 strm → 留最优一份；
       - 剧集：同一季内同一集号多份 strm → 每集各留最优一份。
     已被库间治理覆盖（整组删除）的标题跳过；白名单跳过；S00 不参与。
-    本地低版本走 CD2 联动删源（腾空间），分享低版本直接删 strm。"""
+    本地低版本走 CD2 联动删源（腾空间），分享低版本直接删 strm。
+    不同 tmdb（如正片 vs 导演版）是不同 key，天然互不影响。"""
     covered = {(a.kind, a.media_key) for a in acts if a.kind in ('loc', 'shr')}
     for lib, kind in ((L, 'loc'), (S, 'shr')):
         # 电影
@@ -2159,7 +2162,7 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
         if sn is None or sn <= 0:
             continue
         # 只统计「有实际集数」的季；episode_count=0 的占位季（未播/预留）不计入，
-        # 否则会导致 tmdb_total 虚高、season_diff 里冒出本地根本没有的空季，误报缺集。
+        # 否则会导致 tmdb_total 虚高、season_diff 冒出本地根本没有的空季，误报缺集。
         ec = s.get('episode_count', 0) or 0
         if ec <= 0:
             continue
