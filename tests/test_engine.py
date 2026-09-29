@@ -346,26 +346,26 @@ class TestSeasonReplaceable:
         assert 'loc' in kinds and 'shr' in kinds
 
     def test_multi_protect_partial_coverage_no_local_delete(self):
-        """多季保护开启：分享只覆盖部分季（缺 S03）时，本地一季都不删（合集不被掏空）。
-        分享中劣于本地的季副本照常淘汰；达标的分享季保留待全量覆盖。"""
+        """多季保护开启：分享只覆盖部分季（缺 S03）时——
+        本地一季都不删（合集不被掏空）；分享来的这些季全部淘汰（不比画质）。"""
         _reset_libs()
         _patch_strategy({'multi_season_protect': 'compare', 'exempt_keywords': []})
-        # 本地 S01-S03（1080p），分享只有 S01（2160p 达标）和 S02（720p 劣质且集数少）
+        # 本地 S01-S03（1080p），分享只有 S01（2160p 达标）和 S02（720p 劣质）
         for sn in ('01', '02', '03'):
             for ep in (1, 2):
                 _strm(engine.L_ROOT, f'多季保护剧 (2020)/Season {sn}', f'E{ep:02d}.1080p.strm')
         _strm(engine.S_ROOT, '多季保护剧 (2020)/Season 01', 'E01.2160p.strm')
         _strm(engine.S_ROOT, '多季保护剧 (2020)/Season 01', 'E02.2160p.strm')
         _strm(engine.S_ROOT, '多季保护剧 (2020)/Season 02', 'E01.720p.strm')
+        _strm(engine.S_ROOT, '多季保护剧 (2020)/Season 02', 'E02.720p.strm')
 
         acts = engine.build_plan()
         hits = _acts_for_title(acts, '多季保护剧')
         # 本地不许出现任何删除动作（合集不被掏空）
         assert not any(a.kind == 'loc' for a in hits), [a.text for a in hits]
-        # 分享 S02 劣质副本被淘汰
-        assert any(a.kind == 'shr' and a.meta.get('season') == 2 for a in hits)
-        # 分享 S01 达标 → 保留（无动作）
-        assert not any(a.kind == 'shr' and a.meta.get('season') == 1 for a in hits)
+        # 分享未全覆盖 → 分享 S01、S02 都淘汰（不比画质，哪怕 S01 达标）
+        shr_seasons = sorted(a.meta.get('season') for a in hits if a.kind == 'shr')
+        assert shr_seasons == [1, 2], [a.text for a in hits]
 
 
 # ═══════════════════ 云端源置信度（白皮书 §13）═══════════════════
