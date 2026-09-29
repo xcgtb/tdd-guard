@@ -227,7 +227,7 @@ class TestShareOnlySeasonProtection:
 
 
 # ═══════════════════ 电视剧逐集择优（新逻辑）═══════════════════
-class TestSeasonReplaceable:
+class TestSeasonCompare:
     """逐集对齐 + 达标率择优，取消双向保留"""
 
     def test_positive_share_wins(self):
@@ -637,3 +637,80 @@ class TestCloudRootFailSafe:
         r = engine.safe_delete_files([f], engine.S_ROOT, None, dry_run=False)
         assert r['strm_removed'] == 1
         assert not f.exists()
+
+
+# ═══════════════════ 回归：多季保护 UnboundLocalError('common') ═══════════════════
+class TestMultiProtectCommonUnbound:
+    def test_partial_share_with_local_better_does_not_crash(self):
+        """本地 S01/S02，分享只有 S02 且画质更差：
+        第一轮循环在 S01 处 break（common 未赋值），第二轮拼「分享画质次级 x/common集」
+        时曾抛 UnboundLocalError，导致整个双库扫描失败。"""
+        _reset_libs()
+        _patch_strategy({'multi_season_protect': 'compare', 'exempt_keywords': []})
+        for sn in ('01', '02'):
+            for ep in (1, 2):
+                _strm(engine.L_ROOT, f'未绑定回归剧 (2020)/Season {sn}', f'E{ep:02d}.2160p.strm')
+        for ep in (1, 2):
+            _strm(engine.S_ROOT, '未绑定回归剧 (2020)/Season 02', f'E{ep:02d}.720p.strm')
+
+        acts = engine.build_plan()  # 修复前这里直接抛异常
+        hits = _acts_for_title(acts, '未绑定回归剧')
+        assert not any(a.kind == 'loc' for a in hits)
+        shr = [a for a in hits if a.kind == 'shr']
+        assert len(shr) == 1 and shr[0].meta['season'] == 2
+        assert '2/2集' in shr[0].detail
+
+
+# ═══════════════════ 扫描不应重复遍历双库 ═══════════════════
+class TestScanSingleTraversal:
+    class _Args:
+        kw = ''
+        silent = True
+
+    def test_scan_builds_each_library_only_once(self):
+        """action_inter_check 曾在 build_plan 之后又 Lib(S)/Lib(L) 重扫一遍只为拿计数，
+        大库上扫描耗时翻倍。现在整个扫描每个库只允许遍历一次。"""
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '单次遍历剧 (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.S_ROOT, '单次遍历剧 (2020)/Season 01', 'E01.2160p.strm')
+
+        built = []
+        orig_lib = engine.Lib
+
+        class CountingLib(orig_lib):
+            def __init__(self, root):
+                built.append(str(root))
+                super().__init__(root)
+
+        engine.Lib = CountingLib
+        try:
+            engine.action_inter_check(self._Args())
+        finally:
+            engine.Lib = orig_lib
+
+        assert sorted(built) == sorted([str(engine.L_ROOT), str(engine.S_ROOT)]), built
+
+    def test_scan_refreshes_strm_count_cache_from_same_traversal(self):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '计数剧 (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.L_ROOT, '计数剧 (2020)/Season 01', 'E02.1080p.strm')
+        _strm(engine.S_ROOT, '计数剧 (2020)/Season 01', 'E01.2160p.strm')
+        _strm(engine.S_ROOT, '计数剧 (2020)/Season 01', 'E02.2160p.strm')
+        _strm(engine.S_ROOT, '计数剧B (2021)/Season 01', 'E01.2160p.strm')
+
+        engine.action_inter_check(self._Args())
+
+        assert engine._strm_count_cache['local'] == 2
+        assert engine._strm_count_cache['share'] == 3
+        disk = engine._load_strm_count_disk()
+        assert disk is not None and disk[0] == 2 and disk[1] == 3
+
+    def test_lib_cache_is_invalidated_after_scan(self):
+        """扫描后必须失效 Lib 缓存，保证随后的执行清理二次校验基于最新磁盘状态"""
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '缓存失效剧 (2020)/Season 01', 'E01.1080p.strm')
+        engine.action_inter_check(self._Args())
+        assert engine._lib_cache == {}

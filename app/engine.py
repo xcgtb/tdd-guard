@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """media_agent.py —— 飞牛 NAS 端治理引擎"""
 import html
-import os, re, sys, json, threading, shlex, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
+import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
 from collections import defaultdict
@@ -10,14 +10,14 @@ from dataclasses import dataclass, field
 try:
     from .core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
-        title_key, is_exempt, fmt_nums, analyze_season_episodes, is_seq,
+        title_key, analyze_season_episodes,
         parse_emby_library, quality_label,
     )
     from . import config as _cfg
 except ImportError:
     from core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
-        title_key, is_exempt, fmt_nums, analyze_season_episodes, is_seq,
+        title_key, analyze_season_episodes,
         parse_emby_library, quality_label,
     )
     import config as _cfg
@@ -122,18 +122,11 @@ def _strategy():
 def _exempt_keywords():
     return _strategy()['exempt_keywords']
 
-def _special_action():
-    return _strategy().get('special_action', 'compare')
-
 def _ep(p: Path):
     return get_ep(p.name, p.parent.name)
 
 def _best(files):
     return best_score(f.name for f in files)
-
-def _exempt(name):
-    kws = _exempt_keywords()
-    return any(k in str(name) for k in kws)
 
 def _exempt_hit(name):
     kws = _exempt_keywords()
@@ -168,12 +161,6 @@ def _exempt_group_of(path, kws):
                 return part, k
     return None, None
 
-def _analyze(eps, name=''):
-    return analyze_season_episodes(eps, name, _exempt_keywords())
-
-def _is_seq(eps, name=''):
-    return is_seq(eps, name, _exempt_keywords())
-
 def _share_wins(s_q, l_q):
     s = _strategy()
     decision = s['decision']
@@ -183,50 +170,6 @@ def _share_wins(s_q, l_q):
 
 
 # ═══════════════════ 电视剧逐集比较（白皮书 §7）═══════════════════
-def _season_replaceable(s_files, l_files, disp=''):
-    """
-    判断分享 Season 能否整体替换本地 Season（白皮书 §7.1）：
-      1. 分享 Season 必须存在
-      2. 本地每个正片 Episode 都必须在分享里找到
-      3. 每一集分享质量必须 >= 本地质量
-    同集号多份时取最高质量那份参与比较。
-    返回 (replaceable: bool, reason: str)
-    """
-    l_eps, s_eps = {}, {}
-    for f in (l_files or []):
-        ep = _ep(f)
-        if not ep or ep[0] <= 0:
-            continue
-        old = l_eps.get(ep[1])
-        if old is None or get_score(f.name) > get_score(old.name):
-            l_eps[ep[1]] = f
-    for f in (s_files or []):
-        ep = _ep(f)
-        if not ep or ep[0] <= 0:
-            continue
-        old = s_eps.get(ep[1])
-        if old is None or get_score(f.name) > get_score(old.name):
-            s_eps[ep[1]] = f
-
-    if not l_eps:
-        return False, '本地无正片集'
-    if not s_eps:
-        return False, '分享无正片集'
-
-    missing = sorted(set(l_eps) - set(s_eps))
-    if missing:
-        return False, '分享缺集 ' + fmt_nums(missing)
-
-    weak = sorted(
-        e for e in l_eps
-        if get_score(s_eps[e].name) < get_score(l_eps[e].name)
-    )
-    if weak:
-        return False, '分享画质不足 ' + fmt_nums(weak)
-
-    return True, '逐集覆盖且质量达标'
-
-
 def _season_compare(s_files, l_files):
     """
     逐集对齐比较分享与本地同一季（取代双向保留，改为单向择优）。
@@ -431,10 +374,10 @@ class Lib:
 
 
 # ═══════════════════ Lib 短时效缓存 ═══════════════════
-# 场景：用户点「扫描双库」→ 生成计划 → 立刻点「执行清理」
-# 两次操作都调 build_plan()，会重复对双库做全量 rglob。
-# 加 30 秒缓存后，第二次直接复用，大库上省几秒到几十秒。
-# 清理成功后主动失效，保证不会用到陈旧数据。
+# 作用：短时间内多个只读入口（白名单命中预览等）连续调用 build_plan/_get_lib 时，
+# 30 秒内复用同一份双库遍历结果，大库上省几秒到几十秒。
+# 注意：「扫描双库」完成后和「清理成功」后都会主动失效缓存——
+# 执行清理前的二次校验必须基于最新磁盘状态，不能吃扫描时的快照。
 _lib_cache = {}
 _lib_cache_lock = threading.Lock()
 LIB_CACHE_TTL = 30
@@ -463,7 +406,6 @@ _ep_lock = threading.Lock()
 
 def _fetch_all_episodes(force=False):
     """分页拉取全库 Episode（带 600 秒缓存 + 线程锁，避免并发重复拉）"""
-    import threading as _th
     if not force and _ep_cache['data'] is not None and (time.time() - _ep_cache['ts']) < 600:
         log.info('复用分集缓存（%d 条，%.0f 秒前）', len(_ep_cache['data']), time.time() - _ep_cache['ts'])
         return _ep_cache['data']
@@ -1187,7 +1129,9 @@ def _group_exempt_acts(acts):
     return out
 
 
-def build_plan():
+def _build_plan_with_libs():
+    """生成治理计划，同时把本次用到的两个 Lib 一并返回，
+    供调用方直接取 strm_count 等数据，避免为了计数再对双库做一遍全量 rglob。"""
     S, L = _get_lib(S_ROOT), _get_lib(L_ROOT)
     s = _strategy()
     acts = []
@@ -1318,7 +1262,11 @@ def build_plan():
 
     # ── 库内多版本去重：同片/同集存在多份 strm 时，只留画质最优的一份 ──
     _dedupe_lib_versions(acts, L, S)
-    return acts
+    return acts, S, L
+
+
+def build_plan():
+    return _build_plan_with_libs()[0]
 
 
 def _dedupe_lib_versions(acts, L, S):
@@ -1515,6 +1463,7 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
         if sn not in l_proper:
             continue  # 分享独有季（本地没有）→ 静默，不在多季保护对比范围
         cmp = _season_compare(s_files, l_proper[sn])
+        common = len(cmp['common'])
         tag = f'《{disp}》S{sn:02d}'
         # 本地残次品 → 删本地（残次品第一阶段治理，与多季保护无关）
         if not cmp['l_complete'] and l_proper[sn]:
@@ -1659,17 +1608,20 @@ def load_latest_scan():
 
 
 def action_inter_check(args):
-    acts = build_plan()
+    acts, S_lib, L_lib = _build_plan_with_libs()
 
-    # 扫描完成后顺便刷新 STRM 计数缓存（一次遍历，两份数据）
+    # 扫描完成后顺便刷新 STRM 计数缓存。
+    # 计数直接取自 build_plan 刚遍历出来的 Lib（同一次遍历，数据与计划严格一致），
+    # 不再为了计数把双库重新 rglob 一遍——大库/网络挂载上这是扫描耗时翻倍的元凶。
     try:
-        _invalidate_lib_cache()
-        S_now = Lib(S_ROOT)
-        L_now = Lib(L_ROOT)
-        _strm_count_cache.update({'ts': time.time(), 'local': L_now.strm_count, 'share': S_now.strm_count})
-        log.info('扫描后刷新 STRM 计数: local=%d share=%d', L_now.strm_count, S_now.strm_count)
+        _strm_count_cache.update({'ts': time.time(), 'local': L_lib.strm_count, 'share': S_lib.strm_count})
+        _save_strm_count_disk(L_lib.strm_count, S_lib.strm_count)
+        log.info('扫描后刷新 STRM 计数: local=%d share=%d', L_lib.strm_count, S_lib.strm_count)
     except Exception as e:
         log.warning('刷新 STRM 计数缓存失败: %s', e)
+    # 扫描后失效 Lib 缓存：后续「执行清理」会重新 build_plan 二次校验，
+    # 必须基于最新磁盘状态，不能复用扫描时的快照（清理是删文件操作，宁可多扫一次）。
+    _invalidate_lib_cache()
     loc = [a for a in acts if a.kind == 'loc']
     shr = [a for a in acts if a.kind == 'shr']
     keep = [a for a in acts if a.kind == 'keep']
@@ -3153,7 +3105,6 @@ _lib_stats_cache = {'ts': 0, 'data': None}
 _CACHE_TTL = 300
 
 
-_strm_count_cache = {'ts': 0, 'local': 0, 'share': 0}
 _STRM_COUNT_CACHE_FILE = STATE_DIR / 'strm_count_cache.json'
 _strm_count_refreshing = threading.Lock()
 
