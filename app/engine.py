@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """media_agent.py —— 飞牛 NAS 端治理引擎"""
+import contextlib
+import dataclasses
 import html
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
@@ -588,6 +590,39 @@ def _inside(p, root):
         return False
 
 
+class MutationBusy(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def mutation_lock():
+    """跨入口互斥锁：CLI / Web / Telegram Bot 任何真正改文件的操作（双库清理、单剧删除、
+    洗版残留清理）都必须先拿到这把文件锁，拿不到抛 MutationBusy，由调用方回「忙」。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fh = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        raise MutationBusy('已有治理任务正在执行，请稍后再试')
+    try:
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+_SIDECAR_SEPS = '.-_ [('
+
+
+def _is_sidecar_of(stem, other_stem):
+    """other_stem 是否属于 stem 这条 STRM 的附属文件：同 stem，或 stem 后紧跟分隔符，
+    如 A.S01E01-mediainfo / A.S01E01.zh。只看前缀会把「A - S01E1」的附属扩到「A - S01E10」上。"""
+    if other_stem == stem:
+        return True
+    return other_stem.startswith(stem) and other_stem[len(stem)] in _SIDECAR_SEPS
+
+
 def _remove_strm(f, base_root):
     """删除 STRM（可进 trash 或彻底删），并彻底粉碎同目录下同 stem 的附属文件。
 
@@ -600,8 +635,8 @@ def _remove_strm(f, base_root):
             continue
         if sibling.suffix.lower() == '.strm':
             continue
-        # 附属文件与 STRM 同 stem（或以其为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt
-        if sibling.stem == stem or sibling.stem.startswith(stem):
+        # 附属文件与 STRM 同 stem（或以其加分隔符为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt
+        if _is_sidecar_of(stem, sibling.stem):
             try:
                 sibling.unlink()
             except OSError:
@@ -777,6 +812,33 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     return st
 
 
+_RE_DIR_TMDB = re.compile(r'(?i)tmdb(?:id)?[-_=: ]*(\d+)')
+
+
+def find_movie_strms_by_tmdb(root, tmdb_id):
+    """按 tmdb 编号找电影目录下的 STRM（单片删除用）。
+    - 目录名里的编号必须完全相等：以前按子串匹配，删 tmdb-123 会连带删掉 tmdb-1234；
+    - 命中目录整体收集后不再往下走，嵌套目录不会重复计数；
+    - 含按集命名 STRM 的目录是剧集，跳过——电影和剧集的 tmdb 编号是两套命名空间，
+      同号的剧集不能被「删电影」带走。"""
+    want = str(tmdb_id).strip()
+    if not want.isdigit() or not root.exists():
+        return []
+    want = int(want)
+    out = []
+    for dp, dns, _fns in os.walk(root):
+        m = _RE_DIR_TMDB.search(os.path.basename(dp))
+        if not m or int(m.group(1)) != want:
+            continue
+        dns[:] = []
+        strms = [Path(r) / n for r, _d, ns in os.walk(dp) for n in ns if n.lower().endswith('.strm')]
+        if any(get_ep(f.name, f.parent.name) for f in strms):
+            log.info('按 tmdb 删电影：%s 是剧集目录，跳过', dp)
+            continue
+        out.extend(strms)
+    return out
+
+
 _ORPHAN_IGNORE_NAMES = {'thumbs.db', 'desktop.ini', '.ds_store'}
 
 
@@ -931,7 +993,18 @@ def clean_orphan_dirs(paths, dry_run=True):
 
     paths: 目录路径列表。dry_run=True 时只返回将删除的数量。
     校验：目录必须在 L_ROOT 或 S_ROOT 内、归类为媒体专属目录、内部无 .strm。
+    真删时与双库清理共用跨入口文件锁，避免和正在执行的清理同时改同一批目录。
     """
+    if dry_run:
+        return _clean_orphan_dirs(paths, True)
+    try:
+        with mutation_lock():
+            return _clean_orphan_dirs(paths, False)
+    except MutationBusy as e:
+        return {'status': 'busy', 'message': str(e)}
+
+
+def _clean_orphan_dirs(paths, dry_run):
     removed = []
     errors = []
     for p in paths:
@@ -1740,25 +1813,38 @@ def action_inter_clean(args):
     # 统一互斥锁：不管从 CLI、Web 任务队列还是 Telegram Bot 线程发起，
     # 只要是真正会修改文件的清理（非 dry-run），都必须先拿到这把跨入口的文件锁，
     # 避免三个入口各自维护自己的锁导致两个清理任务同时跑。
-    lock = None
-    if not args.dry_run:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        lock = open(LOCK_FILE, 'w')
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock.close()
-            return {'status': 'busy', 'message': '已有治理任务正在执行，请稍后再试'}
-    try:
+    if args.dry_run:
         return _action_inter_clean_locked(args)
-    finally:
-        if lock:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-            lock.close()
+    try:
+        with mutation_lock():
+            return _action_inter_clean_locked(args)
+    except MutationBusy as e:
+        return {'status': 'busy', 'message': str(e)}
 
 
 def _action_inter_clean_locked(args):
+    try:
+        return _run_inter_clean(args)
+    except Exception as e:
+        # 执行中途异常：计划标记为 failed，不能停在 executing（网页会一直显示"执行中"）
+        if args.plan and not args.dry_run:
+            save_plan_state(args.plan, 'failed', {'executed_at': time.time(),
+                                                  'executed_result': {'error': f'{type(e).__name__}: {e}'}})
+        raise
+
+
+def _confirmed_files(cur, old_act):
+    """二次校验的文件级收敛：只删「用户确认过的计划」和「当前重扫」都要删的文件。
+    以前直接用重扫结果的文件列表，扫描后新出现的文件（例如洗版进来一个更高版本，
+    原来的最优版变成了低版本）会在用户没看到的情况下被一起删掉。"""
+    planned = set(old_act.get('files') or [])
+    keep = [f for f in cur.files if str(f) in planned]
+    return keep, len(cur.files) - len(keep)
+
+
+def _run_inter_clean(args):
     skipped_details = []
+    unconfirmed = 0
     if args.plan:
         plan = load_plan(args.plan)
         if plan is None:
@@ -1798,7 +1884,13 @@ def _action_inter_clean_locked(args):
                     '%s → 决策原因变化: %s → %s' % (
                         old_act.get('text', '?'), old_reason, cur_reason))
                 continue
-            todo.append(cur)
+            files, extra = _confirmed_files(cur, old_act)
+            if not files:
+                skipped_details.append(
+                    '%s → 待删文件与计划不一致' % old_act.get('text', '?'))
+                continue
+            unconfirmed += extra
+            todo.append(dataclasses.replace(cur, files=files))
         skipped = len(old_actions) - len(todo)
     else:
         todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt')]
@@ -1837,6 +1929,8 @@ def _action_inter_clean_locked(args):
         detail.append(f'├─ ⏭ 有 {skipped} 项二次验证未通过，已跳过')
         for s in skipped_details[:5]:
             detail.append(f'│   · {s}')
+    if unconfirmed:
+        detail.append(f'├─ ⏭ 有 {unconfirmed} 个文件是扫描后才出现的，不在已确认的计划里，本次未删除')
     if not args.dry_run:
         purge_old()
         write_audit_log('执行跨库清理',
@@ -1861,7 +1955,7 @@ def _action_inter_clean_locked(args):
             })
     return {'status': 'success', 'loc_cnt': n_loc, 'sh_cnt': n_sh, 'refreshed': refreshed,
             'detail': detail, 'warnings': warns, 'dry_run': args.dry_run,
-            'skipped': skipped}
+            'skipped': skipped, 'unconfirmed_files': unconfirmed}
 
 
 class TmdbError(Exception):
@@ -2950,8 +3044,21 @@ def get_tmdb_scan_progress() -> dict:
     return p
 
 
+_tmdb_scan_lock = threading.Lock()
+
+
 def refresh_tmdb_scan():
-    """后台跑一次完整 TMDB 对照并落盘（带进度上报）"""
+    """后台跑一次完整 TMDB 对照并落盘（带进度上报）。单飞：网页「强制对照」和定时预热
+    可能前后脚触发，已在跑时直接返回，不再并发两份全量对照。"""
+    if not _tmdb_scan_lock.acquire(blocking=False):
+        return {'status': 'running', 'message': 'TMDB 对照已在后台运行'}
+    try:
+        return _refresh_tmdb_scan()
+    finally:
+        _tmdb_scan_lock.release()
+
+
+def _refresh_tmdb_scan():
     global _tmdb_scan_progress
     log.info('TMDB 对照开始（后台）')
     _tmdb_scan_progress.update({
@@ -3261,6 +3368,20 @@ def invalidate_stats_cache():
     _strm_count_cache['ts'] = 0
     _lib_stats_cache['ts'] = 0
     _lib_stats_cache['data'] = None
+
+
+def invalidate_media_caches(keep_emby_lib=False):
+    """文件变动后统一失效内存缓存（分集 / Emby 索引 / Lib 快照 / 统计）。
+    keep_emby_lib=True 时保留片库映射缓存（单剧删除会就地修补它，避免整页重跑 TMDB 对照）。"""
+    _ep_cache['ts'] = 0
+    _ep_cache['data'] = None
+    _emby_index_cache['ts'] = 0
+    _emby_index_cache['data'] = None
+    if not keep_emby_lib:
+        _emby_lib_cache['ts'] = 0
+        _emby_lib_cache['data'] = None
+    _invalidate_lib_cache()
+    invalidate_stats_cache()
 
 
 ACTIONS = {
