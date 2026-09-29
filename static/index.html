@@ -1553,7 +1553,7 @@ window.addEventListener('unhandledrejection', function(e){
             </div>
           </div>
           <p style="font-size:12px;color:#6b7280;line-height:1.7">
-            每次扫描生成一个 Plan，含稳定 action_id + 状态。执行后的 Plan 保留 7 天供审计。
+            每次扫描会生成一份治理计划。待执行的计划 2 小时内有效，超时自动过期；执行后的计划保留 7 天供审计。点「查看详情」可看到具体清理了哪些标题。
           </p>
         </div>
         <div id="plansList"><div class="list-empty">加载中...</div></div>
@@ -1825,7 +1825,7 @@ window.addEventListener('unhandledrejection', function(e){
 </div>
 
 <div class="toast" id="toast"></div>
-<div class="task-hint" id="taskHint"><span class="spin"></span><span id="taskHintText">任务中...</span></div>
+<div class="task-hint" id="taskHint" onclick="hideTaskHint()" title="点按可收起（任务仍在后台运行）"><span class="spin"></span><span id="taskHintText">任务中...</span><span style="opacity:.75;margin-left:4px">✕</span></div>
 
 <script>
 /* ═══════════ SVG 图标库 ═══════════ */
@@ -2127,7 +2127,10 @@ function toast(msg, type, ms){
   clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove('show'); }, ms);
 }
 function showTaskHint(text){ $('taskHintText').textContent = text || '任务中...'; $('taskHint').classList.add('show'); }
+function updateTaskHint(text){ $('taskHintText').textContent = text; }   // 只改文字，不会把用户手动收起的提示条又弹出来
 function hideTaskHint(){ $('taskHint').classList.remove('show'); }
+var __hintPolls = 0;   // 正在轮询的任务数：只有最后一个结束才收起提示条，避免互相误关/漏关
+function fmtElapsed(sec){ var m = Math.floor(sec / 60), s = sec % 60; return m + ':' + (s < 10 ? '0' : '') + s; }
 function toggleSidebar(open){ var sb = $('sidebar'); if(open){ sb.classList.add('open'); $('mask').classList.add('show'); } else { sb.classList.remove('open'); $('mask').classList.remove('show'); } }
 function openModal(html){ $('modalBody').innerHTML = html; $('modalBg').classList.add('show'); }
 function closeModal(){ $('modalBg').classList.remove('show'); }
@@ -2164,32 +2167,72 @@ function showLoginOverlay(){
   setTimeout(function(){ $('loginPass').focus(); }, 50);
 }
 async function api(path, opts){
-  opts = opts || {};
+  opts = Object.assign({}, opts || {});
+  var timeoutMs = opts.timeoutMs; delete opts.timeoutMs;
   var headers = Object.assign(getHeaders(), opts.headers || {});
-  var r = await fetch(path, Object.assign({}, opts, { headers: headers }));
-  if (r.status === 401) {
-    // 未登录或会话过期：弹出自带登录页（登录一次后 30 天免输）
-    showLoginOverlay();
-    throw new Error('未登录或登录已过期');
+  var ctl = null, timer = null;
+  if (timeoutMs) {
+    ctl = new AbortController(); opts.signal = ctl.signal;
+    timer = setTimeout(function(){ ctl.abort(); }, timeoutMs);
   }
-  var j = await r.json().catch(function(){ return { detail: '响应解析失败' }; });
-  if (!r.ok) throw new Error(j.detail || j.message || ('HTTP ' + r.status));
-  return j;
+  try {
+    var r = await fetch(path, Object.assign({}, opts, { headers: headers }));
+    if (r.status === 401) {
+      // 未登录或会话过期：弹出自带登录页（登录一次后 30 天免输）
+      showLoginOverlay();
+      throw new Error('未登录或登录已过期');
+    }
+    var j = await r.json().catch(function(){ return { detail: '响应解析失败' }; });
+    if (!r.ok) throw new Error(j.detail || j.message || ('HTTP ' + r.status));
+    return j;
+  } catch(e){
+    if (e && e.name === 'AbortError') throw new Error('请求超时');
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 async function pollTask(taskId, hintText){
-  showTaskHint(hintText || '任务中...');
-  var t0 = Date.now(), POLL_MAX_MS = 15 * 60 * 1000;
+  hintText = hintText || '任务中...';
+  var t0 = Date.now(), POLL_MAX_MS = 20 * 60 * 1000, fails = 0, wake = null;
+  function sleep(ms){ return new Promise(function(r){ wake = r; setTimeout(r, ms); }); }
+  // 手机切到后台再回来 / 网络恢复时，立刻补查一次，不用干等下一个 1.2 秒
+  var onWake = function(){ if (!document.hidden && wake) wake(); };
+  document.addEventListener('visibilitychange', onWake);
+  window.addEventListener('online', onWake);
+  __hintPolls++;
+  showTaskHint(hintText);
   try {
     for(;;){
-      var t = await api('/api/task/' + taskId);
+      var t;
+      try {
+        // 每次查询最多等 10 秒：网络切换后旧连接会一直挂起，没有超时就永远卡在这里
+        t = await api('/api/task/' + taskId, { timeoutMs: 10000 });
+        fails = 0;
+      } catch(e){
+        var m = (e && e.message) || '';
+        if (/任务不存在|已过期/.test(m)) throw new Error('任务已丢失（服务可能刚重启），请重新扫描');
+        if (/未登录|登录已过期/.test(m)) throw e;
+        // 网络抖动 / 502（服务重启中）/ 请求超时：容忍一阵子再放弃
+        if (++fails >= 10) throw new Error('与服务的连接中断，请检查网络后重试');
+        await sleep(1500);
+        continue;
+      }
       if (t.status !== 'running') return t;
-      if (Date.now() - t0 > POLL_MAX_MS) throw new Error('任务超时（15 分钟未完成），请稍后重试');
-      await new Promise(function(r){ setTimeout(r, 1200); });
+      var el = Math.floor((Date.now() - t0) / 1000);
+      if (el * 1000 > POLL_MAX_MS) throw new Error('等待超过 20 分钟，已停止等待（任务可能仍在后台运行，稍后再查看结果）');
+      updateTaskHint(hintText + '  ' + fmtElapsed(el));
+      await sleep(1200);
     }
   } finally {
-    hideTaskHint();
+    document.removeEventListener('visibilitychange', onWake);
+    window.removeEventListener('online', onWake);
+    __hintPolls = Math.max(0, __hintPolls - 1);
+    if (__hintPolls === 0) hideTaskHint();   // 无论成功/失败/异常都必须收起
   }
 }
+// 从 bfcache / 后台恢复页面时，如果已经没有在跑的轮询，确保提示条不会残留
+window.addEventListener('pageshow', function(){ if (__hintPolls === 0) hideTaskHint(); });
 function statusOk(txt){ return '<span class="status-badge ok">' + icon('check') + txt + '</span>'; }
 function statusNo(txt){ return '<span class="status-badge no">' + icon('x') + txt + '</span>'; }
 function statusDim(txt){ return '<span class="status-badge dim">' + txt + '</span>'; }
@@ -2872,7 +2915,7 @@ function setEmbyScope(sc){
 }
 var embyPage = 1;
 var embyLoaded = false;
-function ensureEmbyLoaded(){ if (!embyLoaded) loadEmbyLibrary(false, false); }
+function ensureEmbyLoaded(){ if (!embyLoaded) loadEmbyLibrary(false, true, true); }   // 先读上次对照好的缓存，秒开
 var tmdbProgressTimer = null;
 
 async function pollTmdbProgress(){
@@ -2906,7 +2949,7 @@ function startTmdbProgressWatch(){
   pollTmdbProgress();
 }
 
-async function loadEmbyLibrary(force, withTmdb){
+async function loadEmbyLibrary(force, withTmdb, cacheOnly){
   if (force && withTmdb) {
     startTmdbProgressWatch();
     try {
@@ -2917,12 +2960,15 @@ async function loadEmbyLibrary(force, withTmdb){
       }
     } catch(e) {}
   }
-  var msg = withTmdb ? '正在拉取 Emby + TMDB（首次可能较慢）...' : '正在拉取 Emby 库...';
+  var msg = cacheOnly ? '正在读取片库缓存...' : (withTmdb ? '正在拉取 Emby + TMDB（首次可能较慢）...' : '正在拉取 Emby 库...');
   $('embyList').innerHTML = '<div class="list-empty">' + msg + '</div>';
   try {
-    var url = '/api/emby/library?force=' + (force ? 1 : 0) + '&with_tmdb=' + (withTmdb ? 1 : 0);
+    var url = '/api/emby/library?force=' + (force ? 1 : 0) + '&with_tmdb=' + (withTmdb ? 1 : 0) + (cacheOnly ? '&cache_only=1' : '');
     var r = await api(url);
+    // 没有对照缓存（首次使用 / 缓存太旧）：退回快速模式，只拉 Emby 库，不触发 TMDB 对照
+    if (cacheOnly && r.status === 'nocache') return loadEmbyLibrary(false, false);
     if (r.status !== 'success') throw new Error(r.message || '失败');
+    if (cacheOnly && r.ts) toast('已载入片库缓存（' + fmtAgo(r.ts) + '对照），需要最新数据请点「对照 TMDB」', 'success', 3200);
     embyData.series = r.series || [];
     embyData.movies = r.movies || [];
     embyData.stats = r.stats || {};
@@ -4045,6 +4091,51 @@ async function testTelegram(){
 }
 
 /* ═══════════ 治理计划历史 ═══════════ */
+var PLAN_TTL_MS = 2 * 3600 * 1000;
+var PLAN_STATE = {
+  pending:   { label: '待执行',   color: '#d97706', bg: 'rgba(217,119,6,.13)' },
+  executing: { label: '执行中',   color: '#2563eb', bg: 'rgba(37,99,235,.13)' },
+  done:      { label: '已完成',   color: '#16a34a', bg: 'rgba(22,163,74,.13)' },
+  failed:    { label: '执行失败', color: '#dc2626', bg: 'rgba(220,38,38,.13)' },
+  expired:   { label: '已过期',   color: '#6b7280', bg: 'rgba(107,114,128,.15)' }
+};
+var PLAN_KIND = { loc: '删本地', shr: '淘汰分享', keep: '受保护', exempt: '白名单豁免' };
+function planStateOf(p){
+  var st = p.state || 'pending';
+  if (st === 'pending' && p.ts && Date.now() - p.ts * 1000 > PLAN_TTL_MS) st = 'expired';
+  return st;
+}
+function planChip(text, color, bg){
+  return '<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;color:' + color + ';background:' + bg + '">' + text + '</span>';
+}
+function planStateChip(st){
+  var m = PLAN_STATE[st] || PLAN_STATE.expired;
+  return planChip(esc(m.label), m.color, m.bg);
+}
+function planStatChips(s){
+  s = s || {};
+  var defs = [
+    ['待删本地', s.loc, '#d97706', 'rgba(217,119,6,.13)'],
+    ['淘汰分享', s.shr, '#dc2626', 'rgba(220,38,38,.12)'],
+    ['受保护',   s.keep, '#16a34a', 'rgba(22,163,74,.12)'],
+    ['白名单豁免', s.exempt, '#2563eb', 'rgba(37,99,235,.12)']
+  ];
+  return defs.map(function(d){
+    var n = d[1] || 0;
+    return n > 0 ? planChip(d[0] + ' ' + n, d[2], d[3]) : planChip(d[0] + ' 0', 'var(--text-dim)', 'transparent');
+  }).join(' ');
+}
+function fmtPlanTime(ts){
+  var d = new Date(ts * 1000), p2 = function(n){ return n < 10 ? '0' + n : '' + n; };
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+}
+function fmtAgo(ts){
+  var sec = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (sec < 60) return '刚刚';
+  if (sec < 3600) return Math.floor(sec / 60) + ' 分钟前';
+  if (sec < 86400) return Math.floor(sec / 3600) + ' 小时前';
+  return Math.floor(sec / 86400) + ' 天前';
+}
 async function loadPlans(){
   var limit = parseInt($('plansLimit').value) || 20;
   if (limit < 1) limit = 1;
@@ -4054,26 +4145,28 @@ async function loadPlans(){
     var r = await api('/api/plans?limit=' + limit);
     var list = r.plans || [];
     if (!list.length) {
-      $('plansList').innerHTML = '<div class="list-empty">暂无 Plan 记录</div>';
+      $('plansList').innerHTML = '<div class="list-empty">暂无治理计划记录</div>';
       return;
     }
-    var stateCls = { pending: 'amber', executing: 'blue', done: 'green', failed: 'red', expired: 'gray' };
     $('plansList').innerHTML = list.map(function(p){
-      var ts = p.ts ? new Date(p.ts * 1000).toLocaleString('zh-CN') : '-';
-      var execTs = p.executed_at ? new Date(p.executed_at * 1000).toLocaleString('zh-CN') : '';
-      var st = p.state || 'pending';
-      var stCls = stateCls[st] || 'gray';
-      var s = p.stats || {};
-      var statsLine = '<span class="green">loc ' + (s.loc||0) + '</span> · <span class="red">shr ' + (s.shr||0) + '</span> · keep ' + (s.keep||0) + ' · exempt ' + (s.exempt||0);
-      return '<div class="panel" style="padding:14px;margin-bottom:12px">'
-        + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">'
-        + '<div style="font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-mid)">plan_' + esc(p.id) + '</div>'
-        + '<div><span class="' + stCls + '" style="font-weight:600">' + esc(st) + '</span></div>'
+      var st = planStateOf(p), s = p.stats || {};
+      var empty = !(s.loc || s.shr);
+      var note = '';
+      if (st === 'done' && p.executed_at) note = '执行于 ' + fmtPlanTime(p.executed_at);
+      else if (st === 'pending' && empty) note = '本次扫描没有待清理项';
+      else if (st === 'pending') note = '尚未执行，' + Math.max(0, Math.ceil((PLAN_TTL_MS - (Date.now() - p.ts * 1000)) / 60000)) + ' 分钟后过期';
+      else if (st === 'expired') note = empty ? '无待清理项' : '超过 2 小时未执行，已作废';
+      return '<div class="panel" style="padding:14px 16px;margin-bottom:12px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">'
+        +   '<div><span style="font-weight:700;font-size:15px">' + (p.ts ? fmtPlanTime(p.ts) : '-') + '</span>'
+        +   '<span style="font-size:12px;color:var(--text-dim);margin-left:8px">' + (p.ts ? fmtAgo(p.ts) : '') + '</span></div>'
+        +   planStateChip(st)
         + '</div>'
-        + '<div style="font-size:12px;color:var(--text-mid);margin-bottom:6px">生成: ' + esc(ts) + (execTs ? '　执行: ' + esc(execTs) : '') + '</div>'
-        + '<div style="font-size:12px;margin-bottom:10px">' + statsLine + '</div>'
-        + '<div style="display:flex;gap:8px">'
-        + '<button class="btn sm gray" onclick="showPlanDetail(&quot;' + esc(p.id) + '&quot;)">查看详情</button>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' + planStatChips(s) + '</div>'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+        +   '<div style="font-size:12px;color:var(--text-mid)">' + esc(note)
+        +   '<div style="font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text-dim);margin-top:2px">plan_' + esc(p.id) + '</div></div>'
+        +   '<button class="btn sm gray" onclick="showPlanDetail(&quot;' + esc(p.id) + '&quot;)">查看详情</button>'
         + '</div>'
         + '</div>';
     }).join('');
@@ -4087,28 +4180,37 @@ async function showPlanDetail(planId){
     var r = await api('/api/plan/' + planId);
     var p = r.plan || {};
     var actions = p.actions || [];
-    var html = '<h3>' + icon('bookmark') + 'Plan 详情 plan_' + esc(p.id) + '</h3>';
-    html += '<div class="meta-row"><span class="k">状态</span><span class="v">' + esc(p.state || '-') + '</span></div>';
-    html += '<div class="meta-row"><span class="k">生成时间</span><span class="v">' + (p.ts ? new Date(p.ts*1000).toLocaleString('zh-CN') : '-') + '</span></div>';
+    var st = planStateOf(p);
+    var html = '<h3>' + icon('bookmark') + '治理计划详情</h3>';
+    html += '<div class="meta-row"><span class="k">状态</span><span class="v">' + planStateChip(st) + '</span></div>';
+    html += '<div class="meta-row"><span class="k">生成时间</span><span class="v">' + (p.ts ? fmtPlanTime(p.ts) + '（' + fmtAgo(p.ts) + '）' : '-') + '</span></div>';
     if (p.executed_at) {
-      html += '<div class="meta-row"><span class="k">执行时间</span><span class="v">' + new Date(p.executed_at*1000).toLocaleString('zh-CN') + '</span></div>';
+      html += '<div class="meta-row"><span class="k">执行时间</span><span class="v">' + fmtPlanTime(p.executed_at) + '</span></div>';
     }
-    var st = p.stats || {};
-    html += '<div class="meta-row"><span class="k">统计</span><span class="v">loc ' + (st.loc||0) + ' / shr ' + (st.shr||0) + ' / keep ' + (st.keep||0) + ' / exempt ' + (st.exempt||0) + '</span></div>';
-    html += '<h4 style="margin:16px 0 8px;font-size:13px">Actions (' + actions.length + ')</h4>';
-    html += '<div style="max-height:360px;overflow-y:auto;background:var(--surface-hover);border-radius:10px;padding:10px">';
-    actions.slice(0, 100).forEach(function(a){
-      html += '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">';
-      html += '<div><span class="' + (a.kind==='loc'?'amber':'red') + '">' + esc(a.kind) + '</span> · ' + esc(a.title || '') + (a.season != null ? ' S' + String(a.season).padStart(2,'0') : '') + '</div>';
-      html += '<div style="font-family:ui-monospace,monospace;font-size:10px;color:var(--text-dim)">' + esc(a.action_id) + '</div>';
-      html += '<div style="color:var(--text-mid);font-size:11px">' + esc(a.reason_label || a.reason || '') + '</div>';
-      html += '</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0">' + planStatChips(p.stats) + '</div>';
+    // 按类型分组：先看会删本地的，再看淘汰分享的
+    var groups = ['loc', 'shr', 'keep', 'exempt'], shown = 0, LIMIT = 100;
+    html += '<div style="max-height:380px;overflow-y:auto;background:var(--surface-hover);border-radius:10px;padding:4px 10px">';
+    groups.forEach(function(k){
+      var items = actions.filter(function(a){ return a.kind === k; });
+      if (!items.length) return;
+      html += '<div style="font-size:12px;font-weight:700;margin:10px 0 4px;color:var(--text-mid)">' + PLAN_KIND[k] + '（' + items.length + '）</div>';
+      items.forEach(function(a){
+        if (shown >= LIMIT) return;
+        shown++;
+        html += '<div style="padding:7px 0;border-bottom:1px solid var(--border)">';
+        html += '<div style="font-size:13px;font-weight:600">' + esc(a.title || a.action_id || '') + (a.season != null ? '<span style="font-weight:400;color:var(--text-mid)"> · 第 ' + a.season + ' 季</span>' : '') + '</div>';
+        html += '<div style="color:var(--text-mid);font-size:12px;margin-top:2px">' + esc(a.reason_label || a.reason || '') + '</div>';
+        html += '</div>';
+      });
     });
+    if (!actions.length) html += '<div class="list-empty">这份计划没有待处理项</div>';
+    if (actions.length > shown) html += '<div style="font-size:11px;color:var(--text-dim);padding:8px 0">仅显示前 ' + LIMIT + ' 条，共 ' + actions.length + ' 条</div>';
     html += '</div>';
     html += '<div style="margin-top:16px;text-align:right"><button class="btn gray" onclick="closeModal()">关闭</button></div>';
     openModal(html);
   } catch(e){
-    toast('加载 Plan 失败: ' + e.message, 'error');
+    toast('加载治理计划失败: ' + e.message, 'error');
   }
 }
 

@@ -4,6 +4,7 @@ media_agent.core —— 纯函数层
 设计约束：不做任何 IO，不读取环境变量，给定相同输入必然返回相同输出。
 """
 import re
+from functools import lru_cache
 from typing import Iterable, Optional, Sequence, Tuple
 
 # ═══════════════════ 正则常量 ═══════════════════
@@ -40,6 +41,7 @@ def esc(s) -> str:
     """Markdown 转义"""
     return re.sub(r'([_*`\[])', r'\\\1', str(s))
 
+@lru_cache(maxsize=8192)
 def parse_season_dir(name: str) -> Optional[int]:
     """解析季目录名"""
     name = name.strip()
@@ -64,6 +66,7 @@ def get_ep(name: str, parent_name: str = '') -> Optional[Tuple[int, int]]:
         return (sd, ep) if ep is not None else None
     return (1, ep) if ep is not None else None
 
+@lru_cache(maxsize=16384)
 def title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:
     """返回 (唯一key, 展示名, base, 年份)"""
     t = RE_TMDB.search(folder)

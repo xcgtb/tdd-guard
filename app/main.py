@@ -761,7 +761,15 @@ def api_tmdb_progress():
 
 
 @app.get('/api/emby/library', dependencies=[Depends(auth)])
-def api_emby_library(force: int = 0, with_tmdb: int = 1):
+def api_emby_library(force: int = 0, with_tmdb: int = 1, cache_only: int = 0):
+    # 只读缓存模式（进入「片库映射」页时用）：有 24 小时内的 TMDB 对照缓存就秒回，
+    # 没有就返回 nocache，绝不因为打开页面而触发对照
+    if cache_only:
+        cached = engine.read_emby_lib_cache(max_age=24 * 3600)
+        if cached:
+            cached['from_cache'] = True
+            return cached
+        return {'status': 'nocache'}
     # 快速模式：不查 TMDB
     if not with_tmdb:
         return engine.action_emby_library(Args(force=False, with_tmdb=False))

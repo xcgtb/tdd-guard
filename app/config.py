@@ -25,6 +25,7 @@ DEFAULTS = {
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
     'strategy_exempt_keywords':      '',
     'strategy_special_action':       'compare', # compare | ignore | delete  —— 特别篇 S00 策略
+    'ingest_quiet_minutes':          '15',      # 入库静默期（分钟）：目录 15 分钟内有新入库的标题暂不进入治理队列；0 = 关闭
 
     # 入库监控
     'ingest_enabled':        '1',      # 后台入库监控开关
@@ -92,14 +93,32 @@ def is_masked_value(v: str) -> bool:
     return False
 
 
-def load_config() -> dict:
-    cfg = DEFAULTS.copy()
+# 按文件 mtime 缓存：扫描双库时每个文件都会取一次策略，
+# 以前每次都读盘 + 解析 JSON，8 万个 STRM 就是 8 万次读盘，是扫描慢的主因之一。
+_CFG_CACHE = {'sig': None, 'data': None}
+
+
+def _cfg_signature():
     try:
-        data = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
-        if isinstance(data, dict):
-            cfg.update({k: str(v) for k, v in data.items() if v is not None})
-    except (OSError, ValueError):
-        pass
+        st = CONFIG_FILE.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def load_config() -> dict:
+    sig = _cfg_signature()
+    if _CFG_CACHE['data'] is None or _CFG_CACHE['sig'] != sig:
+        base = DEFAULTS.copy()
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+            if isinstance(data, dict):
+                base.update({k: str(v) for k, v in data.items() if v is not None})
+        except (OSError, ValueError):
+            pass
+        _CFG_CACHE['sig'] = sig
+        _CFG_CACHE['data'] = base
+    cfg = dict(_CFG_CACHE['data'])
     # yml/.env 显式设置的连接类配置始终生效，优先级高于历史落盘值
     for k, env_name in ENV_OVERRIDE_KEYS.items():
         v = os.environ.get(env_name)
@@ -119,6 +138,7 @@ def save_config(cfg: dict) -> dict:
     tmp = CONFIG_FILE.with_suffix('.tmp')
     tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding='utf-8')
     tmp.replace(CONFIG_FILE)
+    _CFG_CACHE['data'] = None  # 落盘后强制下次重新读取
     return clean
 
 

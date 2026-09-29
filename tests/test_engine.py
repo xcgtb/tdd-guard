@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # 在 import engine 之前把三个媒体根目录和数据目录都指到临时目录，
@@ -29,6 +30,8 @@ os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
 os.environ['AGENT_DATA'] = str(_TMP / 'data')
 os.environ['TMDB_KEY'] = ''
 os.environ['TG_BOT_TOKEN'] = ''
+# 测试里的 STRM 都是刚创建的，先关掉「入库静默期」，静默期本身在 TestIngestQuietPeriod 里单独测
+os.environ['INGEST_QUIET_MINUTES'] = '0'
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
 import engine  # noqa: E402
@@ -714,3 +717,90 @@ class TestScanSingleTraversal:
         _strm(engine.L_ROOT, '缓存失效剧 (2020)/Season 01', 'E01.1080p.strm')
         engine.action_inter_check(self._Args())
         assert engine._lib_cache == {}
+
+
+# ═══════════════════ 入库静默期 ═══════════════════
+def _age_tree(root: Path, seconds: int = 3600):
+    """把 root 下所有目录和文件的 mtime 改到 seconds 秒之前（模拟"早就入库完成"）"""
+    t = time.time() - seconds
+    for dp, _dn, fns in os.walk(root):
+        os.utime(dp, (t, t))
+        for fn in fns:
+            os.utime(os.path.join(dp, fn), (t, t))
+
+
+class _QuietEnv:
+    """临时把静默期设成 15 分钟，测试结束恢复成 0"""
+    def __enter__(self):
+        os.environ['INGEST_QUIET_MINUTES'] = '15'
+        engine._invalidate_lib_cache()
+
+    def __exit__(self, *exc):
+        os.environ['INGEST_QUIET_MINUTES'] = '0'
+        engine._invalidate_lib_cache()
+
+
+class TestIngestQuietPeriod:
+    def test_recent_movie_is_silently_skipped_then_picked_up(self):
+        """入库不满 15 分钟的电影：静默跳过，不出现在清单里；过了静默期自然纳入"""
+        _reset_libs()
+        _patch_strategy({})
+        _strm(engine.L_ROOT, '静默电影 (2021)', '静默电影.1080p.strm')
+        _strm(engine.S_ROOT, '静默电影 (2021)', '静默电影.2160p.strm')
+        with _QuietEnv():
+            assert _acts_for_title(engine.build_plan(), '静默电影') == []
+            assert engine._QUIET_LAST['n'] >= 1
+            _age_tree(engine.L_ROOT); _age_tree(engine.S_ROOT)
+            engine._invalidate_lib_cache()
+            acts = _acts_for_title(engine.build_plan(), '静默电影')
+            assert len(acts) == 1 and acts[0].kind == 'loc'
+
+    def test_partially_ingested_series_is_not_judged(self):
+        """还没入完的剧（分享刚入 3 集、本地已有 6 集）不能被判成"分享落后 → 淘汰分享"，
+        静默期过后才允许参与治理。"""
+        _reset_libs()
+        _patch_strategy({})
+        for e in range(1, 7):
+            _strm(engine.L_ROOT, '入库中的剧 (2026)/Season 01', f'入库中的剧.S01E{e:02d}.1080p.strm')
+        _age_tree(engine.L_ROOT)                      # 本地早就入完了
+        for e in range(1, 4):                          # 分享这边刚入了 3 集
+            _strm(engine.S_ROOT, '入库中的剧 (2026)/Season 01', f'入库中的剧.S01E{e:02d}.1080p.strm')
+        with _QuietEnv():
+            assert _acts_for_title(engine.build_plan(), '入库中的剧') == []
+            _age_tree(engine.S_ROOT)                   # 静默期过后
+            engine._invalidate_lib_cache()
+            assert _acts_for_title(engine.build_plan(), '入库中的剧') != []
+
+    def test_only_recent_titles_are_skipped(self):
+        """静默只针对刚入库的标题，同一次扫描里早已入库的标题照常治理"""
+        _reset_libs()
+        _patch_strategy({})
+        _strm(engine.L_ROOT, '老电影 (2019)', '老电影.1080p.strm')
+        _strm(engine.S_ROOT, '老电影 (2019)', '老电影.2160p.strm')
+        _age_tree(engine.L_ROOT); _age_tree(engine.S_ROOT)
+        _strm(engine.L_ROOT, '新电影 (2026)', '新电影.1080p.strm')
+        _strm(engine.S_ROOT, '新电影 (2026)', '新电影.2160p.strm')
+        with _QuietEnv():
+            acts = engine.build_plan()
+            assert len(_acts_for_title(acts, '老电影')) == 1
+            assert _acts_for_title(acts, '新电影') == []
+
+    def test_recent_duplicate_versions_are_skipped(self):
+        """库内多版本去重也遵守静默期：刚入库的多版本先不动"""
+        _reset_libs()
+        _patch_strategy({})
+        _strm(engine.S_ROOT, '多版本片 (2020)', '多版本片.720p.strm')
+        _strm(engine.S_ROOT, '多版本片 (2020)', '多版本片.2160p.strm')
+        with _QuietEnv():
+            assert _acts_for_title(engine.build_plan(), '多版本片') == []
+            _age_tree(engine.S_ROOT)
+            engine._invalidate_lib_cache()
+            assert _acts_for_title(engine.build_plan(), '多版本片') != []
+
+    def test_zero_minutes_disables_the_filter(self):
+        """静默期设为 0 = 关闭，刚创建的文件也立即参与治理"""
+        _reset_libs()
+        _patch_strategy({})
+        _strm(engine.L_ROOT, '关闭静默 (2022)', '关闭静默.1080p.strm')
+        _strm(engine.S_ROOT, '关闭静默 (2022)', '关闭静默.2160p.strm')
+        assert len(_acts_for_title(engine.build_plan(), '关闭静默')) == 1

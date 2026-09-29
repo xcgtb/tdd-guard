@@ -5,6 +5,7 @@ import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, ha
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 try:
@@ -128,9 +129,13 @@ def _ep(p: Path):
 def _best(files):
     return best_score(f.name for f in files)
 
-def _exempt_hit(name):
-    kws = _exempt_keywords()
-    return [k for k in kws if k in str(name)]
+def _exempt_hit(name, kws=None):
+    if kws is None:
+        kws = _exempt_keywords()
+    if not kws:
+        return []
+    s = str(name)
+    return [k for k in kws if k in s]
 
 
 def _nat_key(text):
@@ -356,15 +361,22 @@ class Lib:
         self.by_base = defaultdict(set)
         self.strm_count = 0
         if not root.exists(): return
-        for f in root.rglob('*.strm'):
-            self.strm_count += 1
-            folder = f.parent.parent.name if parse_season_dir(f.parent.name) is not None else f.parent.name
+        for dirpath, _dirs, names in os.walk(str(root)):
+            strms = sorted(n for n in names if n.endswith('.strm'))
+            if not strms:
+                continue
+            d = Path(dirpath)
+            pname = d.name
+            folder = d.parent.name if parse_season_dir(pname) is not None else pname
             key, disp, base, year = title_key(folder)
             self.meta[key] = (disp, base, year)
             self.by_base[base].add(key)
-            ep = _ep(f)
-            if ep: self.tv[key][ep[0]].append(f)
-            else: self.mov[key].append(f)
+            for n in strms:
+                self.strm_count += 1
+                f = d / n
+                ep = get_ep(n, pname)
+                if ep: self.tv[key][ep[0]].append(f)
+                else: self.mov[key].append(f)
 
     def find(self, meta, container):
         key, (_, base, year) = meta
@@ -1129,11 +1141,68 @@ def _group_exempt_acts(acts):
     return out
 
 
+# ═══════════════════ 入库静默期 ═══════════════════
+# 剧集/电影刚入库时往往只入了一部分（分享转存、STRM 还在陆续生成），
+# 此时对比双库会得到"分享仅 3 集、本地 6 集 → 淘汰分享"这类偏差结论。
+# 规则：一个标题（含双库、所有季）的任一目录在 ingest_quiet_minutes 分钟内有新增/变动，
+# 就整体不进入治理队列（静默跳过，不出现在清单里）；过了静默期再自然纳入。
+# 判定用目录 mtime（每个季目录只 stat 一次，几千次即可覆盖整库），不逐文件 stat。
+_QUIET_LAST = {'n': 0}
+
+
+def _ingest_quiet_minutes():
+    v = os.environ.get('INGEST_QUIET_MINUTES')  # 环境变量优先（测试用，也便于临时关闭）
+    if v is None:
+        v = _cfg.load_config().get('ingest_quiet_minutes', '15')
+    try:
+        m = int(float(str(v).strip()))
+    except (TypeError, ValueError):
+        m = 15
+    return max(0, min(m, 24 * 60))
+
+
+class _QuietGate:
+    def __init__(self, minutes=None):
+        self.minutes = _ingest_quiet_minutes() if minutes is None else int(minutes)
+        self.cutoff = time.time() - self.minutes * 60
+        self._dirs = {}
+        self.skipped = 0
+
+    def _dir_recent(self, d):
+        v = self._dirs.get(d)
+        if v is None:
+            try:
+                v = os.stat(d).st_mtime >= self.cutoff
+            except OSError:
+                v = False
+            self._dirs[d] = v
+        return v
+
+    def skip(self, *file_groups):
+        """任一文件所在目录在静默期内有变动 → True（调用方应静默跳过该标题）"""
+        if self.minutes <= 0:
+            return False
+        for files in file_groups:
+            for f in files:
+                if self._dir_recent(os.path.dirname(os.fspath(f))):
+                    self.skipped += 1
+                    return True
+        return False
+
+
 def _build_plan_with_libs():
     """生成治理计划，同时把本次用到的两个 Lib 一并返回，
     供调用方直接取 strm_count 等数据，避免为了计数再对双库做一遍全量 rglob。"""
-    S, L = _get_lib(S_ROOT), _get_lib(L_ROOT)
+    t_start = time.time()
+    # 两个库互不相干，并行遍历：磁盘/网络挂载慢时能把等待时间叠在一起
+    with ThreadPoolExecutor(max_workers=2) as _ex:
+        _fs, _fl = _ex.submit(_get_lib, S_ROOT), _ex.submit(_get_lib, L_ROOT)
+        S, L = _fs.result(), _fl.result()
+    log.info('双库遍历完成：分享 %d / 本地 %d 个 STRM，耗时 %.1fs',
+             S.strm_count, L.strm_count, time.time() - t_start)
     s = _strategy()
+    kws = _exempt_keywords()
+    gate = _QuietGate()
     acts = []
 
     for key, s_files in S.mov.items():
@@ -1142,11 +1211,14 @@ def _build_plan_with_libs():
         if not lk: continue
         disp, l_files = S.meta[key][0], L.mov[lk]
 
-        hit_kws = _exempt_hit(disp)
+        if gate.skip(s_files, l_files):  # 入库未满静默期：暂不治理
+            continue
+
+        hit_kws = _exempt_hit(disp, kws)
         if not hit_kws:
             for files in (s_files, l_files):
                 for f in files:
-                    hit_kws = _exempt_hit(str(f))
+                    hit_kws = _exempt_hit(str(f), kws)
                     if hit_kws: break
                 if hit_kws: break
         if hit_kws:
@@ -1171,12 +1243,17 @@ def _build_plan_with_libs():
         lk = L.find((key, S.meta[key]), L.tv)
         l_seasons = L.tv[lk] if lk else {}
 
-        hit_kws = _exempt_hit(disp)
+        # 入库未满静默期：只要任意一季（任一侧）刚有变动，整部剧暂不治理，
+        # 避免"还没入完"的剧被当成缺集/落后处理
+        if gate.skip(*s_seasons.values(), *l_seasons.values()):
+            continue
+
+        hit_kws = _exempt_hit(disp, kws)
         if not hit_kws:
             for files_map in (s_seasons, l_seasons):
                 for files in files_map.values():
                     for f in files:
-                        hit_kws = _exempt_hit(str(f))
+                        hit_kws = _exempt_hit(str(f), kws)
                         if hit_kws: break
                     if hit_kws: break
                 if hit_kws: break
@@ -1261,7 +1338,11 @@ def _build_plan_with_libs():
             _emit_season_act(acts, disp, sn, s_files, l_files)
 
     # ── 库内多版本去重：同片/同集存在多份 strm 时，只留画质最优的一份 ──
-    _dedupe_lib_versions(acts, L, S)
+    _dedupe_lib_versions(acts, L, S, gate, kws)
+    _QUIET_LAST['n'] = gate.skipped
+    if gate.skipped:
+        log.info('入库未满 %d 分钟，静默跳过 %d 个标题（不进入本次治理队列）', gate.minutes, gate.skipped)
+    log.info('治理计划生成完成：%d 项，总耗时 %.1fs', len(acts), time.time() - t_start)
     return acts, S, L
 
 
@@ -1269,13 +1350,17 @@ def build_plan():
     return _build_plan_with_libs()[0]
 
 
-def _dedupe_lib_versions(acts, L, S):
+def _dedupe_lib_versions(acts, L, S, gate=None, kws=None):
     """库内多版本去重（洗版/追更残留），只在本库内部对比，不跨库拆分：
       - 电影：同一 key（同 tmdb）下多份 strm → 留最优一份；
       - 剧集：同一季内同一集号多份 strm → 每集各留最优一份。
     已被库间治理覆盖（整组删除）的标题跳过；白名单跳过；S00 不参与。
     本地低版本走 CD2 联动删源（腾空间），分享低版本直接删 strm。
     不同 tmdb（如正片 vs 导演版）是不同 key，天然互不影响。"""
+    if kws is None:
+        kws = _exempt_keywords()
+    if gate is None:
+        gate = _QuietGate()
     covered = {(a.kind, a.media_key) for a in acts if a.kind in ('loc', 'shr')}
     for lib, kind in ((L, 'loc'), (S, 'shr')):
         # 电影
@@ -1283,8 +1368,10 @@ def _dedupe_lib_versions(acts, L, S):
             if len(files) < 2:
                 continue
             disp = lib.meta[key][0]
+            if gate.skip(files):  # 入库未满静默期
+                continue
             # 白名单：标题或任一文件路径命中都豁免（Season NNN 类目录标题不含关键字，必须查路径）
-            if _exempt_hit(disp) or any(_exempt_hit(str(f)) for f in files):
+            if _exempt_hit(disp, kws) or any(_exempt_hit(str(f), kws) for f in files):
                 continue
             if (kind, f'movie:{disp}') in covered:
                 continue
@@ -1303,7 +1390,9 @@ def _dedupe_lib_versions(acts, L, S):
         for key, seasons in lib.tv.items():
             disp = lib.meta[key][0]
             all_files = [f for fl in seasons.values() for f in fl]
-            if _exempt_hit(disp) or any(_exempt_hit(str(f)) for f in all_files):
+            if gate.skip(all_files):  # 入库未满静默期
+                continue
+            if _exempt_hit(disp, kws) or any(_exempt_hit(str(f), kws) for f in all_files):
                 continue
             for sn, files in seasons.items():
                 if sn <= 0 or len(files) < 2:
@@ -1641,6 +1730,7 @@ def action_inter_check(args):
         'protected_items': [_act_to_dict(a) for a in keep],
         'exempted_items':  _group_exempt_acts(exempted),
         'exempted_count':  len(exempted),
+        'quiet_skipped':   _QUIET_LAST['n'],
     }
     save_latest_scan(pid, result)
     return result

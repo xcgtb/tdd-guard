@@ -26,6 +26,7 @@ os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
 os.environ['AGENT_DATA'] = str(_TMP / 'data')
 os.environ['TMDB_KEY'] = ''
 os.environ['TG_BOT_TOKEN'] = ''
+os.environ['INGEST_QUIET_MINUTES'] = '0'
 os.environ['WEB_USER'] = 'admin'
 os.environ['WEB_PASSWORD'] = 'test-pass-123'
 
