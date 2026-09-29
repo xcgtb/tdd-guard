@@ -1180,39 +1180,68 @@ window.addEventListener('unhandledrejection', function(e){
 
       <!-- 治理总览 -->
       <section class="tab active" id="tab-dashboard">
-        <div class="cards">
-          <div class="card"><div class="label" data-icon="database">网盘影视库</div><div class="value blue" id="stat-local">-</div><div class="sub">115 规范源文件</div></div>
-          <div class="card"><div class="label" data-icon="share">分享影视库</div><div class="value" id="stat-share">-</div><div class="sub">免转存 STRM 资源</div></div>
-        </div>
-        <div class="cards">
-          <div class="card"><div class="label" data-icon="server">Emby 服务</div><div class="value" id="svc-emby" style="font-size:16px;margin-top:6px">检查中…</div><div class="sub" id="svc-emby-host">—</div></div>
-          <div class="card"><div class="label" data-icon="globe">TMDB 配置</div><div class="value" id="svc-tmdb" style="font-size:16px;margin-top:6px">检查中…</div><div class="sub" id="svc-tmdb-sub">—</div></div>
-        </div>
-        <div class="cards">
-          <div class="card clickable" onclick="switchTab('subscribe')">
-            <div class="label" data-icon="bell">追更订阅</div>
-            <div class="value indigo" id="stat-sub" style="font-size:16px;margin-top:6px">0 部</div>
-            <div class="sub" id="stat-sub-sub">点击查看</div>
+        <div class="dash-hero">
+          <div class="dh-main">
+            <div class="dh-label" data-icon="database">STRM 总量</div>
+            <div class="dh-big" id="dash-total">-</div>
+            <div class="dh-split"><i id="dash-split-l" style="width:0"></i><i id="dash-split-s" style="width:0"></i></div>
+            <div class="dh-legend"><span><b class="dd l"></b>网盘 <em id="stat-local">-</em></span><span><b class="dd s"></b>分享 <em id="stat-share">-</em></span></div>
           </div>
-          <div class="card clickable" onclick="switchTab('morning')">
-            <div class="label" data-icon="sun">每日晨报</div>
-            <div class="value amber" id="stat-morning" style="font-size:16px;margin-top:6px">未开启</div>
-            <div class="sub" id="stat-morning-sub">点击设置</div>
+          <div class="dh-nums">
+            <div><em id="dash-series">-</em><span>剧集</span></div>
+            <div><em id="dash-eps">-</em><span>总集数</span></div>
+            <div><em id="dash-movies">-</em><span>电影</span></div>
+          </div>
+          <div class="dh-pills">
+            <div class="dpill"><div><span class="k">Emby</span><small id="svc-emby-host">—</small></div><span id="svc-emby">检查中…</span></div>
+            <div class="dpill"><div><span class="k">TMDB</span><small id="svc-tmdb-sub">—</small></div><span id="svc-tmdb">检查中…</span></div>
           </div>
         </div>
-        <div class="cards">
-          <div class="card clickable" onclick="switchTab('daily')">
-            <div class="label" data-icon="file">24H 入库</div>
-            <div class="value green" id="stat-ingest-mov" style="font-size:16px;margin-top:6px">-</div>
-            <div class="sub" id="stat-ingest-sub">电影 / 剧集</div>
-          </div>
-          <div class="card"><div class="label" data-icon="clock">入库缓存</div><div class="value indigo" style="font-size:16px;margin-top:6px" id="stat-ingest-age">—</div><div class="sub">后台自动刷新</div></div>
+
+        <div class="dash-strip">
+          <div class="ds" onclick="switchTab('daily')"><div class="k" data-icon="file">24H 入库</div><div class="v green" id="stat-ingest-mov">-</div><div class="s"><span id="stat-ingest-sub">电影 / 剧集</span> · <span id="stat-ingest-age">—</span></div></div>
+          <div class="ds" onclick="switchTab('subscribe')"><div class="k" data-icon="bell">追更订阅</div><div class="v indigo" id="stat-sub">0 部</div><div class="s" id="stat-sub-sub">点击查看</div></div>
+          <div class="ds" onclick="switchTab('morning')"><div class="k" data-icon="sun">每日晨报</div><div class="v amber" id="stat-morning">未开启</div><div class="s" id="stat-morning-sub">点击设置</div></div>
+          <div class="ds" onclick="switchTab('settings')"><div class="k" data-icon="shield">白名单</div><div class="v" id="dash-exempt">-</div><div class="s">规则设置里维护</div></div>
         </div>
+
         <div class="panel">
-          <h3 data-icon="database">总库分类统计</h3>
-          <div id="libStatsSummary" style="font-size:12px;color:var(--text-dim);margin-bottom:12px">加载中...</div>
-          <div class="cat-grid" id="libStatsGrid"><div class="list-empty">加载中...</div></div>
+          <div class="row-between"><h3 data-icon="alert">待处理</h3><span class="dash-note" id="dash-plan-note">—</span></div>
+          <div class="todo-grid">
+            <div class="todo loc" onclick="switchTab('governance')"><span class="k" data-icon="x">待删本地</span><b id="dash-loc">-</b></div>
+            <div class="todo shr" onclick="switchTab('governance')"><span class="k" data-icon="refresh">待淘汰分享</span><b id="dash-shr">-</b></div>
+            <div class="todo keep" onclick="switchTab('governance')"><span class="k" data-icon="check">受保护</span><b id="dash-keep">-</b></div>
+            <div class="todo exm" onclick="switchTab('governance')"><span class="k" data-icon="shield">白名单豁免</span><b id="dash-exm">-</b></div>
+          </div>
         </div>
+
+        <div class="dash-cols">
+          <div class="panel">
+            <h3 data-icon="activity">剧集健康度</h3>
+            <div class="hl-wrap">
+              <div class="ring" id="dash-ring"><b id="dash-ring-n">—</b><span>对齐率</span></div>
+              <div class="hl-legend" id="dash-health"><div class="list-empty">尚无对照缓存，去「片库映射」对照一次</div></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="row-between"><h3 data-icon="alert">缺集最多</h3><span class="dash-note" id="dash-miss-note"></span></div>
+            <div id="dash-missing"><div class="list-empty">尚无对照缓存</div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="row-between">
+            <h3 data-icon="database">总库分类统计</h3>
+            <div class="segmented dash-tabs" id="libStatTabs">
+              <button class="active" data-m="all" onclick="setLibStatMode('all')">两库合计</button>
+              <button data-m="local" onclick="setLibStatMode('local')">本地库</button>
+              <button data-m="share" onclick="setLibStatMode('share')">分享库</button>
+            </div>
+          </div>
+          <div id="libStatsSummary" style="font-size:12px;color:var(--text-dim);margin:2px 0 10px">加载中...</div>
+          <div class="cat-bars" id="libStatsGrid"><div class="list-empty">加载中...</div></div>
+        </div>
+
         <div class="panel">
           <h3 data-icon="zap">快速操作</h3>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -1366,62 +1395,41 @@ window.addEventListener('unhandledrejection', function(e){
 
       <!-- 片库映射 -->
       <section class="tab" id="tab-mapping">
-        <div class="panel">
-          <div class="row-between">
-            <h3 data-icon="map">片库映射 · Emby 库总览</h3>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn" onclick="loadEmbyLibrary(false, true)" data-icon="refresh">读缓存</button>
-              <button class="btn gray" onclick="loadEmbyLibrary(true, true)" data-icon="refresh">重新对照</button>
+        <div class="map-bar">
+          <div class="map-r1">
+            <div class="segmented" id="embyTypeFilter">
+              <button class="active" data-t="series" onclick="setEmbyType('series')">剧集 <i class="n" id="mc-series"></i></button>
+              <button data-t="movies" onclick="setEmbyType('movies')">电影 <i class="n" id="mc-movies"></i></button>
+            </div>
+            <input type="text" id="embySearch" class="map-search" placeholder="搜索片名..." oninput="embyPage = 1; renderEmbyList()">
+            <button class="btn gray" onclick="loadEmbyLibrary(false, true)" data-icon="refresh">读缓存</button>
+            <button class="btn" onclick="loadEmbyLibrary(true, true)" data-icon="refresh">重新对照</button>
           </div>
-          <p style="font-size:12px;color:#6b7280;line-height:1.7">
-          <div class="progress-wrap hidden" id="tmdbProgressWrap">
-            <div class="progress-bar"><div class="fill" id="tmdbProgressFill" style="width:0%"></div></div>
-            <div class="progress-info">
-              <span class="stage" id="tmdbProgressStage">准备中...</span>
-              <span id="tmdbProgressEta"></span>
+          <div class="map-r2">
+            <div class="segmented" id="embyFilter">
+              <button class="active" data-f="all" onclick="setEmbyFilter('all')">全部 <i class="n" id="mc-all"></i></button>
+              <button data-f="aligned" onclick="setEmbyFilter('aligned')"><b class="dd ok"></b>对齐 <i class="n" id="mc-aligned"></i></button>
+              <button data-f="missing" onclick="setEmbyFilter('missing')"><b class="dd err"></b>缺集 <i class="n" id="mc-missing"></i></button>
+              <button data-f="extra" onclick="setEmbyFilter('extra')"><b class="dd warn"></b>超集 <i class="n" id="mc-extra"></i></button>
+              <button data-f="ongoing" onclick="setEmbyFilter('ongoing')"><b class="dd info"></b>在更 <i class="n" id="mc-ongoing"></i></button>
+              <button data-f="unmatched" onclick="setEmbyFilter('unmatched')"><b class="dd dim"></b>未匹配 <i class="n" id="mc-unmatched"></i></button>
+            </div>
+            <div class="segmented" id="embyScopeFilter">
+              <button class="active" data-s="all" onclick="setEmbyScope('all')">本地+分享</button>
+              <button data-s="local" onclick="setEmbyScope('local')">仅本地</button>
+              <button data-s="share" onclick="setEmbyScope('share')">仅分享</button>
             </div>
           </div>
-            以 Emby 为数据源，对照 TMDB 逐部检查季集完整度。
-            <span class="green">绿=对齐</span> · <span class="red">红=缺集</span> ·
-            <span class="amber">黄=超集</span> · <span class="blue">蓝=在更</span> ·
-            <span style="color:#9ca3af">灰=未匹配</span>
-          </p>
-        </div>
-        <div class="stat-group" id="embyTitle1" style="display:none">📺 剧集统计 <span class="count" id="emby-title-count">0</span></div>
-        <div class="cards" id="embyStats" style="display:none">
-          <div class="card"><div class="label" data-icon="film">剧集总数</div><div class="value" id="emby-total">0</div></div>
-          <div class="card"><div class="label" data-icon="check">对齐</div><div class="value green" id="emby-aligned">0</div></div>
-          <div class="card"><div class="label" data-icon="x">缺集</div><div class="value red" id="emby-missing">0</div></div>
-          <div class="card"><div class="label" data-icon="activity">超集</div><div class="value amber" id="emby-extra">0</div></div>
-          <div class="card"><div class="label" data-icon="clock">在更</div><div class="value blue" id="emby-ongoing">0</div></div>
-          <div class="card"><div class="label" data-icon="info">未匹配</div><div class="value gray" id="emby-unmatched">0</div></div>
-          <div class="card"><div class="label" data-icon="alert">TMDB 错误</div><div class="value gray" id="emby-tmdb-errors">0</div></div>
-        </div>
-        <div class="stat-group" id="embyTitle2" style="display:none">🎬 电影统计 <span class="count" id="emby-title-movies">0</span></div>
-        <div class="cards" id="embyStats2" style="display:none">
-          <div class="card"><div class="label" data-icon="film">电影总数</div><div class="value indigo" id="emby-movies">0</div></div>
-        </div>
-        <div class="panel">
-          <div class="segmented" id="embyTypeFilter" style="margin-bottom:10px">
-            <button class="active" data-t="series" onclick="setEmbyType('series')">剧集</button>
-            <button data-t="movies" onclick="setEmbyType('movies')">电影</button>
+          <div class="progress-wrap hidden" id="tmdbProgressWrap">
+            <div class="progress-bar"><div class="fill" id="tmdbProgressFill" style="width:0%"></div></div>
+            <div class="progress-info"><span class="stage" id="tmdbProgressStage">准备中...</span><span id="tmdbProgressEta"></span></div>
           </div>
-          <div class="segmented" id="embyFilter" style="margin-bottom:10px">
-            <button class="active" data-f="all" onclick="setEmbyFilter('all')">全部</button>
-            <button data-f="aligned" onclick="setEmbyFilter('aligned')">对齐</button>
-            <button data-f="missing" onclick="setEmbyFilter('missing')">缺集</button>
-            <button data-f="extra" onclick="setEmbyFilter('extra')">超集</button>
-            <button data-f="ongoing" onclick="setEmbyFilter('ongoing')">在更</button>
-            <button data-f="unmatched" onclick="setEmbyFilter('unmatched')">未匹配</button>
-          </div>
-          <div class="segmented" id="embyScopeFilter" style="margin-bottom:10px">
-            <button class="active" data-s="all" onclick="setEmbyScope('all')">本地+分享</button>
-            <button data-s="local" onclick="setEmbyScope('local')">仅本地库</button>
-            <button data-s="share" onclick="setEmbyScope('share')">仅分享库</button>
-          </div>
-          <input type="text" id="embySearch" placeholder="搜索片名..." style="margin-bottom:12px" oninput="embyPage = 1; renderEmbyList()">
-          <div class="poster-grid" id="embyList"><div class="list-empty">点击「TMDB 对照」拉取</div></div>
-          <div id="embyLoadMoreWrap" style="text-align:center;padding:20px 0;display:none"><button class="btn gray" onclick="loadMoreEmby()">加载更多</button></div>
+        </div>
+        <div class="poster-grid" id="embyList"><div class="list-empty">点击「重新对照」拉取</div></div>
+        <div id="embyLoadMoreWrap" class="inf-foot" style="display:none" onclick="embyMore()"><span id="embyInfText"></span></div>
+        <div hidden>
+          <span id="embyTitle1"></span><span id="emby-title-count"></span><span id="embyStats"></span><span id="embyTitle2"></span><span id="emby-title-movies"></span><span id="embyStats2"></span>
+          <span id="emby-total"></span><span id="emby-aligned"></span><span id="emby-missing"></span><span id="emby-extra"></span><span id="emby-ongoing"></span><span id="emby-unmatched"></span><span id="emby-movies"></span><span id="emby-tmdb-errors"></span>
         </div>
       </section>
 
@@ -2006,17 +2014,53 @@ function injectIcons(root){
 /* ═══════════ 状态 ═══════════ */
 var MENU = [
   { id: 'dashboard',  name: '治理总览', icon: 'grid' },
-  { id: 'explore',    name: '影视探索', icon: 'film' },
   { id: 'governance', name: '双库治理', icon: 'scale' },
   { id: 'mapping',    name: '片库映射', icon: 'map' },
+  { id: 'explore',    name: '影视探索', icon: 'film' },
   { id: 'subscribe',  name: '追更订阅', icon: 'bell' },
-  { id: 'morning',    name: '每日晨报', icon: 'sun' },
-  { id: 'daily',      name: '每日汇报', icon: 'file' },
-  { id: 'plans',      name: '治理计划', icon: 'bookmark' },
-  { id: 'orphans',    name: '洗版残留', icon: 'alert' },
+  { id: 'daily',      name: '每日简报', icon: 'file' },
   { id: 'history',    name: '执行记录', icon: 'list' },
   { id: 'settings',   name: '规则设置', icon: 'gear' }
 ];
+/* 一体化分组：旧页签 id 全部保留为子页，switchTab('plans') 之类的老调用照常可用 */
+var GROUPS = {
+  governance: [['governance','清单'],['orphans','洗版残留']],
+  history:    [['history','执行日志'],['plans','计划存档']],
+  daily:      [['daily','入库汇报'],['morning','晨报推送']]
+};
+function groupOf(id){
+  for (var g in GROUPS) if (GROUPS[g].some(function(s){ return s[0] === id; })) return g;
+  return id;
+}
+var SET_GROUPS = [['rules','治理规则','策略 · 特别篇 · 白名单'],['auto','自动任务','入库监控 · 定时巡检'],['conn','服务连接','Emby · TMDB · Telegram']];
+var SET_MAP = ['rules','rules','auto','auto','rules','conn','conn'];
+function buildSubnavs(){
+  Object.keys(GROUPS).forEach(function(g){
+    GROUPS[g].forEach(function(cur){
+      var sec = $('tab-' + cur[0]); if (!sec) return;
+      sec.insertAdjacentHTML('afterbegin', '<div class="subnav">' + GROUPS[g].map(function(s){
+        return '<button class="' + (s[0] === cur[0] ? 'on' : '') + '" onclick="switchTab(\'' + s[0] + '\')">' + s[1] + '</button>';
+      }).join('') + '</div>');
+    });
+  });
+  var st = $('tab-settings'); if (!st) return;
+  var ps = Array.prototype.filter.call(st.children, function(c){ return c.classList.contains('panel'); });
+  ps.forEach(function(p, i){ p.dataset.sg = SET_MAP[i] || 'rules'; });
+  var opts = st.querySelectorAll('.strategy-option[data-v]');
+  if (opts.length) { var w = document.createElement('div'); w.className = 'opt-grid'; opts[0].parentNode.insertBefore(w, opts[0]); opts.forEach(function(o){ w.appendChild(o); }); }
+  var sv = st.querySelector('button[onclick^="saveConfig"]');
+  if (sv && sv.parentNode) sv.parentNode.classList.add('save-bar');
+  st.insertAdjacentHTML('afterbegin', '<div class="subnav rail" id="setNav">' + SET_GROUPS.map(function(s){
+    return '<button data-g="' + s[0] + '" onclick="setSetGroup(\'' + s[0] + '\')"><b>' + s[1] + '</b><small>' + s[2] + '</small></button>';
+  }).join('') + '</div>');
+  var g0 = 'rules'; try { g0 = sessionStorage.getItem('setGroup') || 'rules'; } catch(e){}
+  setSetGroup(g0);
+}
+function setSetGroup(g){
+  try { sessionStorage.setItem('setGroup', g); } catch(e){}
+  document.querySelectorAll('#setNav button').forEach(function(b){ b.classList.toggle('on', b.dataset.g === g); });
+  document.querySelectorAll('#tab-settings > .panel').forEach(function(p){ p.style.display = p.dataset.sg === g ? '' : 'none'; });
+}
 
 var currentPlan = null;
 var govData = { loc: [], shr: [], keep: [], exempt: [] };
@@ -2327,11 +2371,12 @@ function renderMenu(){
   }).join('');
 }
 function switchTab(id){
-  document.querySelectorAll('.sidebar nav a').forEach(function(a){ a.classList.toggle('active', a.dataset.tab === id); });
+  document.querySelectorAll('.sidebar nav a').forEach(function(a){ a.classList.toggle('active', a.dataset.tab === groupOf(id)); });
   document.querySelectorAll('.tab').forEach(function(s){ s.classList.remove('active'); });
   var tab = $('tab-' + id); if(tab) tab.classList.add('active');
-  var m = MENU.find(function(x){ return x.id === id; });
+  var m = MENU.find(function(x){ return x.id === groupOf(id); });
   $('tabTitle').textContent = m ? m.name : 'TTD Guard';
+  window.scrollTo(0, 0);
   toggleSidebar(false);
   // 记住当前所在页签，浏览器刷新（F5）后停在原地，而不是每次都跳回治理总览
   // 重新拉取一遍数据，打断正在查看的内容。
@@ -2362,6 +2407,7 @@ function saveLibStatsCache(r){
   try { localStorage.setItem('libStatsCache', JSON.stringify(r)); } catch(e){}
 }
 function hydrateDashboardFromCache(){
+  try { var raw3 = localStorage.getItem('dashEmbyCache'); if (raw3) renderDashEmby(JSON.parse(raw3)); } catch(e){}
   try {
     var raw = localStorage.getItem('dashboardCache');
     if (raw) renderDashboard(JSON.parse(raw));
@@ -2385,29 +2431,110 @@ async function loadLibraryStats(){
     }
   }
 }
+var libStatMode = 'all';
+function setLibStatMode(m){
+  libStatMode = m;
+  document.querySelectorAll('#libStatTabs button').forEach(function(b){ b.classList.toggle('active', b.dataset.m === m); });
+  if (window.__libStats) renderLibraryStats(window.__libStats);
+}
 function renderLibraryStats(r){
-    var grid = $('libStatsGrid');
-    var html = '<div class="cat-card cat-all"><div class="cat-name">\u5168\u90e8</div>'
-      + '<div class="cat-num">' + (r.local_total + r.share_total).toLocaleString() + '</div>'
-      + '<div class="cat-sub">\u672c\u5730 ' + r.local_total.toLocaleString() + ' / \u5206\u4eab ' + r.share_total.toLocaleString() + '</div>'
-      + '</div>';
-    var sorted = r.rows.slice().sort(function(a, b){ return b.total - a.total; });
-    sorted.forEach(function(row){
-      if (row.total === 0) return;
-      html += '<div class="cat-card"><div class="cat-name">' + esc(row.name) + '</div>'
-        + '<div class="cat-num">' + row.total.toLocaleString() + '</div>'
-        + '<div class="cat-sub">\u672c\u5730 ' + row.local.toLocaleString() + ' / \u5206\u4eab ' + row.share.toLocaleString() + '</div>'
-        + '</div>';
+  window.__libStats = r;
+  var m = libStatMode;
+  var rows = (r.rows || []).map(function(x){
+    return { name: x.name, n: m === 'local' ? x.local : m === 'share' ? x.share : x.total, l: x.local, s: x.share };
+  }).filter(function(x){ return x.n > 0; }).sort(function(a, b){ return b.n - a.n; });
+  var max = rows.length ? rows[0].n : 1;
+  $('libStatsGrid').innerHTML = rows.map(function(row){
+    var bar = m === 'all'
+      ? '<i class="l" style="width:' + (row.l / max * 100) + '%"></i><i class="s" style="width:' + (row.s / max * 100) + '%"></i>'
+      : '<i class="' + (m === 'share' ? 's' : 'l') + '" style="width:' + (row.n / max * 100) + '%"></i>';
+    return '<div class="cb"><span class="nm">' + esc(row.name) + '</span><span class="tr">' + bar + '</span><span class="ct">' + row.n.toLocaleString() + '</span></div>';
+  }).join('') || '<div class="list-empty">暂无数据</div>';
+  var summary = '共 ' + (r.local_total + r.share_total).toLocaleString() + ' 个 STRM · 本地 ' + r.local_total.toLocaleString() + ' / 分享 ' + r.share_total.toLocaleString();
+  if (r.local_other + r.share_other > 0) summary += '（未分类 ' + (r.local_other + r.share_other).toLocaleString() + '）';
+  $('libStatsSummary').textContent = summary;
+}
+
+function dashTotals(d){
+  var l = +d.localCount || 0, s = +d.shareCount || 0, t = l + s;
+  $('stat-local').textContent = l ? l.toLocaleString() : '-';
+  $('stat-share').textContent = s ? s.toLocaleString() : '-';
+  $('dash-total').textContent = t ? t.toLocaleString() : '-';
+  $('dash-split-l').style.width = t ? (l / t * 100) + '%' : '0';
+  $('dash-split-s').style.width = t ? (s / t * 100) + '%' : '0';
+}
+function fmtBig(n){ return n >= 10000 ? (n / 10000).toFixed(2) + '万' : (n || 0).toLocaleString(); }
+function renderDashEmby(x){
+  $('dash-series').textContent = (x.series || 0).toLocaleString();
+  $('dash-eps').textContent = fmtBig(x.eps);
+  $('dash-movies').textContent = (x.movies || 0).toLocaleString();
+  var st = x.st || {}, total = x.series || 0;
+  var pct = total ? Math.round((st.aligned || 0) / total * 100) : 0;
+  $('dash-ring').style.setProperty('--p', pct);
+  $('dash-ring-n').textContent = total ? pct + '%' : '—';
+  var rows = [['对齐', 'ok', st.aligned], ['缺集', 'err', st.missing], ['超集', 'warn', st.extra], ['在更', 'info', st.ongoing], ['未匹配', 'dim', st.unmatched]];
+  $('dash-health').innerHTML = rows.map(function(r){
+    var n = r[2] || 0;
+    return '<div class="hl-row"><b class="dd ' + r[1] + '"></b>' + r[0] + '<span class="cnt">' + n.toLocaleString() + '</span><span class="pc">' + (total ? (n / total * 100).toFixed(1) : '0.0') + '%</span></div>';
+  }).join('');
+  var top = x.top || [];
+  $('dash-miss-note').textContent = st.missing ? ('共 ' + st.missing + ' 部缺集') : '';
+  $('dash-missing').innerHTML = top.length ? top.map(function(t){
+    var p = t.tot ? Math.min(100, t.have / t.tot * 100) : 0;
+    return '<div class="miss" data-name="' + esc(t.name) + '" onclick="dashOpenSeries(this.dataset.name)">'
+      + '<div style="flex:1;min-width:0"><div class="nm">' + esc(t.name) + (t.year ? ' (' + t.year + ')' : '') + '</div>'
+      + '<div class="bar"><i style="width:' + p + '%"></i></div></div>'
+      + '<div class="df">缺 ' + t.diff + ' 集<small>' + t.have + '/' + t.tot + '</small></div></div>';
+  }).join('') : '<div class="list-empty">没有缺集的剧集</div>';
+}
+function dashOpenSeries(name){
+  $('embySearch').value = name; embyPage = 1;
+  switchTab('mapping');
+  if (embyLoaded) renderEmbyList();
+}
+async function loadDashEmby(){
+  var src = null;
+  if (embyLoaded) src = { series: embyData.series, movies: embyData.movies, stats: embyData.stats };
+  else {
+    try {
+      var r = await api('/api/emby/library?force=0&with_tmdb=1&cache_only=1');
+      if (r && r.status === 'success') src = { series: r.series || [], movies: r.movies || [], stats: r.stats || {} };
+    } catch(e){}
+  }
+  if (!src) return;
+  var eps = 0;
+  src.series.forEach(function(s){ eps += (s.total_episodes || 0); });
+  var top = src.series.filter(function(s){ return (s.tmdb_info || {}).match_status === 'missing'; })
+    .sort(function(a, b){ return Math.abs((b.tmdb_info || {}).diff || 0) - Math.abs((a.tmdb_info || {}).diff || 0); })
+    .slice(0, 6).map(function(s){
+      var ti = s.tmdb_info || {};
+      return { name: s.name, year: s.year, diff: Math.abs(ti.diff || 0), tot: ti.tmdb_total || 0, have: s.have_eps != null ? s.have_eps : (s.total_episodes || 0) };
     });
-    grid.innerHTML = html;
-    var summary = '\u5171 ' + (r.local_total + r.share_total).toLocaleString() + ' \u4e2a STRM';
-    if (r.local_other + r.share_other > 0) {
-      summary += '\uff08\u672a\u5206\u7c7b ' + (r.local_other + r.share_other).toLocaleString() + '\uff09';
+  var st = src.stats || {};
+  var sum = { series: st.total_series || src.series.length, movies: st.total_movies || src.movies.length, eps: eps,
+              st: { aligned: st.aligned, missing: st.missing, extra: st.extra, ongoing: st.ongoing, unmatched: (st.unmatched || 0) + (st.no_tmdb || 0) }, top: top };
+  renderDashEmby(sum);
+  try { localStorage.setItem('dashEmbyCache', JSON.stringify(sum)); } catch(e){}
+}
+async function loadDashPlan(){
+  try {
+    var r = await api('/api/governance/latest');
+    if (r.status === 'success' && r.found && r.usable) {
+      var res = r.result || {};
+      $('dash-loc').textContent  = (res.del_local_items || []).length;
+      $('dash-shr').textContent  = (res.del_share_items || []).length;
+      $('dash-keep').textContent = (res.protected_items || []).length;
+      $('dash-exm').textContent  = res.exempted_count != null ? res.exempted_count : (res.exempted_items || []).length;
+      $('dash-plan-note').textContent = '扫描于 ' + fmtGovAgo(r.age_sec);
+    } else {
+      ['dash-loc', 'dash-shr', 'dash-keep', 'dash-exm'].forEach(function(id){ $(id).textContent = '—'; });
+      $('dash-plan-note').textContent = '暂无有效清单，先「立即扫描双库」';
     }
-    $('libStatsSummary').textContent = summary;
+  } catch(e){}
 }
 
 async function loadDashboard(){
+  loadDashEmby(); loadDashPlan();
   /* 策略快照数据量极小，与 dashboard 并行加载——
      /api/dashboard 要统计全库 STRM（大库较慢），串行会拖得策略快照一直"加载中" */
   var pStrategy = api('/api/strategy').catch(function(e){ console.warn('strategy 失败', e); return null; });
@@ -2419,12 +2546,11 @@ async function loadDashboard(){
     var decisionLabel = { quality_first: '画质优先', keep_local: '保留本地', keep_share: '保留分享', balanced: '严格画质' }[s.decision] || s.decision;
     var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
     var mspLabel = { off: '关闭', compare: '开启', full: '全量豁免' }[s.multi_season_protect] || '开启';
-    $('strategySnapshot').innerHTML =
-      '<div class="path-row"><span class="name">决策模型</span><span class="path" style="color:#10b981;border:none">' + decisionLabel + '</span></div>' +
-      '<div class="path-row"><span class="name">多季合集保护</span><span class="path" style="color:#3b82f6;border:none">' + mspLabel + '</span></div>' +
-      '<div class="path-row"><span class="name">特别篇策略</span><span class="path" style="color:#8b5cf6;border:none">' + spLabel + '</span></div>' +
-      '<div class="path-row"><span class="name">平局策略</span><span class="path" style="color:#6b7280;border:none">' + (s.tie_keep_local ? '保留本地' : '保留分享') + '</span></div>' +
-      '<div class="path-row"><span class="name">白名单</span><span class="path" style="border:none;color:#6b7280">' + (s.exempt_keywords || []).join(', ') + '</span></div>';
+    var ex = s.exempt_keywords || [];
+    var chips = [['决策', decisionLabel, 'ok'], ['多季保护', mspLabel, 'info'], ['特别篇', spLabel, 'brand'], ['平局', s.tie_keep_local ? '保留本地' : '保留分享', 'dim']];
+    $('strategySnapshot').innerHTML = '<div class="chips">' + chips.map(function(c){ return '<span class="sch ' + c[2] + '"><em>' + c[0] + '</em>' + c[1] + '</span>'; }).join('') + '</div>'
+      + (ex.length ? '<div class="sch-ex">白名单：' + ex.map(function(k){ return esc(k); }).join('、') + '</div>' : '');
+    $('dash-exempt').textContent = ex.length + ' 条';
   }
 
   var d = await pDash;
@@ -2436,6 +2562,7 @@ async function loadDashboard(){
 function renderDashboard(d){
     $('stat-local').textContent = d.localCount || '-';
     $('stat-share').textContent = d.shareCount || '-';
+    dashTotals(d);
     /* 侧边栏版本号跟随后端（之前硬编码 V1.1 不同步） */
     if (d.version) { var sv = $('sideVersion'); if (sv) sv.textContent = 'V' + d.version; }
     var embyOk = d.services && d.services.emby && d.services.emby.ok;
@@ -2783,6 +2910,9 @@ function setupInfiniteScroll(){
   if (window.__infiniteScrollReady) return;
   window.__infiniteScrollReady = true;
   window.addEventListener('scroll', function(){
+    embyCheckMore();
+    var _et = $('tab-explore');
+    if (!_et || !_et.classList.contains('active')) return;
     if (exploreLoading) return;
     if (exploreState.q) return;
     if (exploreState.page >= exploreState.totalPages) return;
@@ -2923,6 +3053,8 @@ function setEmbyScope(sc){
   renderEmbyList();
 }
 var embyPage = 1;
+var EMBY_PAGE = 40;
+var embyView = { arr: [], fn: null };
 var embyLoaded = false;
 function ensureEmbyLoaded(){ if (!embyLoaded) loadEmbyLibrary(false, true, true); }   // 先读上次对照好的缓存，秒开
 var tmdbProgressTimer = null;
@@ -3003,24 +3135,40 @@ async function loadEmbyLibrary(force, withTmdb, cacheOnly){
     $('emby-unmatched').textContent  = (st.unmatched || 0) + (st.no_tmdb || 0);
     $('emby-movies').textContent     = st.total_movies || 0;
     $('emby-tmdb-errors').textContent = r.tmdb_errors || 0;
+    updateEmbyChips();
     renderEmbyList();
   } catch(e){ $('embyList').innerHTML = '<div class="list-empty">' + esc(e.message) + '</div>'; }
 }
-function loadMoreEmby(){
+function loadMoreEmby(){ embyMore(); }
+function embyMore(){
+  if (!embyView.fn || embyPage * EMBY_PAGE >= embyView.arr.length) return;
+  var from = embyPage * EMBY_PAGE;
   embyPage += 1;
-  renderEmbyList();
+  var l = $('embyList');
+  l.insertAdjacentHTML('beforeend', embyView.arr.slice(from, embyPage * EMBY_PAGE).map(embyView.fn).join(''));
+  hydratePosters(l);
+  updateEmbyLoadMore(embyView.arr.length);
 }
-
+function embyCheckMore(){
+  var t = $('tab-mapping');
+  if (!t || !t.classList.contains('active')) return;
+  if (!embyView.fn || embyPage * EMBY_PAGE >= embyView.arr.length) return;
+  var y = window.scrollY || document.documentElement.scrollTop || 0;
+  if (y + window.innerHeight >= document.documentElement.scrollHeight - 700) embyMore();
+}
 function updateEmbyLoadMore(total){
   var wrap = $('embyLoadMoreWrap');
   if (!wrap) return;
-  if (total > embyPage * 30) {
-    wrap.style.display = '';
-    var btn = wrap.querySelector('button');
-    if (btn) btn.textContent = '加载更多（已显示 ' + (embyPage * 30) + ' / ' + total + '）';
-  } else {
-    wrap.style.display = 'none';
-  }
+  var shown = Math.min(total, embyPage * EMBY_PAGE);
+  wrap.style.display = total ? '' : 'none';
+  $('embyInfText').textContent = shown < total ? ('已显示 ' + shown + ' / ' + total + ' · 继续下滑自动加载') : ('已到底 · 共 ' + total + ' 部');
+  setTimeout(embyCheckMore, 80);
+}
+function updateEmbyChips(){
+  var st = embyData.stats || {};
+  var m = { 'mc-series': st.total_series, 'mc-all': st.total_series, 'mc-movies': st.total_movies, 'mc-aligned': st.aligned,
+            'mc-missing': st.missing, 'mc-extra': st.extra, 'mc-ongoing': st.ongoing, 'mc-unmatched': (st.unmatched || 0) + (st.no_tmdb || 0) };
+  for (var k in m) { var e = $(k); if (e) e.textContent = (m[k] || 0).toLocaleString(); }
 }
 
 function setEmbyType(t){
@@ -3054,8 +3202,9 @@ function renderEmbyList(){
     if (embyFilterState.scope === 'local') arr = arr.filter(function(x){ return x.in_local; });
     else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
     if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
-    if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
-    list.innerHTML = arr.slice(0, embyPage * 30).map(renderMovieCard).join('');
+    if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
+    embyView = { arr: arr, fn: renderMovieCard };
+    list.innerHTML = arr.slice(0, embyPage * EMBY_PAGE).map(renderMovieCard).join('');
     hydratePosters(list);
     updateEmbyLoadMore(arr.length);
     return;
@@ -3072,7 +3221,7 @@ function renderEmbyList(){
   if (embyFilterState.scope === 'local') arr = arr.filter(function(x){ return x.in_local; });
   else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
   if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
-  if (!arr.length) { list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
+  if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
   var prio = { missing: 0, extra: 1, unmatched: 2, no_tmdb: 2, ongoing: 3, aligned: 4 };
   arr.sort(function(a, b){
     var sa = (a.tmdb_info || {}).match_status || 'unmatched';
@@ -3085,7 +3234,8 @@ function renderEmbyList(){
     if (da !== db) return db - da;
     return (a.name || '').localeCompare(b.name || '');
   });
-  list.innerHTML = arr.slice(0, embyPage * 30).map(renderSeriesCard).join('');
+  embyView = { arr: arr, fn: renderSeriesCard };
+  list.innerHTML = arr.slice(0, embyPage * EMBY_PAGE).map(renderSeriesCard).join('');
   hydratePosters(list);
   updateEmbyLoadMore(arr.length);
 }
@@ -4327,6 +4477,7 @@ document.addEventListener('DOMContentLoaded', async function(){
   injectIcons();
   renderMenu();
   switchExploreTab_init();
+  buildSubnavs();
   setupInfiniteScroll();
   // 先用本地缓存的数据瞬间填满治理总览，避免每次打开/刷新都先看到一堆
   // "-"/"检查中..."占位符再变成真实数据，视觉上不再像"每次都在重新刷新"。
@@ -4335,7 +4486,7 @@ document.addEventListener('DOMContentLoaded', async function(){
   try { var r = await api('/api/subscriptions'); currentSubs = r.subscriptions || []; } catch(e){}
   var lastTab = 'dashboard';
   try { lastTab = sessionStorage.getItem('lastTab') || 'dashboard'; } catch(e){}
-  if (lastTab !== 'dashboard' && MENU.some(function(m){ return m.id === lastTab; })) {
+  if (lastTab !== 'dashboard' && $('tab-' + lastTab)) {
     switchTab(lastTab);
   } else {
     loadDashboard();
@@ -4552,6 +4703,106 @@ html body #exploreLoadMore { display: none !important; }
 .orph-kinds b.hit{color:var(--err)}
 .orph-meta{color:var(--text-dim);padding-top:6px;border-top:1px solid var(--border)}
 .orph-warn{margin-top:6px;color:#b45309;background:var(--warn-soft);border:1px solid var(--warn-border);border-radius:8px;padding:6px 10px}
+</style>
+
+<style id="v4-patch">
+.dd{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.dd.ok{background:var(--ok)}.dd.err{background:var(--err)}.dd.warn{background:var(--warn)}.dd.info{background:var(--info)}.dd.dim{background:var(--text-dim)}
+.dd.l,.dh-split #dash-split-l,.cb .tr i.l{background:var(--brand)}
+.dd.s,.dh-split #dash-split-s,.cb .tr i.s{background:var(--brand-3)}
+.dash-hero{display:grid;grid-template-columns:1.3fr 1fr 230px;gap:32px;align-items:center;padding:26px 30px;margin-bottom:14px;border-radius:var(--r-xl);background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow-sm)}
+.dh-label{font-size:12px;color:var(--text-mid);display:flex;align-items:center;gap:6px}
+.dh-big{font-size:48px;font-weight:800;letter-spacing:-1.5px;line-height:1.1;margin:6px 0 14px;font-variant-numeric:tabular-nums;background:var(--grad-brand);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.dh-split{display:flex;height:8px;border-radius:99px;overflow:hidden;background:var(--surface-active)}
+.dh-split i{display:block;height:100%;transition:width .9s var(--ease)}
+.dh-legend{display:flex;gap:18px;margin-top:9px;font-size:12px;color:var(--text-mid)}
+.dh-legend span{display:flex;align-items:center;gap:6px}.dh-legend em{font-style:normal;font-weight:700;color:var(--text)}
+.dh-nums{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.dh-nums em{display:block;font-style:normal;font-size:26px;font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.dh-nums span{font-size:11.5px;color:var(--text-dim)}
+.dh-pills{display:flex;flex-direction:column;gap:8px}
+.dpill{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-hover);font-size:12px}
+.dpill .k{font-weight:700;display:block}.dpill small{display:block;color:var(--text-dim);font-size:10.5px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dash-strip{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--border);border-radius:var(--r-lg);background:var(--surface);margin-bottom:14px;overflow:hidden}
+.ds{padding:14px 18px;cursor:pointer;border-left:1px solid var(--border);transition:background .15s}
+.ds:first-child{border-left:none}.ds:hover{background:var(--surface-hover)}
+.ds .k{font-size:12px;color:var(--text-mid);display:flex;align-items:center;gap:6px}
+.ds .v{font-size:19px;font-weight:800;margin:6px 0 3px;font-variant-numeric:tabular-nums}
+.ds .v.green{color:var(--ok)}.ds .v.indigo{color:var(--brand)}.ds .v.amber{color:var(--warn)}
+.ds .s{font-size:10.5px;color:var(--text-dim)}
+.dash-note{font-size:11.5px;color:var(--text-dim)}
+.todo-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:12px}
+.todo{padding:14px 16px;border-radius:14px;border:1px solid var(--border);cursor:pointer;display:flex;flex-direction:column;gap:8px;transition:transform .15s var(--ease)}
+.todo:hover{transform:translateY(-2px)}
+.todo .k{font-size:12px;display:flex;align-items:center;gap:5px;color:var(--text-mid)}
+.todo b{font-size:32px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.todo.loc{background:var(--err-soft);border-color:var(--err-border)}.todo.loc b{color:var(--err)}
+.todo.shr{background:var(--info-soft);border-color:var(--info-border)}.todo.shr b{color:var(--info)}
+.todo.keep{background:var(--ok-soft);border-color:var(--ok-border)}.todo.keep b{color:var(--ok)}
+.todo.exm{background:var(--surface-hover)}.todo.exm b{color:var(--text-mid)}
+.dash-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}.dash-cols .panel{margin-bottom:0}
+.hl-wrap{display:flex;align-items:center;gap:22px;margin-top:14px}
+.ring{--p:0;width:116px;height:116px;border-radius:50%;flex:none;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;background:conic-gradient(var(--ok) calc(var(--p)*1%),var(--surface-active) 0);transition:--p .8s}
+.ring::before{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--surface-solid)}
+.ring b,.ring span{position:relative}.ring b{font-size:24px;font-weight:800}.ring span{font-size:10.5px;color:var(--text-dim)}
+.hl-legend{flex:1;min-width:0}
+.hl-row{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:5px 0}
+.hl-row .cnt{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}.hl-row .pc{width:46px;text-align:right;color:var(--text-dim);font-size:11px}
+.miss{display:flex;align-items:center;gap:12px;padding:9px 10px;margin:0 -10px;border-radius:10px;cursor:pointer}
+.miss:hover{background:var(--surface-hover)}
+.miss .nm{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.miss .bar{height:5px;border-radius:9px;background:var(--surface-active);overflow:hidden;margin-top:6px}
+.miss .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--err),var(--warn))}
+.miss .df{font-weight:700;color:var(--err);font-size:12.5px;white-space:nowrap;text-align:right}
+.miss .df small{display:block;font-weight:500;color:var(--text-dim);font-size:10.5px}
+.dash-tabs{width:auto!important}.dash-tabs button{flex:none!important;padding:6px 12px!important}
+.cat-bars{display:block}
+.cb{display:grid;grid-template-columns:78px 1fr 58px;gap:12px;align-items:center;padding:6px 0;font-size:12.5px}
+.cb .nm{color:var(--text-mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb .tr{display:flex;height:10px;background:var(--surface-active);border-radius:99px;overflow:hidden}
+.cb .tr i{height:100%;transition:width .6s var(--ease)}
+.cb .ct{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.sch{padding:6px 12px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid var(--border);background:var(--surface-hover)}
+.sch em{font-style:normal;font-weight:500;color:var(--text-dim);margin-right:6px}
+.sch.ok{color:var(--ok)}.sch.info{color:var(--info)}.sch.brand{color:var(--brand-2)}.sch.dim{color:var(--text-mid)}
+.sch-ex{margin-top:10px;font-size:11.5px;color:var(--text-dim)}
+/* 片库映射：紧凑吸顶工具条 + 无限滚动 */
+.map-bar{position:sticky;top:60px;z-index:8;margin-bottom:14px;padding:10px 12px;border-radius:var(--r-lg);background:var(--surface);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--border);box-shadow:var(--shadow-sm);display:flex;flex-direction:column;gap:8px}
+.map-r1,.map-r2{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.map-bar .segmented{width:auto;flex:none;max-width:100%}
+.map-bar #embyFilter{flex:1 1 auto;min-width:0}
+.map-bar .segmented button{flex:none;padding:6px 10px;display:inline-flex;align-items:center;gap:5px}
+.map-bar .n{font-style:normal;font-size:11px;opacity:.6;font-variant-numeric:tabular-nums}
+.map-bar .map-search{flex:1;min-width:140px;margin:0!important}
+#embyList{margin-bottom:0}
+.inf-foot{text-align:center;padding:20px 0 30px;font-size:12px;color:var(--text-dim);cursor:pointer}
+@media(max-width:900px){.dash-hero{grid-template-columns:1fr;gap:20px;padding:20px}.dh-big{font-size:38px}.dash-cols{grid-template-columns:1fr}.dash-strip,.todo-grid{grid-template-columns:repeat(2,1fr)}.ds:nth-child(3){border-left:none}.ds:nth-child(n+3){border-top:1px solid var(--border)}}
+@media(prefers-reduced-motion:reduce){.dh-split i,.cb .tr i,.todo{transition:none}}
+</style>
+
+<style id="v5-patch">
+.subnav{display:flex;gap:6px;overflow-x:auto;padding:4px;margin-bottom:14px;border:1px solid var(--border);border-radius:14px;background:var(--surface);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);position:sticky;top:60px;z-index:8;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.subnav::-webkit-scrollbar{display:none}
+.subnav button{flex:none;border:none;background:transparent;color:var(--text-mid);font:inherit;font-size:13px;font-weight:500;padding:8px 16px;min-height:38px;border-radius:10px;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
+.subnav button:hover{color:var(--text)}
+.subnav button.on{background:var(--surface-solid);color:var(--text);font-weight:700;box-shadow:0 1px 3px rgba(15,23,42,.12)}
+.subnav.rail button small{display:none}
+.subnav.rail button b{font-weight:inherit}
+.opt-grid{display:grid;gap:8px}
+.opt-grid .strategy-option{margin:0}
+#tab-settings .strategy-option{padding:10px 14px}
+#tab-settings .strategy-option .d{margin-top:3px}
+.save-bar{position:sticky;bottom:0;z-index:7;margin:20px -24px -22px!important;padding:12px 24px calc(12px + env(safe-area-inset-bottom,0px));background:var(--surface);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-top:1px solid var(--border);border-radius:0 0 var(--r-lg) var(--r-lg)}
+@media(max-width:1023px){.save-bar{margin:20px -16px -16px!important;padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px))}}
+@media(min-width:720px){.opt-grid{grid-template-columns:repeat(3,1fr)}.opt-grid .strategy-option{height:100%}}
+@media(min-width:1024px){
+  #tab-settings.active{display:grid;grid-template-columns:200px minmax(0,1fr);column-gap:22px;align-items:start}
+  #tab-settings > .panel{grid-column:2}
+  #tab-settings > .subnav.rail{grid-column:1;grid-row:1/span 12;flex-direction:column;overflow:visible;padding:8px;gap:2px;top:80px}
+  .subnav.rail button{text-align:left;padding:10px 14px;display:flex;flex-direction:column;gap:2px}
+  .subnav.rail button small{display:block;font-size:10.5px;font-weight:400;color:var(--text-dim)}
+}
 </style>
 </body>
 </html>
