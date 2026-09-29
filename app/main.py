@@ -850,7 +850,7 @@ def api_test_emby(body: dict = None):
             data = json.loads(r.read().decode('utf-8'))
         msg = f"✅ 连接成功\n服务器: {data.get('ServerName', '?')}\n版本: {data.get('Version', '?')}"
         # 设置页未保存的路径也拿来比对，方便边改边测；没传就用当前生效的配置
-        pm = engine.EmbyPathMap(body.get('emby_local_path', engine.EMBY_PATHS.local),
+        pm = engine.emby_path_map(body.get('emby_local_path', engine.EMBY_PATHS.local),
                                 body.get('emby_share_path', engine.EMBY_PATHS.share))
         return {'status': 'success', 'message': msg + _emby_lib_paths_hint(host, key, pm)}
     except Exception as e:

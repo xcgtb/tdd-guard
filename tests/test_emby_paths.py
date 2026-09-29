@@ -207,3 +207,13 @@ class TestReloadConfig:
                 else:
                     os.environ[k] = v
             engine.reload_config()
+
+
+class TestEmptyFallsBackToDefault:
+    def test_cleared_setting_uses_default_roots(self):
+        """设置页清空路径后按默认值生效（输入框占位符显示的就是默认值），而不是什么都匹配不上"""
+        m = engine.emby_path_map('', None)
+        assert m.local == DEF_L and m.share == DEF_S
+        m2 = engine.emby_path_map(' /mnt/l/ ', '')
+        assert m2.lib_of('/mnt/l/A/a.strm') == 'local'
+        assert m2.share == DEF_S

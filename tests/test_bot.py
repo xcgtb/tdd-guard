@@ -131,3 +131,49 @@ class TestLatestPendingPlan:
         for f in engine.STATE_DIR.glob('plan_*.json'):
             f.unlink()
         assert bot._latest_pending_plan_id() is None
+
+
+class TestBotUsesSharedTaskBus:
+    def _patch(self):
+        out = []
+        saved = (bot._edit, bot._send, bot.load_config)
+        bot._edit = lambda token, chat_id, mid, text, kb=None: out.append(text)
+        bot._send = lambda token, chat_id, text, *a, **k: out.append(text) or {}
+        bot.load_config = lambda: {'telegram_bot_token': 'tok'}
+        return out, saved
+
+    def _restore(self, saved):
+        bot._edit, bot._send, bot.load_config = saved
+
+    def test_bot_scan_is_rejected_while_web_task_runs(self):
+        """以前 Bot 自己起线程，Web 正在扫描/清理时 Bot 照样能再起一个"""
+        out, saved = self._patch()
+        gate = _threading.Event()
+        web = bot.tasks.manager.spawn('inter_clean', gate.wait, source='web')
+        try:
+            bot._spawn_and_watch('check', lambda a: {'status': 'success'}, 1, message_id=5)
+            assert out and '已有任务 [inter_clean]' in out[-1]
+        finally:
+            gate.set(); web.done.wait(5)
+            self._restore(saved)
+
+    def test_bot_scan_registers_as_exclusive_task_and_reports(self):
+        out, saved = self._patch()
+        gate = _threading.Event()
+        done = _threading.Event()
+        orig_notify = bot._notify_result
+
+        def notify(token, chat_id, kind, res, message_id=None, user_msg_id=None):
+            out.append((kind, res)); done.set()
+        bot._notify_result = notify
+        try:
+            bot._spawn_and_watch('check', lambda a: gate.wait(5) and {'status': 'success'}, 1, message_id=5)
+            cur = bot.tasks.manager.running()
+            assert cur is not None and (cur.kind, cur.source) == ('inter_check', 'bot')
+            gate.set()
+            assert done.wait(5)
+            assert out[-1] == ('check', {'status': 'success'})
+        finally:
+            gate.set()
+            bot._notify_result = orig_notify
+            self._restore(saved)

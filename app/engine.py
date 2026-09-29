@@ -156,7 +156,16 @@ class EmbyPathMap:
 RUNTIME_CFG = _cfg.load_config()
 EMBY_HOST = RUNTIME_CFG['emby_host']
 EMBY_KEY  = RUNTIME_CFG['emby_key']
-EMBY_PATHS = EmbyPathMap(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
+
+
+def emby_path_map(local_root=None, share_root=None):
+    """按配置构造 EmbyPathMap；留空的一侧回落到默认值（设置页输入框的占位符就是默认值，
+    清空后若变成「什么都匹配不上」，与界面提示不符）"""
+    return EmbyPathMap((local_root or '').strip() or _cfg.DEFAULTS['emby_local_path'],
+                       (share_root or '').strip() or _cfg.DEFAULTS['emby_share_path'])
+
+
+EMBY_PATHS = emby_path_map(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
 TMDB_BASE = os.environ.get('TMDB_BASE', 'https://api.themoviedb.org/3')
 TMDB_LANG = os.environ.get('TMDB_LANG', 'zh-CN')
 TMDB_IMG  = os.environ.get('TMDB_IMG', 'https://image.tmdb.org/t/p/w500')
@@ -168,7 +177,7 @@ def reload_config():
     RUNTIME_CFG = _cfg.load_config()
     EMBY_HOST = RUNTIME_CFG['emby_host'] or 'http://127.0.0.1:8096'
     EMBY_KEY = RUNTIME_CFG['emby_key'] or ''
-    EMBY_PATHS = EmbyPathMap(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
+    EMBY_PATHS = emby_path_map(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
     return RUNTIME_CFG
 
 
