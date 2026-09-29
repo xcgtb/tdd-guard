@@ -13,6 +13,9 @@ DEFAULTS = {
     'emby_host':              os.environ.get('EMBY_HOST',              'http://127.0.0.1:8096'),
     'emby_key':               os.environ.get('EMBY_KEY',               ''),
     'tmdb_key':               os.environ.get('TMDB_KEY',               ''),
+    # Emby 媒体库里看到的 STRM 根目录（Emby 容器内路径），用于区分本地/分享与单剧删除
+    'emby_local_path':        os.environ.get('EMBY_LOCAL_PATH',        '/strm/115网盘/影视媒体库'),
+    'emby_share_path':        os.environ.get('EMBY_SHARE_PATH',        '/strm/115网盘/分享影视库'),
 
     # Telegram
     'telegram_bot_token':     os.environ.get('TG_BOT_TOKEN',           ''),
@@ -60,6 +63,8 @@ ENV_OVERRIDE_KEYS = {
     'emby_host':              'EMBY_HOST',
     'emby_key':               'EMBY_KEY',
     'tmdb_key':               'TMDB_KEY',
+    'emby_local_path':        'EMBY_LOCAL_PATH',
+    'emby_share_path':        'EMBY_SHARE_PATH',
     'telegram_bot_token':     'TG_BOT_TOKEN',
     'telegram_chat_id':       'TG_CHAT_ID',
     'telegram_allowed_users': 'TG_ALLOWED_USERS',

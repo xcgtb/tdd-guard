@@ -102,9 +102,61 @@ def tz_info():
             'now': time.strftime('%Y-%m-%d %H:%M:%S', lt)}
 
 
+def _norm_emby_path(p):
+    """Emby 路径统一成 / 分隔、去掉末尾 /；空值返回 ''"""
+    p = str(p or '').strip().replace('\\', '/')
+    return p.rstrip('/')
+
+
+class EmbyPathMap:
+    """Emby 路径 → 本地/分享库 的唯一映射处（根目录来自配置 emby_local_path / emby_share_path）。
+    片库总览要对 ~10 万个分集路径分类，所以这里只做字符串前缀比较，构造时把能算的都算好。"""
+
+    def __init__(self, local_root, share_root):
+        self.local = _norm_emby_path(local_root)
+        self.share = _norm_emby_path(share_root)
+        # (根目录, 根目录+'/', 库) —— 长的优先（嵌套时取更精确的那个），等长时本地在前，与旧逻辑一致
+        roots = [(r, r + '/', lib) for r, lib in ((self.local, 'local'), (self.share, 'share')) if r]
+        self._roots = sorted(roots, key=lambda x: -len(x[0]))
+        # 兼容兜底：路径里有一段恰好等于根目录的末级目录名（旧版 '影视媒体库' in path 的行为）。
+        # 两个根末级名相同时无法区分，干脆不兜底
+        lb = self.local.rsplit('/', 1)[-1] if self.local else ''
+        sb = self.share.rsplit('/', 1)[-1] if self.share else ''
+        self._bases = [('/' + b + '/', lib) for b, lib in ((lb, 'local'), (sb, 'share')) if b] if lb != sb else []
+
+    def lib_of(self, path, fallback=True):
+        """展示/统计用：'local' | 'share' | ''"""
+        if not path:
+            return ''
+        p = path.replace('\\', '/') if '\\' in path else path
+        for root, pre, lib in self._roots:
+            if p == root or p.startswith(pre):
+                return lib
+        if fallback and self._bases:
+            padded = '/' + p + '/'
+            for needle, lib in self._bases:
+                if needle in padded:
+                    return lib
+        return ''
+
+    def to_container(self, path):
+        """删除用：严格前缀匹配（不走末级目录名兜底），转成容器内路径；对不上或含 .. 返回 None"""
+        if not path:
+            return None
+        p = str(path).replace('\\', '/')
+        for root, pre, lib in self._roots:
+            if p.startswith(pre):
+                parts = [x for x in p[len(pre):].split('/') if x and x != '.']
+                if not parts or '..' in parts:
+                    return None
+                return (L_ROOT if lib == 'local' else S_ROOT).joinpath(*parts)
+        return None
+
+
 RUNTIME_CFG = _cfg.load_config()
 EMBY_HOST = RUNTIME_CFG['emby_host']
 EMBY_KEY  = RUNTIME_CFG['emby_key']
+EMBY_PATHS = EmbyPathMap(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
 TMDB_BASE = os.environ.get('TMDB_BASE', 'https://api.themoviedb.org/3')
 TMDB_LANG = os.environ.get('TMDB_LANG', 'zh-CN')
 TMDB_IMG  = os.environ.get('TMDB_IMG', 'https://image.tmdb.org/t/p/w500')
@@ -112,11 +164,17 @@ TMDB_INFO_TTL = 24 * 3600
 
 
 def reload_config():
-    global RUNTIME_CFG, EMBY_HOST, EMBY_KEY
+    global RUNTIME_CFG, EMBY_HOST, EMBY_KEY, EMBY_PATHS
     RUNTIME_CFG = _cfg.load_config()
     EMBY_HOST = RUNTIME_CFG['emby_host'] or 'http://127.0.0.1:8096'
     EMBY_KEY = RUNTIME_CFG['emby_key'] or ''
+    EMBY_PATHS = EmbyPathMap(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
     return RUNTIME_CFG
+
+
+def emby_lib_of(path):
+    """Emby 路径属于哪个库（展示/统计用，带末级目录名兜底）：'local' | 'share' | ''"""
+    return EMBY_PATHS.lib_of(path)
 
 
 def _strategy():
@@ -2158,8 +2216,9 @@ def action_explore(args):
         poster = item.get('poster_path')
         emby_hit = emby_index.get(tmdb_id)
         in_emby = emby_hit is not None
-        in_local = in_emby and '影视媒体库' in (emby_hit.get('path') or '')
-        in_share = in_emby and '分享影视库' in (emby_hit.get('path') or '')
+        hit_lib = emby_lib_of(emby_hit.get('path') or '') if in_emby else ''
+        in_local = hit_lib == 'local'
+        in_share = hit_lib == 'share'
         if poster: poster_url = f'{TMDB_IMG}{poster}'
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
@@ -2270,6 +2329,7 @@ def emby_library_overview(force=False):
 
 def _build_emby_library_overview():
     out = {'series': [], 'movies': []}
+    lib_of = EMBY_PATHS.lib_of  # 热循环里要分类 ~10 万个分集路径，先绑定到局部
     series_data = emby_request('/Items', {
         'Recursive': 'true', 'IncludeItemTypes': 'Series',
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
@@ -2282,7 +2342,7 @@ def _build_emby_library_overview():
         if sid: eps_by_series[sid].append(ep)
 
     for s in series_data.get('Items', []):
-        sid = s.get('Id'); path = s.get('Path', '') or ''
+        sid = s.get('Id'); path = s.get('Path', '') or ''; s_lib = lib_of(path)
         # Emby 有时会残留"空壳"剧集条目（元数据存在，但没有任何实际分集文件，
         # 常见于删除后 Emby 尚未彻底清理，或媒体库正在扫描中）。这类条目不该
         # 出现在片库映射对照里，否则用户会看到"Emby 没有数据"却仍被列出的剧。
@@ -2296,10 +2356,10 @@ def _build_emby_library_overview():
             sn = ep.get('ParentIndexNumber'); en = ep.get('IndexNumber')
             if sn is None or en is None: continue
             season_map.setdefault(sn, set()).add(en)
-            ep_path = ep.get('Path', '') or ''
-            if '影视媒体库' in ep_path:
+            ep_lib = lib_of(ep.get('Path', '') or '')
+            if ep_lib == 'local':
                 local_eps_set.add((sn, en))
-            elif '分享影视库' in ep_path:
+            elif ep_lib == 'share':
                 share_eps_set.add((sn, en))
         if not season_map:
             continue
@@ -2320,7 +2380,7 @@ def _build_emby_library_overview():
             'year': s.get('ProductionYear'), 'rating': s.get('CommunityRating'),
             'tmdb_id': (s.get('ProviderIds') or {}).get('Tmdb'),
             'genres': s.get('Genres', []),
-            'in_local': '影视媒体库' in path, 'in_share': '分享影视库' in path, 'path': path,
+            'in_local': s_lib == 'local', 'in_share': s_lib == 'share', 'path': path,
             'has_image': 'Primary' in (s.get('ImageTags') or {}),
             'seasons': seasons, 'total_seasons': len(seasons),
             'total_episodes': sum(x['episodes'] for x in seasons),
@@ -2337,13 +2397,13 @@ def _build_emby_library_overview():
         'Limit': 50000,
     }) or {}
     for m in movie_data.get('Items', []):
-        path = m.get('Path', '') or ''
+        path = m.get('Path', '') or ''; m_lib = lib_of(path)
         out['movies'].append({
             'id': m.get('Id'), 'name': m.get('Name'),
             'year': m.get('ProductionYear'), 'rating': m.get('CommunityRating'),
             'tmdb_id': (m.get('ProviderIds') or {}).get('Tmdb'),
             'genres': m.get('Genres', []),
-            'in_local': '影视媒体库' in path, 'in_share': '分享影视库' in path,
+            'in_local': m_lib == 'local', 'in_share': m_lib == 'share',
             'path': path, 'has_image': 'Primary' in (m.get('ImageTags') or {}),
         })
     return out
@@ -2586,7 +2646,8 @@ def _recent(item_type, fields, limit, cutoff):
 
 
 def _src(path):
-    return '本地影视库' if '影视媒体库' in path else ('分享影视库' if '分享影视库' in path else '其它库')
+    lib = emby_lib_of(path)
+    return '本地影视库' if lib == 'local' else ('分享影视库' if lib == 'share' else '其它库')
 
 
 def action_stats(args):
@@ -3320,16 +3381,8 @@ def action_library_stats(args):
 
 def emby_path_to_container(emby_path):
     """将 Emby 返回的 Path 转成容器内路径"""
-    if not emby_path:
-        return None
-    p = str(emby_path)
-    pre_l = '/strm/115网盘/影视媒体库/'
-    pre_s = '/strm/115网盘/分享影视库/'
-    if p.startswith(pre_l):
-        return L_ROOT / p[len(pre_l):]
-    if p.startswith(pre_s):
-        return S_ROOT / p[len(pre_s):]
-    return None
+    # 严格按配置的根目录前缀映射（不做末级目录名兜底），宁可对不上也不能删错库
+    return EMBY_PATHS.to_container(emby_path)
 
 
 

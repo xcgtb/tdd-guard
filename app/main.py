@@ -848,9 +848,47 @@ def api_test_emby(body: dict = None):
         req = urllib.request.Request(url, headers={'X-Emby-Token': key})
         with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read().decode('utf-8'))
-        return {'status': 'success', 'message': f"✅ 连接成功\n服务器: {data.get('ServerName', '?')}\n版本: {data.get('Version', '?')}"}
+        msg = f"✅ 连接成功\n服务器: {data.get('ServerName', '?')}\n版本: {data.get('Version', '?')}"
+        # 设置页未保存的路径也拿来比对，方便边改边测；没传就用当前生效的配置
+        pm = engine.EmbyPathMap(body.get('emby_local_path', engine.EMBY_PATHS.local),
+                                body.get('emby_share_path', engine.EMBY_PATHS.share))
+        return {'status': 'success', 'message': msg + _emby_lib_paths_hint(host, key, pm)}
     except Exception as e:
         return {'status': 'error', 'message': f'❌ 连接失败: {e}'}
+
+
+def _emby_lib_paths_hint(host, key, pm):
+    """列出 Emby 媒体库的文件夹路径，并标出哪些对上了本地/分享库路径配置；
+    拿不到就返回空串，绝不影响连接测试结果"""
+    try:
+        req = urllib.request.Request(f'{host}/Library/VirtualFolders', headers={'X-Emby-Token': key})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            folders = json.loads(r.read().decode('utf-8'))
+        names = {'local': '本地库', 'share': '分享库'}
+        lines, hit = [], set()
+        for f in (folders if isinstance(folders, list) else []):
+            for loc in (f.get('Locations') or []):
+                loc_n = str(loc).replace('\\', '/').rstrip('/')
+                lib = pm.lib_of(loc_n, fallback=False)
+                if lib:
+                    tag = f' ← 匹配{names[lib]}'
+                    hit.add(lib)
+                else:
+                    # 媒体库选的是上级目录（一个库里同时含本地/分享）也算对上
+                    inner = [k for k, root in (('local', pm.local), ('share', pm.share))
+                             if root and loc_n and root.startswith(loc_n + '/')]
+                    tag = (' ← 包含' + '、'.join(names[k] for k in inner)) if inner else ''
+                    hit.update(inner)
+                lines.append(f"  {f.get('Name') or '?'}: {loc}{tag}")
+        if not lines:
+            return ''
+        out = '\n\nEmby 媒体库路径:\n' + '\n'.join(lines)
+        for lib, root in (('local', pm.local), ('share', pm.share)):
+            if lib not in hit:
+                out += f"\n⚠️ 当前{names[lib]}路径 {root or '(未设置)'} 未对上任何媒体库，请从上面复制正确的路径"
+        return out
+    except Exception:
+        return ''
 
 
 @app.post('/api/config/test/tmdb', dependencies=[Depends(auth)])
@@ -918,12 +956,7 @@ def api_emby_series_episodes(series_id: str):
         episodes = []
         for ep in data.get('Items', []):
             path = ep.get('Path', '') or ''
-            if '\u5206\u4eab\u5f71\u89c6\u5e93' in path:
-                lib = 'share'
-            elif '\u5f71\u89c6\u5a92\u4f53\u5e93' in path:
-                lib = 'local'
-            else:
-                lib = 'other'
+            lib = engine.emby_lib_of(path) or 'other'
             episodes.append({
                 'season': ep.get('ParentIndexNumber'),
                 'episode': ep.get('IndexNumber'),
