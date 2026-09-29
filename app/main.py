@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Media Agent Web 层 —— FastAPI 后端"""
-import os, sys, time, uuid, json, logging, threading, traceback, secrets, hmac, hashlib
+import os, sys, time, json, asyncio, logging, threading, secrets, hmac, hashlib
 import urllib.parse, urllib.request
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -10,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app import engine, bot, logger
+from app import engine, bot, logger, scheduler, tasks
 from app import config as _cfg
 from app.config import (
     load_config, save_config, EDITABLE_KEYS,
@@ -42,13 +43,6 @@ if not WEB_PASSWORD:
 
 # 版本号由 Docker 构建时按 git tag 注入（APP_VERSION），本地直接运行显示 dev
 APP_VERSION = os.environ.get('APP_VERSION', 'dev')
-app = FastAPI(title='TTD Guard', version=APP_VERSION)
-
-TASKS = {}
-TASK_LOCK = threading.Lock()
-CURRENT = {'task': None}
-
-
 
 
 def _cd2_ready():
@@ -67,9 +61,8 @@ def _cd2_ready():
 def _cd2_watchdog(max_wait=60, max_retries=5):
     """CD2 启动守门员：未就绪则退出容器让 Docker 重启"""
     import time as _t
-    from pathlib import Path as _P
     _logger = logging.getLogger('media_agent')
-    counter_file = _P('/data/.cd2_retry_count')
+    counter_file = engine.DATA_DIR / '.cd2_retry_count'
 
     count = 0
     if counter_file.exists():
@@ -110,23 +103,40 @@ def _cd2_watchdog(max_wait=60, max_retries=5):
     os._exit(42)
 
 
-bot.set_current_ref(CURRENT)
-try:
-    bot.start()
-except Exception as _e:
-    logging.getLogger('media_agent').warning('Bot 启动失败: %s', _e)
+def _startup():
+    """进程级副作用统一在这里启动（以前散落在模块导入时，测试/工具一 import 就起线程）"""
+    _log = logging.getLogger('media_agent')
+    try:
+        _n = logger.migrate_legacy()
+        if _n:
+            _log.info('迁移旧日志 %d 条到 JSONL', _n)
+    except Exception as e:
+        _log.warning('日志迁移失败: %s', e)
+    # CD2 启动守门员：仅在显式开启时运行
+    if os.environ.get('ENABLE_CD2_WATCHDOG', '0').strip().lower() in ('1', 'true', 'yes', 'on'):
+        threading.Thread(target=_cd2_watchdog, daemon=True, name='cd2-watchdog').start()
+    try:
+        bot.start()
+    except Exception as e:
+        _log.warning('Bot 启动失败: %s', e)
+    scheduler.start()
 
-# CD2 启动守门员：仅在显式开启时运行。
-# daemon=True 不影响正常 Docker 运行，但允许测试/工具仅导入 app.main 后正常退出。
-if os.environ.get('ENABLE_CD2_WATCHDOG', '0').strip().lower() in ('1', 'true', 'yes', 'on'):
-    threading.Thread(target=_cd2_watchdog, daemon=True, name='cd2-watchdog').start()
 
-try:
-    _n = logger.migrate_legacy()
-    if _n:
-        logging.getLogger('media_agent').info('迁移旧日志 %d 条到 JSONL', _n)
-except Exception as _e:
-    logging.getLogger('media_agent').warning('日志迁移失败: %s', _e)
+def _shutdown():
+    scheduler.stop()
+    bot.stop()
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    _startup()
+    try:
+        yield
+    finally:
+        _shutdown()
+
+
+app = FastAPI(title='TTD Guard', version=APP_VERSION, lifespan=lifespan)
 
 
 _security = HTTPBasic(auto_error=False)
@@ -190,7 +200,7 @@ async def api_login(request: Request):
         resp.set_cookie(SESSION_COOKIE, _sign_session(WEB_USER, exp), max_age=SESSION_DAYS * 86400,
                         httponly=True, samesite='lax', secure=secure, path='/')
         return resp
-    time.sleep(1)  # 简单减缓暴力猜测
+    await asyncio.sleep(1)  # 简单减缓暴力猜测（async 端点里不能 time.sleep，会卡住整个事件循环）
     return JSONResponse({'status': 'error', 'detail': '用户名或密码错误'}, status_code=401)
 
 
@@ -202,120 +212,18 @@ def api_logout():
 
 
 # ═══════════════════ 任务系统 ═══════════════════
-class _TaskStream:
-    def __init__(self, task):
-        self.task = task; self.buf = ''
-    def write(self, s):
-        self.buf += s
-        while '\n' in self.buf:
-            line, self.buf = self.buf.split('\n', 1)
-            line = line.strip()
-            if line:
-                self.task.logs.append(line)
-                if len(self.task.logs) > 500: del self.task.logs[:100]
-    def flush(self):
-        if self.buf.strip():
-            self.task.logs.append(self.buf.strip()); self.buf = ''
-
-
-class _StderrRouter:
-    """按线程分流 stderr：worker 线程的 print/traceback 写入各自任务日志，
-    其它线程（比如 uvicorn 处理别的请求时打印的异常）继续写真实 stderr，
-    避免一个进程级的 sys.stderr 替换把不相关线程的输出混进任务日志里。"""
-    def __init__(self, real):
-        self._real = real
-        self._lock = threading.Lock()
-        self._routes = {}
-
-    def register(self, stream):
-        with self._lock:
-            self._routes[threading.get_ident()] = stream
-
-    def unregister(self):
-        with self._lock:
-            self._routes.pop(threading.get_ident(), None)
-
-    def _target(self):
-        return self._routes.get(threading.get_ident(), self._real)
-
-    def write(self, s):
-        self._target().write(s)
-
-    def flush(self):
-        self._target().flush()
-
-    def isatty(self):
-        return False
-
-
-_STDERR_ROUTER = _StderrRouter(sys.stderr)
-sys.stderr = _STDERR_ROUTER
-
-
-class Task:
-    def __init__(self, kind):
-        self.id = uuid.uuid4().hex[:12]; self.kind = kind
-        self.status = 'running'; self.result = None; self.error = None
-        self.logs = []; self.ts = time.time(); self.stream = _TaskStream(self)
-    def to_dict(self, with_logs=True):
-        d = {'id': self.id, 'kind': self.kind, 'status': self.status,
-             'result': self.result, 'error': self.error, 'ts': self.ts}
-        if with_logs: d['logs'] = self.logs[-200:]
-        return d
-
-
+# 任务登记与互斥在 app/tasks.py，Web / Bot / 定时巡检共用同一个 manager
 class Args:
     def __init__(self, kw='', plan='', dry_run=False, **kwargs):
         self.kw = kw; self.plan = plan; self.dry_run = dry_run
         for k, v in kwargs.items(): setattr(self, k, v)
 
 
-TASKS_MAX_KEEP = 200  # 完成态任务最多保留这么多份，超出的按时间淘汰最旧的
-
-
-def _prune_tasks():
-    """TASKS 只增不减会在长期运行的容器里无限堆积，这里做个简单的上限淘汰：
-    只清理已经跑完的任务（running 状态的，包括当前正在跑的，永远不动）。"""
-    with TASK_LOCK:
-        done = sorted(
-            (t for t in TASKS.values() if t.status != 'running'),
-            key=lambda t: t.ts,
-        )
-        overflow = len(done) - TASKS_MAX_KEEP
-        if overflow > 0:
-            for t in done[:overflow]:
-                TASKS.pop(t.id, None)
-
-
 def spawn(kind, fn, *fargs):
-    with TASK_LOCK:
-        cur = CURRENT['task']
-        if cur is not None and cur.status == 'running':
-            raise HTTPException(429, f'已有任务 [{cur.kind}] 正在执行，请稍候')
-    _prune_tasks()
-    t = Task(kind); TASKS[t.id] = t
-
-    def worker():
-        with TASK_LOCK: CURRENT['task'] = t
-        _STDERR_ROUTER.register(t.stream)
-        handler = logging.StreamHandler(t.stream)
-        handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
-        engine.log.addHandler(handler)
-        try:
-            res = fn(*fargs)
-            t.result = res
-            # busy（跨入口文件锁被占用）也按失败处理，否则网页会当成"执行成功"，显示 0 项/undefined
-            t.status = 'error' if isinstance(res, dict) and res.get('status') in ('error', 'busy') else 'success'
-            if t.status == 'error': t.error = res.get('message', '未知错误')
-        except Exception as e:
-            traceback.print_exc(file=sys.stderr)
-            t.error = f'{type(e).__name__}: {e}'; t.status = 'error'
-        finally:
-            engine.log.removeHandler(handler); _STDERR_ROUTER.unregister()
-            with TASK_LOCK: CURRENT['task'] = None
-
-    threading.Thread(target=worker, daemon=True).start()
-    return t
+    try:
+        return tasks.manager.spawn(kind, fn, *fargs, source='web')
+    except tasks.TaskBusy as e:
+        raise HTTPException(429, str(e))
 
 
 STATIC_DIR = Path(__file__).parent.parent / 'static'
@@ -337,209 +245,6 @@ if STATIC_DIR.exists():
     app.mount('/static', StaticFiles(directory=str(STATIC_DIR)), name='static')
 
 
-# ═══════════════════ 后台轮询：入库 + 订阅 + 晨报 ═══════════════════
-_bg_state = {
-    'last_ingest_check': 0,
-    'last_sub_check': 0,
-    'last_morning_date': '',
-    'last_morning_prescan_date': '',
-}
-
-
-# ═══════════════════ 双库治理：定时巡检（只扫描+通知，不自动清理） ═══════════════════
-GOV_AUTO_FILE = engine.DATA_DIR / 'gov_auto.json'
-_GOV_AUTO_DEFAULT = {
-    'enabled': False,
-    'interval_hours': 6,
-    'notify_when_clean': False,
-    'only_on_change': True,
-    'last_run': 0,
-    'last_status': '',
-    'last_sig': '',
-}
-_gov_auto_lock = threading.Lock()
-_gov_auto_running = {'v': False}
-
-
-def _gov_auto_load() -> dict:
-    d = dict(_GOV_AUTO_DEFAULT)
-    try:
-        d.update(json.loads(GOV_AUTO_FILE.read_text(encoding='utf-8')))
-    except (OSError, ValueError):
-        pass
-    return d
-
-
-def _gov_auto_save(d: dict):
-    with _gov_auto_lock:
-        try:
-            engine.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = GOV_AUTO_FILE.with_suffix('.tmp')
-            tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
-            tmp.replace(GOV_AUTO_FILE)
-        except OSError as e:
-            engine.log.warning('保存治理巡检设置失败: %s', e)
-
-
-def _gov_auto_sig(res: dict) -> str:
-    keys = []
-    for k in ('del_local_items', 'del_share_items'):
-        for it in res.get(k) or []:
-            keys.append('%s|%s|%s' % (k, it.get('title', ''), it.get('text', '')))
-    keys.sort()
-    return hashlib.sha1('\n'.join(keys).encode('utf-8')).hexdigest()
-
-
-def _gov_auto_run():
-    """后台线程：执行一次静默扫描，按设置决定是否推送 Telegram。"""
-    try:
-        try:
-            t = spawn('inter_check', engine.ACTIONS['inter_check'], Args(silent=True))
-        except HTTPException:
-            engine.log.info('治理巡检：已有任务在执行，稍后重试')
-            return
-        while t.status == 'running':
-            time.sleep(2)
-        cfg = _gov_auto_load()
-        cfg['last_run'] = time.time()
-        if t.status != 'success' or not isinstance(t.result, dict):
-            cfg['last_status'] = '扫描失败: %s' % (t.error or '未知错误')
-            _gov_auto_save(cfg)
-            bot.notify_auto_scan(None, error=cfg['last_status'])
-            return
-        res = t.result
-        total = res.get('total_clean_cnt', 0)
-        sig = _gov_auto_sig(res) if total else ''
-        cfg['last_status'] = '待清理本地 %d / 待淘汰分享 %d' % (res.get('del_local_cnt', 0), res.get('del_share_cnt', 0))
-        should = False
-        if total > 0:
-            should = (not cfg.get('only_on_change')) or sig != cfg.get('last_sig', '')
-        elif cfg.get('notify_when_clean'):
-            should = True
-        if should and bot.notify_auto_scan(res):
-            cfg['last_sig'] = sig
-        elif total == 0:
-            cfg['last_sig'] = ''
-        _gov_auto_save(cfg)
-    except Exception as e:
-        engine.log.warning('治理巡检异常: %s', e)
-    finally:
-        _gov_auto_running['v'] = False
-
-
-def _gov_auto_tick(now: float):
-    if _gov_auto_running['v']:
-        return
-    cfg = _gov_auto_load()
-    if not cfg.get('enabled'):
-        return
-    try:
-        interval = max(1, min(168, int(cfg.get('interval_hours') or 6))) * 3600
-    except (ValueError, TypeError):
-        interval = 6 * 3600
-    if now - float(cfg.get('last_run') or 0) < interval:
-        return
-    _gov_auto_running['v'] = True
-    threading.Thread(target=_gov_auto_run, daemon=True, name='gov-auto').start()
-
-
-def _bg_loop():
-
-    """每 30 秒检查一次，决定是否触发：入库缓存刷新 / 订阅检查 / 晨报预扫 / 晨报发送"""
-    time.sleep(15)      # 启动后缓 15 秒，等 Emby 就绪
-    while True:
-        try:
-            cfg = load_config()
-            now = time.time()
-
-            # ── 入库监控（默认 5 分钟） ──
-            try:
-                ingest_enabled = cfg.get('ingest_enabled', '1') == '1'
-                ingest_interval = max(60, int(cfg.get('ingest_interval_min') or 5) * 60)
-            except (ValueError, TypeError):
-                ingest_enabled = True; ingest_interval = 300
-            if ingest_enabled and (now - _bg_state['last_ingest_check']) >= ingest_interval:
-                _bg_state['last_ingest_check'] = now
-                try:
-                    engine.refresh_ingest_cache()
-                except Exception as e:
-                    engine.log.warning('入库缓存刷新失败: %s', e)
-
-            # ── TMDB 对照（后台预热） ──
-            try:
-                scan_enabled = cfg.get('tmdb_scan_enabled', '1') == '1'
-                scan_hours = int(cfg.get('tmdb_scan_interval_hours') or 24)
-                last_ts = float(cfg.get('tmdb_scan_last_ts') or '0')
-            except (ValueError, TypeError):
-                scan_enabled = True; scan_hours = 24; last_ts = 0
-            if scan_enabled and (now - last_ts) >= scan_hours * 3600:
-                try:
-                    engine.refresh_tmdb_scan()
-                except Exception as e:
-                    engine.log.warning('TMDB 对照失败: %s', e)
-
-            # ── 订阅轮询 ──
-            try:
-                interval = max(300, int(cfg.get('subscribe_interval_min') or 30) * 60)
-            except ValueError:
-                interval = 1800
-            if cfg.get('subscribe_enabled', '1') == '1' and (now - _bg_state['last_sub_check']) >= interval:
-                _bg_state['last_sub_check'] = now
-                try:
-                    engine.check_subscriptions(send_notify=True)
-                except Exception as e:
-                    engine.log.warning('订阅检查失败: %s', e)
-
-            # ── 双库治理定时巡检 ──
-            try:
-                _gov_auto_tick(now)
-            except Exception as e:
-                engine.log.warning('治理巡检调度失败: %s', e)
-
-            # ── 晨报预扫 + 发送 ──
-            try:
-                mr = get_morning_report()
-            except Exception:
-                mr = {'enabled': False}
-
-            if mr.get('enabled'):
-                today = time.strftime('%Y-%m-%d')
-                hour = int(mr.get('hour', 9)); minute = int(mr.get('minute', 0))
-                prescan_min = int(mr.get('prescan_min', 5))
-                lt = time.localtime()
-                lt_minutes = lt.tm_hour * 60 + lt.tm_min
-                target_minutes = hour * 60 + minute
-
-                # ── 预扫：提前 N 分钟静默刷新入库缓存 ──
-                if prescan_min > 0:
-                    prescan_target = target_minutes - prescan_min
-                    if prescan_target < 0: prescan_target += 24 * 60
-                    in_prescan_window = (prescan_target <= lt_minutes < prescan_target + 5)
-                    if in_prescan_window and mr.get('prescan_last_date') != today:
-                        engine.log.info('晨报预扫触发')
-                        try:
-                            engine.refresh_ingest_cache()
-                            _cfg.mark_morning_prescan(today)
-                        except Exception as e:
-                            engine.log.warning('晨报预扫失败: %s', e)
-
-                # ── 到点发送 ──
-                if lt_minutes >= target_minutes and mr.get('last_date') != today:
-                    try:
-                        ok = engine.send_morning_report(mr.get('items') or [], force_refresh=False)
-                        if ok:
-                            engine.log.info('晨报已发送')
-                    except Exception as e:
-                        engine.log.warning('晨报发送失败: %s', e)
-
-        except Exception as e:
-            engine.log.warning('后台轮询异常: %s', e)
-        time.sleep(30)
-
-
-threading.Thread(target=_bg_loop, daemon=True, name='bg-poller').start()
-
-
 # ═══════════════════ 健康 / 仪表盘 ═══════════════════
 @app.get('/api/health')
 def health():
@@ -550,7 +255,12 @@ def health():
                 'CLOUD_L_ROOT': str(engine.CLOUD_L_ROOT) + (' ✅' if engine.CLOUD_L_ROOT.exists() else ' ❌'),
                 'DATA_DIR':     str(engine.DATA_DIR) + (' ✅' if engine.DATA_DIR.exists() else ' ❌'),
             },
-            'current_task': CURRENT['task'].to_dict(with_logs=False) if CURRENT['task'] else None}
+            'current_task': _current_task_dict()}
+
+
+def _current_task_dict():
+    cur = tasks.manager.running()
+    return cur.to_dict(with_logs=False) if cur else None
 
 
 @app.get('/api/dashboard', dependencies=[Depends(auth)])
@@ -618,7 +328,7 @@ def dashboard():
 
 @app.get('/api/task/{tid}', dependencies=[Depends(auth)])
 def get_task(tid: str):
-    t = TASKS.get(tid)
+    t = tasks.manager.get(tid)
     if not t: raise HTTPException(404, '任务不存在或已过期')
     return t.to_dict()
 
@@ -828,15 +538,7 @@ def api_cache_refresh():
     """清除全部内存缓存并触发后台重建（STRM 计数 / 片库映射 / 统计 / 分集 / Emby 索引）。
     磁盘缓存文件保留作为兜底，后台重建完成后自动覆盖。"""
     try:
-        engine.invalidate_stats_cache()
-        engine._strm_count_cache['ts'] = 0
-        engine._ep_cache['ts'] = 0
-        engine._ep_cache['data'] = None
-        engine._emby_index_cache['ts'] = 0
-        engine._emby_index_cache['data'] = None
-        engine._emby_lib_cache['ts'] = 0
-        engine._emby_lib_cache['data'] = None
-        engine._invalidate_lib_cache()
+        engine.invalidate_media_caches()
         threading.Thread(target=engine._overview_bg_refresh, daemon=True,
                          name='cache-refresh-overview').start()
         threading.Thread(target=engine._strm_count_bg_refresh, daemon=True,
@@ -1004,44 +706,14 @@ def api_gov_latest():
 
 
 # ═══════════════════ 双库治理：定时巡检设置 ═══════════════════
-def _gov_auto_view() -> dict:
-    d = _gov_auto_load()
-    last = float(d.get('last_run') or 0)
-    interval = max(1, int(d.get('interval_hours') or 6)) * 3600
-    return {
-        'enabled': bool(d['enabled']),
-        'interval_hours': int(d['interval_hours']),
-        'notify_when_clean': bool(d['notify_when_clean']),
-        'only_on_change': bool(d['only_on_change']),
-        'last_run': last,
-        'last_status': d.get('last_status', ''),
-        'next_run': (last + interval) if (d['enabled'] and last) else 0,
-        'running': _gov_auto_running['v'],
-    }
-
-
 @app.get('/api/governance/auto', dependencies=[Depends(auth)])
 def api_get_gov_auto():
-    return {'status': 'success', 'settings': _gov_auto_view()}
+    return {'status': 'success', 'settings': scheduler.gov_auto_view()}
 
 
 @app.post('/api/governance/auto', dependencies=[Depends(auth)])
 def api_set_gov_auto(body: dict = None):
-    body = body or {}
-    d = _gov_auto_load()
-    if 'enabled' in body:
-        d['enabled'] = bool(body['enabled'])
-    if 'interval_hours' in body:
-        try:
-            d['interval_hours'] = max(1, min(168, int(body['interval_hours'])))
-        except (ValueError, TypeError):
-            d['interval_hours'] = 6
-    if 'notify_when_clean' in body:
-        d['notify_when_clean'] = bool(body['notify_when_clean'])
-    if 'only_on_change' in body:
-        d['only_on_change'] = bool(body['only_on_change'])
-    _gov_auto_save(d)
-    return {'status': 'success', 'settings': _gov_auto_view()}
+    return {'status': 'success', 'settings': scheduler.gov_auto_update(body or {})}
 
 
 # ═══════════════════ 入库监控设置 ═══════════════════
@@ -1176,9 +848,47 @@ def api_test_emby(body: dict = None):
         req = urllib.request.Request(url, headers={'X-Emby-Token': key})
         with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read().decode('utf-8'))
-        return {'status': 'success', 'message': f"✅ 连接成功\n服务器: {data.get('ServerName', '?')}\n版本: {data.get('Version', '?')}"}
+        msg = f"✅ 连接成功\n服务器: {data.get('ServerName', '?')}\n版本: {data.get('Version', '?')}"
+        # 设置页未保存的路径也拿来比对，方便边改边测；没传就用当前生效的配置
+        pm = engine.emby_path_map(body.get('emby_local_path', engine.EMBY_PATHS.local),
+                                body.get('emby_share_path', engine.EMBY_PATHS.share))
+        return {'status': 'success', 'message': msg + _emby_lib_paths_hint(host, key, pm)}
     except Exception as e:
         return {'status': 'error', 'message': f'❌ 连接失败: {e}'}
+
+
+def _emby_lib_paths_hint(host, key, pm):
+    """列出 Emby 媒体库的文件夹路径，并标出哪些对上了本地/分享库路径配置；
+    拿不到就返回空串，绝不影响连接测试结果"""
+    try:
+        req = urllib.request.Request(f'{host}/Library/VirtualFolders', headers={'X-Emby-Token': key})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            folders = json.loads(r.read().decode('utf-8'))
+        names = {'local': '本地库', 'share': '分享库'}
+        lines, hit = [], set()
+        for f in (folders if isinstance(folders, list) else []):
+            for loc in (f.get('Locations') or []):
+                loc_n = str(loc).replace('\\', '/').rstrip('/')
+                lib = pm.lib_of(loc_n, fallback=False)
+                if lib:
+                    tag = f' ← 匹配{names[lib]}'
+                    hit.add(lib)
+                else:
+                    # 媒体库选的是上级目录（一个库里同时含本地/分享）也算对上
+                    inner = [k for k, root in (('local', pm.local), ('share', pm.share))
+                             if root and loc_n and root.startswith(loc_n + '/')]
+                    tag = (' ← 包含' + '、'.join(names[k] for k in inner)) if inner else ''
+                    hit.update(inner)
+                lines.append(f"  {f.get('Name') or '?'}: {loc}{tag}")
+        if not lines:
+            return ''
+        out = '\n\nEmby 媒体库路径:\n' + '\n'.join(lines)
+        for lib, root in (('local', pm.local), ('share', pm.share)):
+            if lib not in hit:
+                out += f"\n⚠️ 当前{names[lib]}路径 {root or '(未设置)'} 未对上任何媒体库，请从上面复制正确的路径"
+        return out
+    except Exception:
+        return ''
 
 
 @app.post('/api/config/test/tmdb', dependencies=[Depends(auth)])
@@ -1228,15 +938,6 @@ def api_bot_status():
     return {'status': 'success', 'bot': bot.status()}
 
 
-def _gc():
-    while True:
-        time.sleep(600)
-        cut = time.time() - 3600
-        for k in [k for k, v in TASKS.items() if v.ts < cut]:
-            TASKS.pop(k, None)
-
-
-threading.Thread(target=_gc, daemon=True).start()
 
 
 
@@ -1255,12 +956,7 @@ def api_emby_series_episodes(series_id: str):
         episodes = []
         for ep in data.get('Items', []):
             path = ep.get('Path', '') or ''
-            if '\u5206\u4eab\u5f71\u89c6\u5e93' in path:
-                lib = 'share'
-            elif '\u5f71\u89c6\u5a92\u4f53\u5e93' in path:
-                lib = 'local'
-            else:
-                lib = 'other'
+            lib = engine.emby_lib_of(path) or 'other'
             episodes.append({
                 'season': ep.get('ParentIndexNumber'),
                 'episode': ep.get('IndexNumber'),
@@ -1271,6 +967,53 @@ def api_emby_series_episodes(series_id: str):
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
+
+
+def _delete_title_files(files, target, title, media_type, series_id=None):
+    """单剧/单片删除的公共执行段：拿跨入口文件锁 → 删文件 → 刷新 Emby → 失效缓存 → 写审计。
+    以前两个端点各写一遍，而且都不拿锁，可能和正在执行的双库清理同时删同一批文件。"""
+    root = engine.L_ROOT if target == 'local' else engine.S_ROOT
+    cloud = engine.CLOUD_L_ROOT if target == 'local' else None
+    try:
+        with engine.mutation_lock():
+            result = engine.safe_delete_files(files, root, cloud, dry_run=False)
+    except engine.MutationBusy as e:
+        return {'status': 'busy', 'message': str(e)}
+
+    try:
+        engine.notify_emby_refresh()
+    except Exception:
+        pass
+
+    # 片库映射页用的是已对照过 TMDB 的持久化缓存（_emby_lib_cache / 磁盘文件）。
+    # 单剧删除只在缓存里"就地"更新/移除这一部剧，其余剧集的对照结果保留，
+    # 否则下次打开片库映射所有剧都会被打回"待对照"，只能整页重跑很慢的 TMDB 对照。
+    engine.invalidate_media_caches(keep_emby_lib=series_id is not None)
+    if series_id is not None:
+        try:
+            engine.patch_emby_lib_cache_after_series_delete(series_id, target)
+        except Exception:
+            pass
+
+    target_cn = '本地库' if target == 'local' else '分享库'
+    cloud_note = '未处理云端源文件' if target == 'share' else ('删除 %d 个云端源文件' % result['cloud_removed'])
+    engine.write_audit_log(
+        '单剧删除',
+        '《%s》删除%s：%d 个 strm' % (title, target_cn, result['strm_removed']),
+        [
+            '类型：%s' % media_type,
+            '目标：%s' % target_cn,
+            'strm 删除：%d 个' % result['strm_removed'],
+            '云端源文件：%s' % cloud_note,
+        ] + (['错误：%s' % e for e in result.get('errors', [])[:3]])
+    )
+    return {
+        'status': 'success', 'dry_run': False, 'target': target,
+        'count': len(files),
+        'strm_removed': result['strm_removed'],
+        'cloud_removed': result['cloud_removed'],
+        'errors': result.get('errors', []),
+    }
 
 
 @app.post('/api/emby/series/{series_id}/delete', dependencies=[Depends(auth)])
@@ -1296,86 +1039,21 @@ def api_emby_series_delete(series_id: str, body: dict = None):
             'Fields': 'Path',
             'Limit': 5000,
         }) or {}
-        items = data.get('Items') or []
+        root = engine.L_ROOT if target == 'local' else engine.S_ROOT
         files = []
-        for ep in items:
+        for ep in data.get('Items') or []:
             conv = engine.emby_path_to_container(ep.get('Path') or '')
-            if not conv:
-                continue
-            in_local = engine._inside(conv, engine.L_ROOT)
-            in_share = engine._inside(conv, engine.S_ROOT)
-            if target == 'local' and not in_local:
-                continue
-            if target == 'share' and not in_share:
-                continue
-            if conv.exists():
+            if conv and engine._inside(conv, root) and conv.exists():
                 files.append(conv)
 
         if not files:
             return {'status': 'success', 'count': 0, 'target': target,
                     'message': '该库无此剧文件'}
-
         if dry_run:
-            return {
-                'status': 'success', 'dry_run': True,
-                'count': len(files), 'target': target,
-            }
-
-        # 真删
-        if target == 'local':
-            result = engine.safe_delete_files(files, engine.L_ROOT, engine.CLOUD_L_ROOT, dry_run=False)
-        else:
-            result = engine.safe_delete_files(files, engine.S_ROOT, None, dry_run=False)
-
-        # 通知 Emby 刷新媒体库
-        try:
-            engine.notify_emby_refresh()
-        except Exception:
-            pass
-
-        # 清空分集/索引缓存，保证下次查这部剧能拿到最新数据
-        try:
-            engine._ep_cache['ts'] = 0
-            engine._ep_cache['data'] = None
-            engine._emby_index_cache['ts'] = 0
-            engine._emby_index_cache['data'] = None
-            engine._invalidate_lib_cache()
-            engine.invalidate_stats_cache()
-        except Exception:
-            pass
-
-        # 片库映射页用的是已对照过 TMDB 的持久化缓存（_emby_lib_cache / 磁盘文件），
-        # 之前这里会整体清空，导致下次打开片库映射时所有剧集的 TMDB 对照结果
-        # 都被打回"待对照"，只能整页重新跑一遍很慢的 TMDB 对照。
-        # 这里改为只在缓存里"就地"更新/移除这一部剧，其余剧集的对照结果保留。
-        try:
-            engine.patch_emby_lib_cache_after_series_delete(series_id, target)
-        except Exception:
-            pass
-
-        target_cn = '本地库' if target == 'local' else '分享库'
-        cloud_note = '未处理云端源文件' if target == 'share' else ('删除 %d 个云端源文件' % result['cloud_removed'])
-        engine.write_audit_log(
-            '单剧删除',
-            '《%s》删除%s：%d 个 strm' % (series_name, target_cn, result['strm_removed']),
-            [
-                '类型：%s' % media_type,
-                '目标：%s' % target_cn,
-                'strm 删除：%d 个' % result['strm_removed'],
-                '云端源文件：%s' % cloud_note,
-            ] + (['错误：%s' % e for e in result.get('errors', [])[:3]])
-        )
-
-        return {
-            'status': 'success', 'dry_run': False, 'target': target,
-            'count': len(files),
-            'strm_removed': result['strm_removed'],
-            'cloud_removed': result['cloud_removed'],
-            'errors': result.get('errors', []),
-        }
+            return {'status': 'success', 'dry_run': True, 'count': len(files), 'target': target}
+        return _delete_title_files(files, target, series_name, media_type, series_id=series_id)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
-
 
 
 @app.post('/api/emby/movie/delete_by_tmdb', dependencies=[Depends(auth)])
@@ -1387,75 +1065,20 @@ def api_movie_delete(body: dict = None):
     dry_run = bool(body.get('dry_run', True))
     movie_name = str(body.get('name', '')).strip() or '(未命名)'
 
-    if not tmdb_id:
+    if not tmdb_id.isdigit():
         return {'status': 'error', 'message': '缺少 tmdb_id'}
     if target not in ('local', 'share'):
         return {'status': 'error', 'message': 'target 必须是 local 或 share'}
 
     root = engine.L_ROOT if target == 'local' else engine.S_ROOT
-    cloud = engine.CLOUD_L_ROOT if target == 'local' else None
-
-    if not root.exists():
-        return {'status': 'success', 'count': 0, 'target': target}
-
-    # 匹配 {tmdb-xxx} / {tmdb_xxx} / tmdb-xxx 三种格式
-    marks = ['{tmdb-%s}' % tmdb_id, '{tmdb_%s}' % tmdb_id, 'tmdb-%s' % tmdb_id]
-    files = []
-    for entry in root.rglob('*'):
-        if not entry.is_dir():
-            continue
-        name = entry.name
-        if any(m in name for m in marks):
-            for f in entry.rglob('*.strm'):
-                files.append(f)
-
+    files = engine.find_movie_strms_by_tmdb(root, tmdb_id)
     if not files:
         return {'status': 'success', 'count': 0, 'target': target}
-
     if dry_run:
         return {'status': 'success', 'dry_run': True, 'count': len(files), 'target': target}
+    return _delete_title_files(files, target, movie_name, '电影')
 
-    result = engine.safe_delete_files(files, root, cloud, dry_run=False)
-
-    try:
-        engine.notify_emby_refresh()
-    except Exception:
-        pass
-
-    try:
-        engine._ep_cache['ts'] = 0
-        engine._ep_cache['data'] = None
-        engine._emby_lib_cache['ts'] = 0
-        engine._emby_lib_cache['data'] = None
-        engine._emby_index_cache['ts'] = 0
-        engine._emby_index_cache['data'] = None
-        engine._invalidate_lib_cache()
-        engine.invalidate_stats_cache()
-    except Exception:
-        pass
-
-    target_cn = '本地库' if target == 'local' else '分享库'
-    cloud_note = '未处理云端源文件' if target == 'share' else ('删除 %d 个云端源文件' % result['cloud_removed'])
-
-    engine.write_audit_log(
-        '单剧删除',
-        '《%s》删除%s：%d 个 strm' % (movie_name, target_cn, result['strm_removed']),
-        [
-            '类型：电影',
-            '目标：%s' % target_cn,
-            'strm 删除：%d 个' % result['strm_removed'],
-            '云端源文件：%s' % cloud_note,
-        ] + (['错误：%s' % e for e in result.get('errors', [])[:3]])
-    )
-
-    return {
-        'status': 'success', 'dry_run': False, 'target': target,
-        'count': len(files),
-        'strm_removed': result['strm_removed'],
-        'cloud_removed': result['cloud_removed'],
-        'errors': result.get('errors', []),
-    }
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=8321)
+    uvicorn.run(app, host='0.0.0.0', port=8321)

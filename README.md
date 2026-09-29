@@ -195,6 +195,10 @@ http://NAS-IP:8321
 
 用 `WEB_USER` / `WEB_PASSWORD` 登录即可。第一次进去，建议先到「规则设置」填好 Emby 地址与 API Key、TMDB API Key。
 
+### 4. 配置 Emby 路径映射
+
+TTD Guard 靠 Emby 返回的文件路径判断一部片属于本地库还是分享库（片库映射、影视探索、单剧删除都依赖它）。请在「规则设置 → 服务配置」里填写 **Emby 中的本地库路径** / **Emby 中的分享库路径**，即 Emby 媒体库里看到的 STRM 根目录（Emby 容器内路径，不是 TTD Guard 的 `/media/local`）。不确定时点 Emby 的「测试连接」，结果里会列出 Emby 各媒体库的文件夹路径并标出哪些已对上。也可以用环境变量 `EMBY_LOCAL_PATH` / `EMBY_SHARE_PATH` 固定（会覆盖 Web 设置页的值）。默认值为 `/strm/115网盘/影视媒体库`、`/strm/115网盘/分享影视库`。
+
 ---
 
 ## Web 界面
@@ -296,7 +300,9 @@ ttd-guard/
 ├── app/                       # 后端核心代码
 │   ├── core.py                #   纯函数层（画质评分、集号解析、分类），无 IO
 │   ├── engine.py              #   治理引擎（扫描 / 择优 / 删除）
-│   ├── main.py                #   FastAPI Web 层
+│   ├── main.py                #   FastAPI Web 层（HTTP 接口 + 应用生命周期）
+│   ├── tasks.py               #   统一任务总线（Web / Bot / 定时巡检共用互斥）
+│   ├── scheduler.py           #   后台调度（入库 / 订阅 / 巡检 / 晨报 / TMDB 预热）
 │   ├── bot.py                 #   Telegram Bot
 │   ├── config.py              #   配置读写
 │   └── logger.py              #   JSONL 审计日志

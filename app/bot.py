@@ -10,11 +10,11 @@ import json, re, time, html, logging, threading, urllib.request, urllib.parse
 from argparse import Namespace
 
 try:
-    from . import engine
+    from . import engine, tasks
     from . import config as _cfg
     from .config import load_config
 except ImportError:
-    import engine
+    import engine, tasks
     import config as _cfg
     from config import load_config
 
@@ -25,9 +25,9 @@ _state = {
     'running': False, 'thread': None, 'offset': 0,
     'last_error': '', 'last_poll': 0, 'bot_username': '',
     'initialized': False,
+    'gen': 0,  # 每次 start() +1；旧代的轮询线程发现代数变了就退出
 }
 _LOCK = threading.Lock()
-_current_ref = {'obj': None}
 
 _delete_queue = []
 _DELETE_LOCK = threading.Lock()
@@ -39,13 +39,8 @@ _last_menu_msg = {}
 
 
 # ═══════════════════ 基础 ═══════════════════
-def set_current_ref(ref):
-    _current_ref['obj'] = ref
-
-
 def _get_current_task():
-    ref = _current_ref['obj']
-    return ref.get('task') if ref else None
+    return tasks.manager.running()
 
 
 def _api(token, method, params=None, timeout=35):
@@ -74,9 +69,13 @@ def _try_delete(token, chat_id, message_id):
         return False
 
 
-def _cleanup_loop():
+def _alive(gen):
+    return _state['running'] and _state['gen'] == gen
+
+
+def _cleanup_loop(gen):
     log.info('阅后即焚线程启动')
-    while _state['running']:
+    while _alive(gen):
         time.sleep(2)
         now = time.time()
         token = (load_config().get('telegram_bot_token') or '').strip()
@@ -254,6 +253,10 @@ def _busy_msg():
     return ''
 
 
+# 这些 Bot 动作会遍历双库或改文件，必须走统一任务总线与 Web / 定时巡检互斥
+_EXCLUSIVE_KINDS = {'check': 'inter_check', 'clean': 'inter_clean'}
+
+
 def _spawn_and_watch(kind, action_fn, chat_id, message_id=None,
                      user_msg_id=None, **kwargs):
     token = (load_config().get('telegram_bot_token') or '').strip()
@@ -266,15 +269,35 @@ def _spawn_and_watch(kind, action_fn, chat_id, message_id=None,
     _defaults.update(kwargs)
     args = Namespace(**_defaults)
 
-    def worker():
-        try:
-            res = action_fn(args)
-            _notify_result(token, chat_id, kind, res, message_id, user_msg_id)
-        except Exception as e:
-            log.exception('Bot 任务失败')
-            _send(token, chat_id, f'❌ {kind} 执行失败: {e}')
+    def on_done(t):
+        if isinstance(t.result, dict):
+            _notify_result(token, chat_id, kind, t.result, message_id, user_msg_id)
+        else:
+            _send(token, chat_id, f'❌ {kind} 执行失败: {t.error or "未知错误"}')
 
-    threading.Thread(target=worker, daemon=True).start()
+    exclusive = kind in _EXCLUSIVE_KINDS
+    try:
+        tasks.manager.spawn(_EXCLUSIVE_KINDS.get(kind, 'bot_' + kind), action_fn, args,
+                            exclusive=exclusive, source='bot', on_done=on_done)
+    except tasks.TaskBusy as e:
+        txt = f'⏳ {e}'
+        if message_id: _edit(token, chat_id, message_id, txt, {'inline_keyboard': []})
+        else: _send(token, chat_id, txt)
+
+
+def _latest_pending_plan_id():
+    """最近一份仍可执行的计划。不能只按文件 mtime 取最新：计划被标记 done/expired 时会重写文件，
+    mtime 变新，按 mtime 会选中一份已执行过的旧计划。"""
+    best = None
+    for f in engine.STATE_DIR.glob('plan_*.json'):
+        data = engine.load_plan(f.stem.replace('plan_', ''))
+        if not data or data.get('state') != 'pending':
+            continue
+        if time.time() - float(data.get('ts') or 0) > engine.PLAN_TTL:
+            continue
+        if best is None or data.get('ts', 0) > best.get('ts', 0):
+            best = data
+    return best.get('id') if best else None
 
 
 # ═══════════════════ 菜单 ═══════════════════
@@ -331,11 +354,9 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
             _spawn_and_watch('check', engine.ACTIONS['inter_check'], chat_id, message_id=mid)
 
     elif action == 'clean':
-        plan_files = sorted(engine.STATE_DIR.glob('plan_*.json'),
-                            key=lambda p: p.stat().st_mtime, reverse=True)
-        if not plan_files:
-            _send(token, chat_id, '⚠️ 还没有扫描计划，请先发送 /check'); return
-        plan_id = plan_files[0].stem.replace('plan_', '')
+        plan_id = _latest_pending_plan_id()
+        if not plan_id:
+            _send(token, chat_id, '⚠️ 没有可执行的扫描计划（未扫描或已过期/已执行），请先发送 /check'); return
         _send(token, chat_id,
               f'🗑️ 将对最近计划 <code>{plan_id}</code> 执行清理。\n\n⚠️ 此操作不可撤销！',
               _clean_confirm_keyboard(plan_id))
@@ -497,13 +518,13 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
             if message_id: _edit(token, chat_id, message_id, txt, {'inline_keyboard': []})
             else: _send(token, chat_id, txt)
             return
-        skipped = res.get('skipped') or []
+        skipped = res.get('skipped') or 0  # 引擎返回的是跳过项数（int），以前按列表 len() 会在清理完成后抛错
         text = '\n'.join([engine.tg_title('🗑️', '清理完成', engine.tg_stamp()), '',
                           engine.tg_row('💾', '释放本地', res.get('loc_cnt', 0)),
                           engine.tg_row('📤', '淘汰分享', res.get('sh_cnt', 0)),
                           engine.tg_row('🔄', 'Emby 刷新', '✅' if res.get('refreshed') else '❌')])
         if skipped:
-            text += '\n' + engine.tg_row('⏭️', '跳过', len(skipped), '状态已变化，未执行')
+            text += '\n' + engine.tg_row('⏭️', '跳过', skipped, '状态已变化，未执行')
         if message_id: _edit(token, chat_id, message_id, text, {'inline_keyboard': []})
         else: _send(token, chat_id, text)
 
@@ -696,9 +717,9 @@ def _handle_callback(token, cb):
 
 
 # ═══════════════════ 长轮询 ═══════════════════
-def _poll_loop():
+def _poll_loop(gen):
     log.info('Bot 长轮询线程启动')
-    while _state['running']:
+    while _alive(gen):
         try:
             cfg = load_config()
             token = (cfg.get('telegram_bot_token') or '').strip()
@@ -726,11 +747,15 @@ def _poll_loop():
                 log.warning('getUpdates 失败: %s', e)
                 time.sleep(5); continue
 
+            if not _alive(gen):
+                break  # 长轮询期间被 restart() 换代：这批更新留给新线程处理，避免同一条命令执行两次
             _state['last_poll'] = time.time()
             if not resp.get('ok'):
                 time.sleep(3); continue
 
             for upd in resp.get('result', []):
+                if not _alive(gen):
+                    break  # 处理到一半被换代：剩下的留给新线程（offset 未推进），不重复执行
                 _state['offset'] = upd['update_id'] + 1
                 try:
                     if 'message' in upd: _handle_command(token, upd['message'])
@@ -747,15 +772,22 @@ def _poll_loop():
 
 
 def start():
+    with _LOCK:  # 两次配置保存同时触发 restart 时，不能读到同一个 gen 起出两个轮询线程
+        _start_locked()
+
+
+def _start_locked():
     if _state['running']: return
     token = (load_config().get('telegram_bot_token') or '').strip()
     if not token:
         log.info('Telegram Bot Token 未配置，跳过启动'); return
     _state['running'] = True
-    t = threading.Thread(target=_poll_loop, daemon=True, name='tg-bot')
+    _state['gen'] += 1
+    gen = _state['gen']
+    t = threading.Thread(target=_poll_loop, args=(gen,), daemon=True, name='tg-bot')
     t.start()
     _state['thread'] = t
-    c = threading.Thread(target=_cleanup_loop, daemon=True, name='tg-cleanup')
+    c = threading.Thread(target=_cleanup_loop, args=(gen,), daemon=True, name='tg-cleanup')
     c.start()
     log.info('Telegram Bot 已启动')
 
@@ -765,15 +797,21 @@ def stop():
 
 
 def restart():
+    with _LOCK:
+        _restart_locked()
+
+
+def _restart_locked():
     stop()
     # 重置连接状态，让 _poll_loop 重新 getMe + setMyCommands，
     # 否则改了 Bot Token 后用户名/命令列表会停留在旧值。
     _state['initialized'] = False
     _state['bot_username'] = ''
     _state['last_error'] = ''
-    # offset 保留：避免重启后重复处理旧消息
-    time.sleep(0.5)
-    start()
+    # offset 保留：避免重启后重复处理旧消息。
+    # 以前靠 sleep(0.5) 等旧线程退出，但旧线程正卡在 25 秒的长轮询里，根本来不及看到 running=False，
+    # 每保存一次配置就多一个轮询线程；现在靠代数 gen 让旧线程自行退出。
+    _start_locked()
 
 
 def status():

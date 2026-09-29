@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """media_agent.py —— 飞牛 NAS 端治理引擎"""
+import contextlib
+import dataclasses
 import html
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
@@ -12,14 +14,14 @@ try:
     from .core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
         title_key, analyze_season_episodes,
-        parse_emby_library, quality_label,
+        parse_emby_library, quality_label, RE_SXXEXX,
     )
     from . import config as _cfg
 except ImportError:
     from core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
         title_key, analyze_season_episodes,
-        parse_emby_library, quality_label,
+        parse_emby_library, quality_label, RE_SXXEXX,
     )
     import config as _cfg
 
@@ -97,9 +99,75 @@ def tz_info():
             'now': time.strftime('%Y-%m-%d %H:%M:%S', lt)}
 
 
+def _norm_emby_path(p):
+    """Emby 路径统一成 / 分隔、去掉末尾 /；空值返回 ''"""
+    p = str(p or '').strip().replace('\\', '/')
+    return p.rstrip('/')
+
+
+_LEGACY_LIB_NAMES = ('影视媒体库', '分享影视库')
+
+
+class EmbyPathMap:
+    """Emby 路径 → 本地/分享库 的唯一映射处（根目录来自配置 emby_local_path / emby_share_path）。
+    片库总览要对 ~10 万个分集路径分类，所以这里只做字符串前缀比较，构造时把能算的都算好。"""
+
+    def __init__(self, local_root, share_root):
+        self.local = _norm_emby_path(local_root)
+        self.share = _norm_emby_path(share_root)
+        # (根目录, 根目录+'/', 库) —— 长的优先（嵌套时取更精确的那个），等长时本地在前，与旧逻辑一致
+        roots = [(r, r + '/', lib) for r, lib in ((self.local, 'local'), (self.share, 'share')) if r]
+        self._roots = sorted(roots, key=lambda x: -len(x[0]))
+        # 兼容兜底（只用于展示）：路径里出现根目录的末级目录名。原来写死的两个名字保持旧版
+        # '影视媒体库' in path 的子串判断，老用户行为不变；其它名字要求整段目录名相等，
+        # 免得 tv 误中 tv2。两个根末级名相同时无法区分，干脆不兜底
+        lb = self.local.rsplit('/', 1)[-1] if self.local else ''
+        sb = self.share.rsplit('/', 1)[-1] if self.share else ''
+        self._bases = [(b if b in _LEGACY_LIB_NAMES else '/' + b + '/', lib)
+                       for b, lib in ((lb, 'local'), (sb, 'share')) if b] if lb != sb else []
+
+    def lib_of(self, path, fallback=True):
+        """展示/统计用：'local' | 'share' | ''"""
+        if not path:
+            return ''
+        p = path.replace('\\', '/') if '\\' in path else path
+        for root, pre, lib in self._roots:
+            if p == root or p.startswith(pre):
+                return lib
+        if fallback and self._bases:
+            padded = '/' + p + '/'
+            for needle, lib in self._bases:
+                if needle in padded:
+                    return lib
+        return ''
+
+    def to_container(self, path):
+        """删除用：严格前缀匹配（不走末级目录名兜底），转成容器内路径；对不上或含 .. 返回 None"""
+        if not path:
+            return None
+        p = str(path).replace('\\', '/')
+        for root, pre, lib in self._roots:
+            if p.startswith(pre):
+                parts = [x for x in p[len(pre):].split('/') if x and x != '.']
+                if not parts or '..' in parts:
+                    return None
+                return (L_ROOT if lib == 'local' else S_ROOT).joinpath(*parts)
+        return None
+
+
 RUNTIME_CFG = _cfg.load_config()
 EMBY_HOST = RUNTIME_CFG['emby_host']
 EMBY_KEY  = RUNTIME_CFG['emby_key']
+
+
+def emby_path_map(local_root=None, share_root=None):
+    """按配置构造 EmbyPathMap；留空的一侧回落到默认值（设置页输入框的占位符就是默认值，
+    清空后若变成「什么都匹配不上」，与界面提示不符）"""
+    return EmbyPathMap((local_root or '').strip() or _cfg.DEFAULTS['emby_local_path'],
+                       (share_root or '').strip() or _cfg.DEFAULTS['emby_share_path'])
+
+
+EMBY_PATHS = emby_path_map(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
 TMDB_BASE = os.environ.get('TMDB_BASE', 'https://api.themoviedb.org/3')
 TMDB_LANG = os.environ.get('TMDB_LANG', 'zh-CN')
 TMDB_IMG  = os.environ.get('TMDB_IMG', 'https://image.tmdb.org/t/p/w500')
@@ -107,11 +175,17 @@ TMDB_INFO_TTL = 24 * 3600
 
 
 def reload_config():
-    global RUNTIME_CFG, EMBY_HOST, EMBY_KEY
+    global RUNTIME_CFG, EMBY_HOST, EMBY_KEY, EMBY_PATHS
     RUNTIME_CFG = _cfg.load_config()
     EMBY_HOST = RUNTIME_CFG['emby_host'] or 'http://127.0.0.1:8096'
     EMBY_KEY = RUNTIME_CFG['emby_key'] or ''
+    EMBY_PATHS = emby_path_map(RUNTIME_CFG.get('emby_local_path'), RUNTIME_CFG.get('emby_share_path'))
     return RUNTIME_CFG
+
+
+def emby_lib_of(path):
+    """Emby 路径属于哪个库（展示/统计用，带末级目录名兜底）：'local' | 'share' | ''"""
+    return EMBY_PATHS.lib_of(path)
 
 
 def _strategy():
@@ -585,6 +659,39 @@ def _inside(p, root):
         return False
 
 
+class MutationBusy(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def mutation_lock():
+    """跨入口互斥锁：CLI / Web / Telegram Bot 任何真正改文件的操作（双库清理、单剧删除、
+    洗版残留清理）都必须先拿到这把文件锁，拿不到抛 MutationBusy，由调用方回「忙」。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fh = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        raise MutationBusy('已有治理任务正在执行，请稍后再试')
+    try:
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+_SIDECAR_SEPS = '.-_ [('
+
+
+def _is_sidecar_of(stem, other_stem):
+    """other_stem 是否属于 stem 这条 STRM 的附属文件：同 stem，或 stem 后紧跟分隔符，
+    如 A.S01E01-mediainfo / A.S01E01.zh。只看前缀会把「A - S01E1」的附属扩到「A - S01E10」上。"""
+    if other_stem == stem:
+        return True
+    return other_stem.startswith(stem) and other_stem[len(stem)] in _SIDECAR_SEPS
+
+
 def _remove_strm(f):
     """彻底删除 STRM，并粉碎同目录下同 stem 的附属文件。
 
@@ -594,13 +701,16 @@ def _remove_strm(f):
     ⚠️ STRM 一经删除不可恢复：本工具不保留任何副本、不提供回收站。
     """
     stem = f.stem
-    for sibling in f.parent.iterdir():
-        if not sibling.is_file() or sibling.name == f.name:
+    siblings = [x for x in f.parent.iterdir() if x.is_file()]
+    strm_stems = [x.stem for x in siblings if x.suffix.lower() == '.strm']
+    for sibling in siblings:
+        if sibling.name == f.name or sibling.suffix.lower() == '.strm':
             continue
-        if sibling.suffix.lower() == '.strm':
-            continue
-        # 附属文件与 STRM 同 stem（或以其为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt
-        if sibling.stem == stem or sibling.stem.startswith(stem):
+        # 附属文件与 STRM 同 stem（或以其加分隔符为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt。
+        # 同目录多版本（Movie.strm / Movie - 2160p.strm）时，附属文件归「最长匹配」的那条 STRM，
+        # 删 Movie.strm 不能把保留版本 Movie - 2160p 的 nfo / mediainfo 一起删掉
+        owners = [x for x in strm_stems if _is_sidecar_of(x, sibling.stem)]
+        if owners and max(owners, key=len) == stem:
             try:
                 sibling.unlink()
             except OSError:
@@ -771,6 +881,46 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     return st
 
 
+def _under_tv_category(d, root):
+    try:
+        parts = d.relative_to(root).parts
+    except ValueError:
+        return False
+    return any(p in _CATEGORY_NAMES and '剧' in p for p in parts)
+
+
+_RE_DIR_TMDB = re.compile(r'(?i)tmdb(?:id)?[-_=: ]*(\d+)')
+
+
+def find_movie_strms_by_tmdb(root, tmdb_id):
+    """按 tmdb 编号找电影目录下的 STRM（单片删除用）。
+    - 目录名里的编号必须完全相等：以前按子串匹配，删 tmdb-123 会连带删掉 tmdb-1234；
+    - 命中目录整体收集后不再往下走，嵌套目录不会重复计数；
+    - 剧集目录跳过——电影和剧集的 tmdb 编号是两套命名空间，同号的剧集不能被「删电影」带走。
+      判定为剧集：位于剧集分类下、含季目录、或含 SxxExx 命名的 STRM（不用宽松的集号规则，
+      否则「星球大战 Ep 4」这类电影会被误判成剧集而删不掉）。"""
+    want = str(tmdb_id).strip()
+    if not want.isdigit() or not root.exists():
+        return []
+    want = int(want)
+    out = []
+    for dp, dns, _fns in os.walk(root):
+        m = _RE_DIR_TMDB.search(os.path.basename(dp))
+        if not m or int(m.group(1)) != want:
+            continue
+        dns[:] = []
+        strms, is_series = [], _under_tv_category(Path(dp), root)
+        for r, ds, ns in os.walk(dp):
+            if any(parse_season_dir(d) is not None for d in ds):
+                is_series = True
+            strms.extend(Path(r) / n for n in ns if n.lower().endswith('.strm'))
+        if is_series or any(RE_SXXEXX.search(f.name) for f in strms):
+            log.info('按 tmdb 删电影：%s 是剧集目录，跳过', dp)
+            continue
+        out.extend(strms)
+    return out
+
+
 _ORPHAN_IGNORE_NAMES = {'thumbs.db', 'desktop.ini', '.ds_store'}
 
 
@@ -925,7 +1075,18 @@ def clean_orphan_dirs(paths, dry_run=True):
 
     paths: 目录路径列表。dry_run=True 时只返回将删除的数量。
     校验：目录必须在 L_ROOT 或 S_ROOT 内、归类为媒体专属目录、内部无 .strm。
+    真删时与双库清理共用跨入口文件锁，避免和正在执行的清理同时改同一批目录。
     """
+    if dry_run:
+        return _clean_orphan_dirs(paths, True)
+    try:
+        with mutation_lock():
+            return _clean_orphan_dirs(paths, False)
+    except MutationBusy as e:
+        return {'status': 'busy', 'message': str(e)}
+
+
+def _clean_orphan_dirs(paths, dry_run):
     removed = []
     errors = []
     for p in paths:
@@ -1728,25 +1889,38 @@ def action_inter_clean(args):
     # 统一互斥锁：不管从 CLI、Web 任务队列还是 Telegram Bot 线程发起，
     # 只要是真正会修改文件的清理（非 dry-run），都必须先拿到这把跨入口的文件锁，
     # 避免三个入口各自维护自己的锁导致两个清理任务同时跑。
-    lock = None
-    if not args.dry_run:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        lock = open(LOCK_FILE, 'w')
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock.close()
-            return {'status': 'busy', 'message': '已有治理任务正在执行，请稍后再试'}
-    try:
+    if args.dry_run:
         return _action_inter_clean_locked(args)
-    finally:
-        if lock:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-            lock.close()
+    try:
+        with mutation_lock():
+            return _action_inter_clean_locked(args)
+    except MutationBusy as e:
+        return {'status': 'busy', 'message': str(e)}
 
 
 def _action_inter_clean_locked(args):
+    try:
+        return _run_inter_clean(args)
+    except Exception as e:
+        # 执行中途异常：计划标记为 failed，不能停在 executing（网页会一直显示"执行中"）
+        if args.plan and not args.dry_run:
+            save_plan_state(args.plan, 'failed', {'executed_at': time.time(),
+                                                  'executed_result': {'error': f'{type(e).__name__}: {e}'}})
+        raise
+
+
+def _confirmed_files(cur, old_act):
+    """二次校验的文件级收敛：只删「用户确认过的计划」和「当前重扫」都要删的文件。
+    以前直接用重扫结果的文件列表，扫描后新出现的文件（例如洗版进来一个更高版本，
+    原来的最优版变成了低版本）会在用户没看到的情况下被一起删掉。"""
+    planned = set(old_act.get('files') or [])
+    keep = [f for f in cur.files if str(f) in planned]
+    return keep, len(cur.files) - len(keep)
+
+
+def _run_inter_clean(args):
     skipped_details = []
+    unconfirmed = 0
     if args.plan:
         plan = load_plan(args.plan)
         if plan is None:
@@ -1767,6 +1941,7 @@ def _action_inter_clean_locked(args):
         if not args.dry_run:
             save_plan_state(args.plan, 'executing')
 
+        _invalidate_lib_cache()  # 二次校验必须基于最新磁盘状态，不能复用 30 秒内的 Lib 快照
         current = build_plan()
         current_by_id = {a.action_id: a for a in current
                          if a.kind not in ('keep', 'exempt') and a.action_id}
@@ -1786,7 +1961,13 @@ def _action_inter_clean_locked(args):
                     '%s → 决策原因变化: %s → %s' % (
                         old_act.get('text', '?'), old_reason, cur_reason))
                 continue
-            todo.append(cur)
+            files, extra = _confirmed_files(cur, old_act)
+            if not files:
+                skipped_details.append(
+                    '%s → 待删文件与计划不一致' % old_act.get('text', '?'))
+                continue
+            unconfirmed += extra
+            todo.append(dataclasses.replace(cur, files=files))
         skipped = len(old_actions) - len(todo)
     else:
         todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt')]
@@ -1825,6 +2006,8 @@ def _action_inter_clean_locked(args):
         detail.append(f'├─ ⏭ 有 {skipped} 项二次验证未通过，已跳过')
         for s in skipped_details[:5]:
             detail.append(f'│   · {s}')
+    if unconfirmed:
+        detail.append(f'├─ ⏭ 有 {unconfirmed} 个文件是扫描后才出现的，不在已确认的计划里，本次未删除')
     if not args.dry_run:
         purge_old()
         write_audit_log('执行跨库清理',
@@ -1849,7 +2032,7 @@ def _action_inter_clean_locked(args):
             })
     return {'status': 'success', 'loc_cnt': n_loc, 'sh_cnt': n_sh, 'refreshed': refreshed,
             'detail': detail, 'warnings': warns, 'dry_run': args.dry_run,
-            'skipped': skipped}
+            'skipped': skipped, 'unconfirmed_files': unconfirmed}
 
 
 class TmdbError(Exception):
@@ -2052,8 +2235,9 @@ def action_explore(args):
         poster = item.get('poster_path')
         emby_hit = emby_index.get(tmdb_id)
         in_emby = emby_hit is not None
-        in_local = in_emby and '影视媒体库' in (emby_hit.get('path') or '')
-        in_share = in_emby and '分享影视库' in (emby_hit.get('path') or '')
+        hit_lib = emby_lib_of(emby_hit.get('path') or '') if in_emby else ''
+        in_local = hit_lib == 'local'
+        in_share = hit_lib == 'share'
         if poster: poster_url = f'{TMDB_IMG}{poster}'
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
@@ -2164,6 +2348,7 @@ def emby_library_overview(force=False):
 
 def _build_emby_library_overview():
     out = {'series': [], 'movies': []}
+    lib_of = EMBY_PATHS.lib_of  # 热循环里要分类 ~10 万个分集路径，先绑定到局部
     series_data = emby_request('/Items', {
         'Recursive': 'true', 'IncludeItemTypes': 'Series',
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
@@ -2176,7 +2361,7 @@ def _build_emby_library_overview():
         if sid: eps_by_series[sid].append(ep)
 
     for s in series_data.get('Items', []):
-        sid = s.get('Id'); path = s.get('Path', '') or ''
+        sid = s.get('Id'); path = s.get('Path', '') or ''; s_lib = lib_of(path)
         # Emby 有时会残留"空壳"剧集条目（元数据存在，但没有任何实际分集文件，
         # 常见于删除后 Emby 尚未彻底清理，或媒体库正在扫描中）。这类条目不该
         # 出现在片库映射对照里，否则用户会看到"Emby 没有数据"却仍被列出的剧。
@@ -2190,10 +2375,10 @@ def _build_emby_library_overview():
             sn = ep.get('ParentIndexNumber'); en = ep.get('IndexNumber')
             if sn is None or en is None: continue
             season_map.setdefault(sn, set()).add(en)
-            ep_path = ep.get('Path', '') or ''
-            if '影视媒体库' in ep_path:
+            ep_lib = lib_of(ep.get('Path', '') or '')
+            if ep_lib == 'local':
                 local_eps_set.add((sn, en))
-            elif '分享影视库' in ep_path:
+            elif ep_lib == 'share':
                 share_eps_set.add((sn, en))
         if not season_map:
             continue
@@ -2214,7 +2399,7 @@ def _build_emby_library_overview():
             'year': s.get('ProductionYear'), 'rating': s.get('CommunityRating'),
             'tmdb_id': (s.get('ProviderIds') or {}).get('Tmdb'),
             'genres': s.get('Genres', []),
-            'in_local': '影视媒体库' in path, 'in_share': '分享影视库' in path, 'path': path,
+            'in_local': s_lib == 'local', 'in_share': s_lib == 'share', 'path': path,
             'has_image': 'Primary' in (s.get('ImageTags') or {}),
             'seasons': seasons, 'total_seasons': len(seasons),
             'total_episodes': sum(x['episodes'] for x in seasons),
@@ -2231,13 +2416,13 @@ def _build_emby_library_overview():
         'Limit': 50000,
     }) or {}
     for m in movie_data.get('Items', []):
-        path = m.get('Path', '') or ''
+        path = m.get('Path', '') or ''; m_lib = lib_of(path)
         out['movies'].append({
             'id': m.get('Id'), 'name': m.get('Name'),
             'year': m.get('ProductionYear'), 'rating': m.get('CommunityRating'),
             'tmdb_id': (m.get('ProviderIds') or {}).get('Tmdb'),
             'genres': m.get('Genres', []),
-            'in_local': '影视媒体库' in path, 'in_share': '分享影视库' in path,
+            'in_local': m_lib == 'local', 'in_share': m_lib == 'share',
             'path': path, 'has_image': 'Primary' in (m.get('ImageTags') or {}),
         })
     return out
@@ -2480,7 +2665,8 @@ def _recent(item_type, fields, limit, cutoff):
 
 
 def _src(path):
-    return '本地影视库' if '影视媒体库' in path else ('分享影视库' if '分享影视库' in path else '其它库')
+    lib = emby_lib_of(path)
+    return '本地影视库' if lib == 'local' else ('分享影视库' if lib == 'share' else '其它库')
 
 
 def action_stats(args):
@@ -2620,7 +2806,10 @@ def _save_sub_state(state: dict):
 
 
 def _emby_series_latest_ep(series_tmdb_id: str):
-    """查 Emby 里某剧（按 tmdb_id）的最新集"""
+    """查 Emby 里某剧（按 tmdb_id）的已有集与最新集。
+    最新集 = 已有集里 (季, 集) 最大的一集，不按 DateCreated——洗版 / 重新入库的旧集
+    DateCreated 最新，按它取会让「最新集」倒退，下次刷新又把旧集当新集播报。
+    同一集常在本地 + 分享两库各有一份，按 (季, 集) 去重。"""
     if not series_tmdb_id: return None
     try:
         data = emby_request('/Items', {
@@ -2650,31 +2839,47 @@ def _emby_series_latest_ep(series_tmdb_id: str):
     try:
         eps = emby_request('/Items', {
             'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-            'Fields': 'ParentIndexNumber,IndexNumber,DateCreated',
-            'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'Limit': 1,
+            'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated',
+            'Limit': 50000,  # 长寿剧双库各一份时 5000 会被截断，误报缺集
         }) or {}
     except Exception:
         return None
-    ep_items = eps.get('Items') or []
-    if not ep_items: return None
-    ep = ep_items[0]
+    # 收集去重后的 (季, 集)；S00 特别篇、无集号的条目不计
+    have = set()
+    created = {}
+    for ep in eps.get('Items') or []:
+        try:
+            sn = int(ep.get('ParentIndexNumber') or 0)
+            en = int(ep.get('IndexNumber') or 0)
+            en_end = int(ep.get('IndexNumberEnd') or en)
+        except (TypeError, ValueError):
+            continue
+        if sn <= 0 or en <= 0: continue
+        # 合集文件（E01-E02）按区间逐集计入，避免被当成缺集
+        for e in range(en, max(en, en_end) + 1):
+            have.add((sn, e))
+        created[(sn, en)] = max(created.get((sn, en), ''), ep.get('DateCreated') or '')
+    if not have: return None
+    sn, en = max(have)
     return {
         'series_id': sid, 'series_name': sname,
-        'season': ep.get('ParentIndexNumber') or 0,
-        'episode': ep.get('IndexNumber') or 0,
-        'date_created': ep.get('DateCreated') or '',
+        'season': sn,
+        'episode': en,
+        'date_created': created.get((sn, en), ''),
+        'episodes': have,   # {(季, 集)}，缺集判定逐集对照用
     }
 
 
 def _tmdb_series_info(tmdb_id):
-    """查 TMDB 已播集数、状态、季结构"""
+    """查 TMDB 已播集数、状态、季结构。
+    已播集以 last_episode_to_air 为界：之前的季整季计入，最后播出的季只计到该集；
+    连载季 episode_count 含未播集，直接求和会让在更的剧永远「缺集」。
+    缺 last_episode_to_air 时退回旧口径（各季 episode_count 全部计入）。"""
     try:
         t = Tmdb()
         info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
         t.save()
         if not info: return None
-        # 计算已播集（截止今天）
-        today = datetime.date.today().isoformat()
         aired_seasons = {}
         for s in (info.get('seasons') or []):
             sn = s.get('season_number')
@@ -2683,11 +2888,27 @@ def _tmdb_series_info(tmdb_id):
                 'episode_count': s.get('episode_count', 0) or 0,
                 'air_date': s.get('air_date') or '',
             }
+        last = info.get('last_episode_to_air') or {}
+        try:
+            last_s = int(last.get('season_number') or 0)
+            last_e = int(last.get('episode_number') or 0)
+        except (TypeError, ValueError):
+            last_s = last_e = 0
+        aired = set()
+        for sn, v in aired_seasons.items():
+            if last_s > 0 and last_e > 0:
+                if sn < last_s: n = v['episode_count']
+                elif sn == last_s: n = last_e
+                else: continue          # 尚未开播的新季
+            else:
+                n = v['episode_count']  # 无 last_episode_to_air：旧口径
+            aired.update((sn, e) for e in range(1, n + 1))
         return {
             'name': info.get('name'),
             'status': info.get('status', ''),
             'seasons': aired_seasons,
-            'total_episodes': sum(v['episode_count'] for v in aired_seasons.values()),
+            'total_episodes': len(aired),   # 已播集数（不含未播集 / S00）
+            'aired': aired,                 # {(季, 集)}
         }
     except Exception as e:
         log.warning('TMDB 订阅查询失败 %s: %s', tmdb_id, e)
@@ -2702,8 +2923,8 @@ def _ep_key_num(k):
 def check_subscriptions(send_notify=True) -> dict:
     """
     改进版：
-      1. 拿 Emby 最新集（新集判定）
-      2. 拿 TMDB 已播集（缺集判定）
+      1. 拿 Emby 已有集 + 最大集号（新集判定）
+      2. 拿 TMDB 已播集，与 Emby 已有集逐集对照（缺集判定）
       3. 双向提醒
     """
     cfg = _cfg.load_config()
@@ -2741,22 +2962,24 @@ def check_subscriptions(send_notify=True) -> dict:
         new_ep_update = None
         missing_update = None
 
-        # 新集判定
+        # 新集判定：只认比上次更大的集号；latest_ep 只进不退（下架 / 删集不回退）
         if prev_key and cur_key and cur_key != prev_key:
             if _ep_key_num(cur_key) > _ep_key_num(prev_key):
                 new_ep_update = {'old': prev_key, 'new': cur_key}
+            else:
+                cur_key = prev_key
 
-        # 缺集判定
+        # 缺集判定：TMDB 已播集逐集对照 Emby 已有集，Emby 多出来的集不抵扣缺口
         if tmdb_info and latest:
-            tmdb_total = tmdb_info.get('total_episodes', 0) or 0
-            # 本地总共 = Emby 现有
-            emby_seasons = {latest['season']: latest['episode']}
-            emby_total = sum(emby_seasons.values()) if emby_seasons else 0
-            if tmdb_total > emby_total:
+            aired = tmdb_info.get('aired') or set()
+            have = latest.get('episodes') or set()
+            lack = aired - have
+            if lack:
                 missing_update = {
-                    'tmdb_total': tmdb_total,
-                    'emby_total': emby_total,
-                    'diff': tmdb_total - emby_total,
+                    'tmdb_total': len(aired),
+                    # emby_total 取「已播范围内 Emby 有的集数」，保证 tmdb_total - emby_total == diff
+                    'emby_total': len(aired & have),
+                    'diff': len(lack),
                 }
 
         state[sid] = {
@@ -2938,8 +3161,21 @@ def get_tmdb_scan_progress() -> dict:
     return p
 
 
+_tmdb_scan_lock = threading.Lock()
+
+
 def refresh_tmdb_scan():
-    """后台跑一次完整 TMDB 对照并落盘（带进度上报）"""
+    """后台跑一次完整 TMDB 对照并落盘（带进度上报）。单飞：网页「强制对照」和定时预热
+    可能前后脚触发，已在跑时直接返回，不再并发两份全量对照。"""
+    if not _tmdb_scan_lock.acquire(blocking=False):
+        return {'status': 'running', 'message': 'TMDB 对照已在后台运行'}
+    try:
+        return _refresh_tmdb_scan()
+    finally:
+        _tmdb_scan_lock.release()
+
+
+def _refresh_tmdb_scan():
     global _tmdb_scan_progress
     log.info('TMDB 对照开始（后台）')
     _tmdb_scan_progress.update({
@@ -3164,16 +3400,8 @@ def action_library_stats(args):
 
 def emby_path_to_container(emby_path):
     """将 Emby 返回的 Path 转成容器内路径"""
-    if not emby_path:
-        return None
-    p = str(emby_path)
-    pre_l = '/strm/115网盘/影视媒体库/'
-    pre_s = '/strm/115网盘/分享影视库/'
-    if p.startswith(pre_l):
-        return L_ROOT / p[len(pre_l):]
-    if p.startswith(pre_s):
-        return S_ROOT / p[len(pre_s):]
-    return None
+    # 严格按配置的根目录前缀映射（不做末级目录名兜底），宁可对不上也不能删错库
+    return EMBY_PATHS.to_container(emby_path)
 
 
 
@@ -3249,6 +3477,20 @@ def invalidate_stats_cache():
     _strm_count_cache['ts'] = 0
     _lib_stats_cache['ts'] = 0
     _lib_stats_cache['data'] = None
+
+
+def invalidate_media_caches(keep_emby_lib=False):
+    """文件变动后统一失效内存缓存（分集 / Emby 索引 / Lib 快照 / 统计）。
+    keep_emby_lib=True 时保留片库映射缓存（单剧删除会就地修补它，避免整页重跑 TMDB 对照）。"""
+    _ep_cache['ts'] = 0
+    _ep_cache['data'] = None
+    _emby_index_cache['ts'] = 0
+    _emby_index_cache['data'] = None
+    if not keep_emby_lib:
+        _emby_lib_cache['ts'] = 0
+        _emby_lib_cache['data'] = None
+    _invalidate_lib_cache()
+    invalidate_stats_cache()
 
 
 ACTIONS = {

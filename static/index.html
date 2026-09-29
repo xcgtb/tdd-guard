@@ -1774,6 +1774,15 @@ window.addEventListener('unhandledrejection', function(e){
               <button class="btn gray" onclick="testEmby()" data-icon="flask">测试连接</button>
             </div>
           </div>
+          <div class="form-row">
+            <label>Emby 中的本地库路径</label>
+            <input type="text" id="cfg-emby-local-path" placeholder="/strm/115网盘/影视媒体库">
+          </div>
+          <div class="form-row">
+            <label>Emby 中的分享库路径</label>
+            <input type="text" id="cfg-emby-share-path" placeholder="/strm/115网盘/分享影视库">
+            <div class="hint">Emby 媒体库里看到的 STRM 根目录，用于区分本地/分享与单剧删除；不确定时点「测试连接」查看 Emby 报告的路径</div>
+          </div>
           <div class="form-row" id="row-tmdb-key">
             <label>TMDB API Key</label>
             <div class="input-row">
@@ -3999,6 +4008,8 @@ async function loadConfig(){
     var c = r.config || {};
     $('cfg-emby-host').value = c.emby_host || '';
     $('cfg-emby-key').value  = c.emby_key || '';
+    $('cfg-emby-local-path').value = c.emby_local_path || '';
+    $('cfg-emby-share-path').value = c.emby_share_path || '';
     $('cfg-tmdb-key').value  = c.tmdb_key || '';
     $('cfg-tg-token').value  = c.telegram_bot_token || '';
     $('cfg-tg-chat').value   = c.telegram_chat_id || '';
@@ -4054,6 +4065,8 @@ async function saveConfig(){
   var body = {
     emby_host: $('cfg-emby-host').value.trim(),
     emby_key:  $('cfg-emby-key').value.trim(),
+    emby_local_path: $('cfg-emby-local-path').value.trim(),
+    emby_share_path: $('cfg-emby-share-path').value.trim(),
     tmdb_key:  $('cfg-tmdb-key').value.trim(),
     telegram_bot_token:     $('cfg-tg-token').value.trim(),
     telegram_chat_id:       $('cfg-tg-chat').value.trim(),
@@ -4071,7 +4084,7 @@ async function saveConfig(){
 async function testEmby(){
   toast('测试中...');
   try {
-    var r = await api('/api/config/test/emby', { method: 'POST', body: JSON.stringify({ emby_host: $('cfg-emby-host').value.trim(), emby_key: $('cfg-emby-key').value.trim() }) });
+    var r = await api('/api/config/test/emby', { method: 'POST', body: JSON.stringify({ emby_host: $('cfg-emby-host').value.trim(), emby_key: $('cfg-emby-key').value.trim(), emby_local_path: $('cfg-emby-local-path').value.trim(), emby_share_path: $('cfg-emby-share-path').value.trim() }) });
     alert(r.message);
   } catch(e){ alert(e.message); }
 }

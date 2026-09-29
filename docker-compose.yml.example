@@ -25,6 +25,9 @@ services:
       # TG_BOT_TOKEN: 你的Telegram_Bot_Token
       # TG_CHAT_ID: 你的Telegram_Chat_ID
       # TG_ALLOWED_USERS: 你的Telegram用户ID
+      # Emby 媒体库里看到的本地库 / 分享库 STRM 根目录（Emby 容器内路径），用于区分两库与单剧删除
+      # EMBY_LOCAL_PATH: /strm/115网盘/影视媒体库
+      # EMBY_SHARE_PATH: /strm/115网盘/分享影视库
 
     volumes:
       # 只需要修改冒号左边的宿主机路径；冒号右边的容器内路径是固定的，请勿修改。
