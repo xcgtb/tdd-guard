@@ -32,6 +32,8 @@ except ImportError:
 def _p(env, default):
     return Path(os.environ.get(env, default))
 
+# 容器内路径固定：用户只需在 docker-compose 里把宿主机目录挂载到这三个位置。
+# 环境变量覆盖仅供测试使用（tests/ 用它指向临时目录），不对用户开放、不写入文档。
 L_ROOT = _p('L_ROOT', '/media/local')
 S_ROOT = _p('S_ROOT', '/media/share')
 CLOUD_L_ROOT = _p('CLOUD_L_ROOT', '/media/cloud')
@@ -1017,7 +1019,7 @@ def action_scan_orphans(args):
         return {'status': 'error',
                 'message': '两个媒体库路径都不存在，没有扫描任何文件：'
                            + '；'.join(l['root'] for l in libs)
-                           + '。请检查 docker-compose 的挂载和 L_ROOT / S_ROOT。'}
+                           + '。请检查 docker-compose 里是否已挂载到 /media/local 和 /media/share。'}
     for l in missing:
         warnings.append(f"{'本地' if l['lib'] == 'local' else '分享'}库路径不存在，已跳过：{l['root']}")
     for l in libs:

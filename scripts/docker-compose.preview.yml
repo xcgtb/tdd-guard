@@ -1,7 +1,7 @@
 services:
   ttd-guard:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     image: ttd-guard:preview
     container_name: ttd-guard-preview
@@ -11,13 +11,9 @@ services:
       WEB_USER: admin
       WEB_PASSWORD: change-me-before-use
       TZ: Asia/Shanghai
-      AGENT_DATA: /data
-      L_ROOT: /media/local
-      S_ROOT: /media/share
-      CLOUD_L_ROOT: /media/cloud
       ENABLE_CD2_WATCHDOG: "0"
     volumes:
-      - ./preview-data:/data
+      - ../preview-data:/data
       - /path/to/local-strm:/media/local:ro
       - /path/to/share-strm:/media/share:ro
       - /path/to/cloud:/media/cloud:rslave

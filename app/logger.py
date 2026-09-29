@@ -4,6 +4,7 @@ import os, re, sys, json, time, threading
 from pathlib import Path
 from datetime import datetime
 
+# 数据目录固定为 /data；AGENT_DATA 仅供测试使用，不对用户开放
 DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))
 RECORDS_DIR = DATA_DIR / 'records'
 RECORDS_FILE = RECORDS_DIR / 'audit.jsonl'

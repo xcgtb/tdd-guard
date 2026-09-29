@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-LABEL org.opencontainers.image.source="https://github.com/xcgtb/tdd-guard"
+LABEL org.opencontainers.image.source="https://github.com/xcgtb/ttd-guard"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

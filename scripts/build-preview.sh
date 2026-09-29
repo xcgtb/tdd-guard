@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="${IMAGE:-tdd-guard:preview}"
-OUT="${OUT:-tdd-guard-preview.tar}"
+# 无论从哪里调用，都切到仓库根目录再构建
+cd "$(dirname "$0")/.."
+
+IMAGE="${IMAGE:-ttd-guard:preview}"
+OUT="${OUT:-ttd-guard-preview.tar}"
 
 echo "==> release check"
 python3 scripts/release_check.py

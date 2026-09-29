@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.6
+
+### 部署简化
+- 容器内媒体路径固定为 `/media/local`、`/media/share`、`/media/cloud`、`/data`，不再需要在 compose 里配置 `L_ROOT` / `S_ROOT` / `CLOUD_L_ROOT` / `AGENT_DATA`，用户只需在 `volumes` 中挂载宿主机目录。
+
+### 仓库整理
+- `PREVIEW_BUILD.md`、`RELEASE_AUDIT.md` 移入 `docs/`；`build-preview.sh`、`docker-compose.preview.yml` 移入 `scripts/`，并修正相对路径。
+- 修正遗留的 `tdd-guard` 拼写（Dockerfile OCI source label、预览脚本镜像名）。
+
+### 版本号
+- 统一应用版本号、界面侧栏版本号、README 与 compose 示例到 `1.3.6`。
+
 ## 1.3.0
 
 ### 治理决策逻辑重构

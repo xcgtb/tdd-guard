@@ -8,40 +8,40 @@
 
 ```bash
 python3 scripts/release_check.py
-docker build --pull --no-cache -t tdd-guard:preview .
-docker image inspect tdd-guard:preview --format '{{.Id}} {{.Size}}'
+docker build --pull --no-cache -t ttd-guard:preview .
+docker image inspect ttd-guard:preview --format '{{.Id}} {{.Size}}'
 ```
 
 如果需要导出为镜像文件：
 
 ```bash
-docker save -o tdd-guard-preview.tar tdd-guard:preview
+docker save -o ttd-guard-preview.tar ttd-guard:preview
 ```
 
 检查镜像内部不应存在测试目录：
 
 ```bash
-docker run --rm --entrypoint sh tdd-guard:preview -c   'test ! -d /app/tests && test -f /app/scripts/healthcheck.py'
+docker run --rm --entrypoint sh ttd-guard:preview -c   'test ! -d /app/tests && test -f /app/scripts/healthcheck.py'
 ```
 
 ## 最小启动冒烟测试
 
 ```bash
-docker run -d   --name tdd-guard-preview   --network host   -e WEB_USER=admin   -e WEB_PASSWORD='CHANGE-ME'   -e ENABLE_CD2_WATCHDOG=0   tdd-guard:preview
+docker run -d   --name ttd-guard-preview   --network host   -e WEB_USER=admin   -e WEB_PASSWORD='CHANGE-ME'   -e ENABLE_CD2_WATCHDOG=0   ttd-guard:preview
 ```
 
 等待几秒后：
 
 ```bash
 curl -fsS http://127.0.0.1:8321/api/health
-docker inspect tdd-guard-preview --format '{{.State.Status}} {{.State.ExitCode}}'
-docker logs --tail 100 tdd-guard-preview
+docker inspect ttd-guard-preview --format '{{.State.Status}} {{.State.ExitCode}}'
+docker logs --tail 100 ttd-guard-preview
 ```
 
 结束测试：
 
 ```bash
-docker rm -f tdd-guard-preview
+docker rm -f ttd-guard-preview
 ```
 
 > 正式部署不要使用 `CHANGE-ME`。正式环境必须设置自己的强密码，并按实际情况挂载 `/data`、本地库、分享库和 CloudDrive2。
@@ -58,8 +58,8 @@ git push origin v1.2.1
 仓库的 GitHub Actions 会按现有 workflow 构建 `linux/amd64` 和 `linux/arm64`，并推送：
 
 ```text
-ghcr.io/xcgtb/tdd-guard:<version>
-ghcr.io/xcgtb/tdd-guard:latest
+ghcr.io/xcgtb/ttd-guard:<version>
+ghcr.io/xcgtb/ttd-guard:latest
 ```
 
 ## 发布前检查清单

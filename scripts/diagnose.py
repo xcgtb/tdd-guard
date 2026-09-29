@@ -7,7 +7,7 @@ TDD Guard 全量诊断脚本（手动 / CI 用，不是容器健康检查）
     # 宿主机跑（只能验证 Python 语法）
     python3 scripts/diagnose.py
     # 容器内跑（推荐，能验证依赖 / 路由 / 配置）
-    docker compose exec tdd-guard python /app/scripts/diagnose.py
+    docker compose exec ttd-guard python /app/scripts/diagnose.py
 
 注意：容器的 Docker HEALTHCHECK 用的是同目录下的 healthcheck.py（轻量存活探针，
 只探测 /api/health），不要把这个脚本接回 HEALTHCHECK —— 它和前端具体的
@@ -502,7 +502,7 @@ else:
     dc = ROOT / 'docker-compose.yml'
     if dc.exists():
         txt = dc.read_text()
-        for kw in ('tdd-guard', 'WEB_PASSWORD', '/data'):
+        for kw in ('ttd-guard', 'WEB_PASSWORD', '/data'):
             if kw in txt:
                 ok(f'compose 含 {kw}')
             else:

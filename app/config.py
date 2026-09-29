@@ -4,6 +4,7 @@ import os
 import json
 from pathlib import Path
 
+# 数据目录固定为 /data；AGENT_DATA 仅供测试使用，不对用户开放
 DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))
 CONFIG_FILE = DATA_DIR / 'config.json'
 

@@ -79,7 +79,7 @@ cd /vol1/1000/docker/ttd-guard
 把 `docker-compose.yml.example` 复制为 `docker-compose.yml`，只需修改：
 
 - `WEB_PASSWORD`：改成自己的强密码。
-- `/你的本地影视库`、`/你的分享影视库`：改为实际路径。
+- `/你的本地影视库`、`/你的分享影视库`：改为宿主机上的实际路径（只改冒号左边，冒号右边的容器内路径 `/media/local`、`/media/share`、`/media/cloud`、`/data` 已固定，不要修改）。
 - 不使用 CloudDrive2 联动时，删除 `/media/cloud` 行，保持 `ENABLE_CD2_WATCHDOG: "0"`；使用时改挂载路径并置 `"1"`。
 
 ```yaml
@@ -93,10 +93,6 @@ services:
       TZ: Asia/Shanghai
       WEB_USER: admin
       WEB_PASSWORD: 请修改成自己的强密码
-      AGENT_DATA: /data
-      L_ROOT: /media/local
-      S_ROOT: /media/share
-      CLOUD_L_ROOT: /media/cloud
       ENABLE_CD2_WATCHDOG: "0"
     volumes:
       - ./data:/data
@@ -148,7 +144,7 @@ docker compose up -d
 固定版本：
 
 ```yaml
-image: ghcr.io/xcgtb/ttd-guard:1.3.5
+image: ghcr.io/xcgtb/ttd-guard:1.3.6
 ```
 
 ## 项目目录
@@ -157,7 +153,8 @@ image: ghcr.io/xcgtb/ttd-guard:1.3.5
 ttd-guard/
 ├── app/                       # 后端核心代码
 ├── static/                    # Web 前端
-├── scripts/                   # 健康检查、诊断、发布检查
+├── scripts/                   # 健康检查、诊断、发布检查、预览构建
+├── docs/                      # 预览构建说明、发布审计
 ├── tests/                     # CI / 回归测试
 ├── .github/workflows/         # GitHub Actions
 ├── Dockerfile

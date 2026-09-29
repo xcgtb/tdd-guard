@@ -62,6 +62,6 @@ __pycache__
 
 1. 确认仓库根目录不存在 `root-and-yml-config.patch` 等一次性开发补丁。
 2. 确认 `.github/workflows/` 下只有真正的 Actions workflow。
-3. 确认 GHCR Package `ghcr.io/xcgtb/tdd-guard` 已设置为 Public，公开用户才能匿名 pull。
+3. 确认 GHCR Package `ghcr.io/xcgtb/ttd-guard` 已设置为 Public，公开用户才能匿名 pull。
 4. `master` 测试通过后创建 `v1.2.1` tag。
-5. Docker workflow 成功后再让用户使用 `ghcr.io/xcgtb/tdd-guard:1.2.1` 或 `:latest`。
+5. Docker workflow 成功后再让用户使用 `ghcr.io/xcgtb/ttd-guard:1.2.1` 或 `:latest`。
