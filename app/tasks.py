@@ -52,6 +52,7 @@ class Task:
         self.source = source; self.exclusive = exclusive
         self.status = 'running'; self.result = None; self.error = None
         self.logs = []; self.ts = time.time(); self.stream = _TaskStream(self)
+        self.finished_at = None
         self.done = threading.Event()
 
     def to_dict(self, with_logs=True):
@@ -91,8 +92,16 @@ class TaskManager:
             if exclusive:
                 self.current = t
         self.prune()
-        threading.Thread(target=self._run, args=(t, fn, fargs, on_done),
-                         daemon=True, name=f'task-{kind}').start()
+        try:
+            threading.Thread(target=self._run, args=(t, fn, fargs, on_done),
+                             daemon=True, name=f'task-{kind}').start()
+        except Exception:
+            # 线程都没起来：撤销占位，否则之后所有重任务都会被报「忙」
+            with self.lock:
+                self.tasks.pop(t.id, None)
+                if self.current is t:
+                    self.current = None
+            raise
         return t
 
     def _run(self, t, fn, fargs, on_done):
@@ -116,6 +125,7 @@ class TaskManager:
             lg.exception('任务 [%s] 执行失败', t.kind)
             t.error = f'{type(e).__name__}: {e}'; t.status = 'error'
         finally:
+            t.finished_at = time.time()
             lg.removeHandler(handler)
             with self.lock:
                 if self.current is t:
@@ -136,7 +146,8 @@ class TaskManager:
                           key=lambda t: t.ts)
             overflow = len(done) - self.max_keep
             for i, t in enumerate(done):
-                if i < overflow or t.ts < cut:
+                # 保留时长从结束时间算：跑了一个多小时的任务刚结束，前端还要来取结果
+                if i < overflow or (t.finished_at or t.ts) < cut:
                     self.tasks.pop(t.id, None)
 
 

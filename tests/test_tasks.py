@@ -153,3 +153,14 @@ class TestPrune:
         m.prune()
         kept = [t for t in ts if t.id in m.tasks]
         assert [t.ts for t in kept] == [t.ts for t in ts[-3:]]
+
+
+class TestPruneUsesFinishTime:
+    def test_long_task_result_survives_right_after_finishing(self):
+        m = tasks.TaskManager()
+        t = tasks.Task('inter_check'); t.status = 'success'
+        t.ts = time.time() - 3 * 3600      # 跑了 3 小时
+        t.finished_at = time.time()        # 刚结束
+        m.tasks[t.id] = t
+        m.prune()
+        assert t.id in m.tasks, '刚结束的长任务结果还要给前端取，不能按开始时间淘汰'

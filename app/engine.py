@@ -14,14 +14,14 @@ try:
     from .core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
         title_key, analyze_season_episodes,
-        parse_emby_library, quality_label,
+        parse_emby_library, quality_label, RE_SXXEXX,
     )
     from . import config as _cfg
 except ImportError:
     from core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
         title_key, analyze_season_episodes,
-        parse_emby_library, quality_label,
+        parse_emby_library, quality_label, RE_SXXEXX,
     )
     import config as _cfg
 
@@ -108,6 +108,9 @@ def _norm_emby_path(p):
     return p.rstrip('/')
 
 
+_LEGACY_LIB_NAMES = ('影视媒体库', '分享影视库')
+
+
 class EmbyPathMap:
     """Emby 路径 → 本地/分享库 的唯一映射处（根目录来自配置 emby_local_path / emby_share_path）。
     片库总览要对 ~10 万个分集路径分类，所以这里只做字符串前缀比较，构造时把能算的都算好。"""
@@ -118,11 +121,13 @@ class EmbyPathMap:
         # (根目录, 根目录+'/', 库) —— 长的优先（嵌套时取更精确的那个），等长时本地在前，与旧逻辑一致
         roots = [(r, r + '/', lib) for r, lib in ((self.local, 'local'), (self.share, 'share')) if r]
         self._roots = sorted(roots, key=lambda x: -len(x[0]))
-        # 兼容兜底：路径里有一段恰好等于根目录的末级目录名（旧版 '影视媒体库' in path 的行为）。
-        # 两个根末级名相同时无法区分，干脆不兜底
+        # 兼容兜底（只用于展示）：路径里出现根目录的末级目录名。原来写死的两个名字保持旧版
+        # '影视媒体库' in path 的子串判断，老用户行为不变；其它名字要求整段目录名相等，
+        # 免得 tv 误中 tv2。两个根末级名相同时无法区分，干脆不兜底
         lb = self.local.rsplit('/', 1)[-1] if self.local else ''
         sb = self.share.rsplit('/', 1)[-1] if self.share else ''
-        self._bases = [('/' + b + '/', lib) for b, lib in ((lb, 'local'), (sb, 'share')) if b] if lb != sb else []
+        self._bases = [(b if b in _LEGACY_LIB_NAMES else '/' + b + '/', lib)
+                       for b, lib in ((lb, 'local'), (sb, 'share')) if b] if lb != sb else []
 
     def lib_of(self, path, fallback=True):
         """展示/统计用：'local' | 'share' | ''"""
@@ -697,13 +702,16 @@ def _remove_strm(f, base_root):
     只匹配与 STRM 同 stem 的文件，避免误删同目录下其他集的字幕。
     """
     stem = f.stem
-    for sibling in f.parent.iterdir():
-        if not sibling.is_file() or sibling.name == f.name:
+    siblings = [x for x in f.parent.iterdir() if x.is_file()]
+    strm_stems = [x.stem for x in siblings if x.suffix.lower() == '.strm']
+    for sibling in siblings:
+        if sibling.name == f.name or sibling.suffix.lower() == '.strm':
             continue
-        if sibling.suffix.lower() == '.strm':
-            continue
-        # 附属文件与 STRM 同 stem（或以其加分隔符为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt
-        if _is_sidecar_of(stem, sibling.stem):
+        # 附属文件与 STRM 同 stem（或以其加分隔符为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt。
+        # 同目录多版本（Movie.strm / Movie - 2160p.strm）时，附属文件归「最长匹配」的那条 STRM，
+        # 删 Movie.strm 不能把保留版本 Movie - 2160p 的 nfo / mediainfo 一起删掉
+        owners = [x for x in strm_stems if _is_sidecar_of(x, sibling.stem)]
+        if owners and max(owners, key=len) == stem:
             try:
                 sibling.unlink()
             except OSError:
@@ -879,6 +887,14 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     return st
 
 
+def _under_tv_category(d, root):
+    try:
+        parts = d.relative_to(root).parts
+    except ValueError:
+        return False
+    return any(p in _CATEGORY_NAMES and '剧' in p for p in parts)
+
+
 _RE_DIR_TMDB = re.compile(r'(?i)tmdb(?:id)?[-_=: ]*(\d+)')
 
 
@@ -886,8 +902,9 @@ def find_movie_strms_by_tmdb(root, tmdb_id):
     """按 tmdb 编号找电影目录下的 STRM（单片删除用）。
     - 目录名里的编号必须完全相等：以前按子串匹配，删 tmdb-123 会连带删掉 tmdb-1234；
     - 命中目录整体收集后不再往下走，嵌套目录不会重复计数；
-    - 含按集命名 STRM 的目录是剧集，跳过——电影和剧集的 tmdb 编号是两套命名空间，
-      同号的剧集不能被「删电影」带走。"""
+    - 剧集目录跳过——电影和剧集的 tmdb 编号是两套命名空间，同号的剧集不能被「删电影」带走。
+      判定为剧集：位于剧集分类下、含季目录、或含 SxxExx 命名的 STRM（不用宽松的集号规则，
+      否则「星球大战 Ep 4」这类电影会被误判成剧集而删不掉）。"""
     want = str(tmdb_id).strip()
     if not want.isdigit() or not root.exists():
         return []
@@ -898,8 +915,12 @@ def find_movie_strms_by_tmdb(root, tmdb_id):
         if not m or int(m.group(1)) != want:
             continue
         dns[:] = []
-        strms = [Path(r) / n for r, _d, ns in os.walk(dp) for n in ns if n.lower().endswith('.strm')]
-        if any(get_ep(f.name, f.parent.name) for f in strms):
+        strms, is_series = [], _under_tv_category(Path(dp), root)
+        for r, ds, ns in os.walk(dp):
+            if any(parse_season_dir(d) is not None for d in ds):
+                is_series = True
+            strms.extend(Path(r) / n for n in ns if n.lower().endswith('.strm'))
+        if is_series or any(RE_SXXEXX.search(f.name) for f in strms):
             log.info('按 tmdb 删电影：%s 是剧集目录，跳过', dp)
             continue
         out.extend(strms)
@@ -1932,6 +1953,7 @@ def _run_inter_clean(args):
         if not args.dry_run:
             save_plan_state(args.plan, 'executing')
 
+        _invalidate_lib_cache()  # 二次校验必须基于最新磁盘状态，不能复用 30 秒内的 Lib 快照
         current = build_plan()
         current_by_id = {a.action_id: a for a in current
                          if a.kind not in ('keep', 'exempt') and a.action_id}
@@ -2830,7 +2852,7 @@ def _emby_series_latest_ep(series_tmdb_id: str):
         eps = emby_request('/Items', {
             'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
             'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated',
-            'Limit': 5000,
+            'Limit': 50000,  # 长寿剧双库各一份时 5000 会被截断，误报缺集
         }) or {}
     except Exception:
         return None

@@ -754,6 +754,8 @@ def _poll_loop(gen):
                 time.sleep(3); continue
 
             for upd in resp.get('result', []):
+                if not _alive(gen):
+                    break  # 处理到一半被换代：剩下的留给新线程（offset 未推进），不重复执行
                 _state['offset'] = upd['update_id'] + 1
                 try:
                     if 'message' in upd: _handle_command(token, upd['message'])
@@ -770,6 +772,11 @@ def _poll_loop(gen):
 
 
 def start():
+    with _LOCK:  # 两次配置保存同时触发 restart 时，不能读到同一个 gen 起出两个轮询线程
+        _start_locked()
+
+
+def _start_locked():
     if _state['running']: return
     token = (load_config().get('telegram_bot_token') or '').strip()
     if not token:
@@ -790,6 +797,11 @@ def stop():
 
 
 def restart():
+    with _LOCK:
+        _restart_locked()
+
+
+def _restart_locked():
     stop()
     # 重置连接状态，让 _poll_loop 重新 getMe + setMyCommands，
     # 否则改了 Bot Token 后用户名/命令列表会停留在旧值。
@@ -799,7 +811,7 @@ def restart():
     # offset 保留：避免重启后重复处理旧消息。
     # 以前靠 sleep(0.5) 等旧线程退出，但旧线程正卡在 25 秒的长轮询里，根本来不及看到 running=False，
     # 每保存一次配置就多一个轮询线程；现在靠代数 gen 让旧线程自行退出。
-    start()
+    _start_locked()
 
 
 def status():

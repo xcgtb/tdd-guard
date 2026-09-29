@@ -127,9 +127,12 @@ class TestBasenameFallback:
         assert m.to_container(p_l) is None
         assert m.to_container(p_s) is None
 
-    def test_fallback_is_component_exact(self):
+    def test_fallback_is_substring_like_before(self):
+        """展示兜底与旧版 '影视媒体库' in path 一致（子串）；删除映射不走兜底"""
         m = _default_map()
-        assert m.lib_of('/mnt/我的影视媒体库备份/A/a.strm') == ''
+        assert m.lib_of('/strm/115网盘/影视媒体库-4K/A/a.strm') == 'local'
+        assert m.lib_of('/mnt/本地影视媒体库/A/a.strm') == 'local'
+        assert m.to_container('/mnt/本地影视媒体库/A/a.strm') is None
         assert m.lib_of('/mnt/影视媒体库/A/a.strm', fallback=False) == ''
 
     def test_no_fallback_when_basenames_equal(self):

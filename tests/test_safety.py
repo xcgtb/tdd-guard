@@ -168,3 +168,29 @@ class TestOrphanCleanLock:
             holder.close()
         res = engine.clean_orphan_dirs([str(d)], dry_run=False)
         assert res['count'] == 1 and not d.exists()
+
+
+class TestReviewFollowups:
+    def test_series_layouts_are_not_deleted_as_movies(self):
+        _reset()
+        # 季目录 + 纯数字集名：文件名看不出是剧集
+        _touch(engine.L_ROOT, '电视剧/某剧 (2020) {tmdb-500}/Season 1/01.strm')
+        # 剧集分类下的扁平目录
+        _touch(engine.L_ROOT, '剧集/国产剧集/另一剧 {tmdb-500}/另一剧 - 01.strm')
+        # 真正的电影，文件名里带 Ep —— 不能被当成剧集而删不掉
+        ep4 = _touch(engine.L_ROOT, '电影/外语电影/星球大战 Ep 4 {tmdb-500}/Star Wars Ep 4.1080p.strm')
+        assert engine.find_movie_strms_by_tmdb(engine.L_ROOT, '500') == [ep4]
+
+    def test_deleting_one_version_keeps_other_versions_sidecars(self):
+        _reset()
+        d = '电影/外语电影/Movie (2020)'
+        low = _touch(engine.S_ROOT, f'{d}/Movie (2020).strm')
+        _touch(engine.S_ROOT, f'{d}/Movie (2020).nfo')
+        _touch(engine.S_ROOT, f'{d}/Movie (2020)-mediainfo.json')
+        _touch(engine.S_ROOT, f'{d}/Movie (2020) - 2160p.strm')
+        _touch(engine.S_ROOT, f'{d}/Movie (2020) - 2160p.nfo')
+        _touch(engine.S_ROOT, f'{d}/Movie (2020) - 2160p-mediainfo.json')
+        engine.safe_delete_files([low], engine.S_ROOT, None, dry_run=False)
+        left = sorted(p.name for p in (engine.S_ROOT / d).iterdir())
+        assert left == ['Movie (2020) - 2160p-mediainfo.json', 'Movie (2020) - 2160p.nfo',
+                        'Movie (2020) - 2160p.strm']

@@ -259,12 +259,17 @@ def _loop():
 def start():
     t = _thread['t']
     if t is not None and t.is_alive():
-        return
+        if not _stop.is_set():
+            return
+        t.join(TICK_SEC + 5)  # 上一轮 stop() 后旧线程还没退出：等它退出再起新的，否则会一个都不剩
     _stop.clear()
     t = threading.Thread(target=_loop, daemon=True, name='bg-poller')
     t.start()
     _thread['t'] = t
 
 
-def stop():
+def stop(timeout=5):
     _stop.set()
+    t = _thread['t']
+    if t is not None and t is not threading.current_thread():
+        t.join(timeout)

@@ -135,6 +135,17 @@ class TestLifespan:
         t.join(5)
         assert not t.is_alive(), '应用退出时后台轮询线程应该停止'
 
+    def test_scheduler_restarts_after_stop(self):
+        scheduler.start()
+        scheduler.stop()
+        scheduler.start()
+        try:
+            t = scheduler._thread['t']
+            assert t.is_alive() and not scheduler._stop.is_set()
+        finally:
+            scheduler.stop()
+        assert not scheduler._thread['t'].is_alive()
+
 
 class TestTaskBus:
     def test_second_scan_is_rejected_with_429(self):
