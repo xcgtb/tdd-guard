@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.0
 
 ### 新增
 - **Emby 路径映射可配置**：本地库 / 分享库在 Emby 里的 STRM 根目录不再写死为作者自己的 `/strm/115网盘/影视媒体库`、`/strm/115网盘/分享影视库`，可在「规则设置 → 服务配置」或环境变量 `EMBY_LOCAL_PATH` / `EMBY_SHARE_PATH` 中填写（默认值不变，老用户无需改动）。片库映射、影视探索、每日汇报的本地/分享归类与单剧删除都按这里的配置走；单剧删除只认严格的前缀匹配，对不上宁可不删。「测试连接」会顺带列出 Emby 各媒体库的文件夹路径，并标出哪些已对上当前配置。
@@ -82,7 +82,7 @@
 - Dockerfile 增加 OCI source label，便于 GHCR 与 GitHub 仓库关联。
 - 统一应用版本号、README 和发布示例到 `1.2.1`。
 
-## Unreleased
+## 1.5.0
 
 ### Release preparation
 - 清理发布包中的运行时数据、缓存、`.git` 和本地配置。
