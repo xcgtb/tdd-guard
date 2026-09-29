@@ -6,3 +6,4 @@ docker-compose.yml
 data/
 preview-data/
 *.tar
+docker-compose.yaml
