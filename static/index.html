@@ -3062,7 +3062,26 @@ function catText(x){
 }
 function catClean(n){ return String(n || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, ''); }
 function catSeg(x, c){ return String(x.path || '').split(/[\\/]+/).some(function(g){ return catClean(g) === c; }); }
-function catHit(x, c){ return embyFilterState.catMode === 'sub' ? catText(x).indexOf(c) >= 0 : catSeg(x, c); }
+/* 与后端 _recompute_all_stats 的 CATS 同一套规则：路径逐级目录名 包含 关键词 即归入该分类（先命中的目录段为准） */
+var CAT_KW = {
+  '儿童节目': ['儿童'], '演唱会': ['演唱会'], '综艺剧': ['综艺'], '动漫剧': ['动漫'], '动画电影': ['动画电影'], '纪录片': ['纪录'],
+  '国产剧': ['国产剧集', '国产剧'], '欧美剧': ['欧美剧集', '欧美剧', '其他剧集'], '日韩剧': ['日韩剧集', '日韩剧'],
+  '华语电影': ['国产电影', '华语电影'], '外语电影': ['欧美电影', '日韩电影', '外语电影', '其他电影']
+};
+function catOf(x){
+  if (x._cat !== undefined) return x._cat;
+  var segs = String(x.path || '').split(/[\\/]+/), names = Object.keys(CAT_KW), r = '';
+  for (var i = 0; i < segs.length && !r; i++) {
+    for (var j = 0; j < names.length; j++) {
+      if (CAT_KW[names[j]].some(function(k){ return segs[i].indexOf(k) >= 0; })) { r = names[j]; break; }
+    }
+  }
+  x._cat = r; return r;
+}
+function catHit(x, c){
+  if (CAT_KW[c]) return catOf(x) === c;
+  return embyFilterState.catMode === 'sub' ? catText(x).indexOf(c) >= 0 : catSeg(x, c);
+}
 function catApply(arr){
   var c = embyFilterState.cat; if (!c) return arr;
   return arr.filter(function(x){ return catHit(x, c); });
@@ -3077,8 +3096,8 @@ function dashOpenCat(name, scope){
   name = catClean(name);
   embyFilterState.cat = name; embyFilterState.filter = 'all'; embyFilterState.scope = (scope === 'local' || scope === 'share') ? scope : 'all';
   embyFilterState.catMode = 'seg';
-  var hasS = embyData.series.some(function(x){ return catSeg(x, name); });
-  var hasM = embyData.movies.some(function(x){ return catSeg(x, name); });
+  var hasS = embyData.series.some(function(x){ return catHit(x, name); });
+  var hasM = embyData.movies.some(function(x){ return catHit(x, name); });
   if (!hasS && !hasM && (embyData.series.length || embyData.movies.length)) {
     embyFilterState.catMode = 'sub';
     hasS = embyData.series.some(function(x){ return catText(x).indexOf(name) >= 0; });
