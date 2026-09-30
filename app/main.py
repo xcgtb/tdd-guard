@@ -1002,11 +1002,14 @@ def api_emby_series_episodes(series_id: str):
         for ep in data.get('Items', []):
             path = ep.get('Path', '') or ''
             lib = engine.emby_lib_of(path) or 'other'
+            conv = engine.emby_path_to_container(path)
+            exists = True if conv is None else conv.exists()   # None = 映射不上，无法核实
             episodes.append({
                 'season': ep.get('ParentIndexNumber'),
                 'episode': ep.get('IndexNumber'),
                 'lib': lib,
                 'path': path,
+                'exists': exists,
             })
         return {'status': 'success', 'episodes': episodes}
     except Exception as e:
@@ -1014,9 +1017,10 @@ def api_emby_series_episodes(series_id: str):
 
 
 
-def _delete_title_files(files, target, title, media_type, series_id=None):
-    """单剧/单片删除的公共执行段：拿跨入口文件锁 → 删文件 → 刷新 Emby → 失效缓存 → 写审计。
-    以前两个端点各写一遍，而且都不拿锁，可能和正在执行的双库清理同时删同一批文件。"""
+def _delete_title_files(files, target, title, media_type, series_id=None, tmdb_id=None):
+    """单剧/单片删除的公共执行段：拿跨入口文件锁 → 删文件（与双库治理同一条 fail-safe 删除链：
+    本地库=删 strm + 联动 CD2 源文件；分享库=只删 strm）→ 立即修补缓存（海报马上撤下）
+    → 后台精准通知 Emby → 写审计。"""
     root = engine.L_ROOT if target == 'local' else engine.S_ROOT
     cloud = engine.CLOUD_L_ROOT if target == 'local' else None
     try:
@@ -1025,20 +1029,29 @@ def _delete_title_files(files, target, title, media_type, series_id=None):
     except engine.MutationBusy as e:
         return {'status': 'busy', 'message': str(e)}
 
-    try:
-        engine.notify_emby_refresh()
-    except Exception:
-        pass
+    # 实际已删掉的文件（fail-safe 可能因云端源文件找不到而保留 strm）→ Emby 侧路径；空目录一并通知
+    gone = [f for f in files if not f.exists()]
+    emby_paths = set()
+    for f in gone:
+        emby_paths.add(engine.container_to_emby_path(f, target))
+        for d in (f.parent, f.parent.parent):
+            if not d.exists():
+                emby_paths.add(engine.container_to_emby_path(d, target))
 
-    # 片库映射页用的是已对照过 TMDB 的持久化缓存（_emby_lib_cache / 磁盘文件）。
-    # 单剧删除只在缓存里"就地"更新/移除这一部剧，其余剧集的对照结果保留，
-    # 否则下次打开片库映射所有剧都会被打回"待对照"，只能整页重跑很慢的 TMDB 对照。
-    engine.invalidate_media_caches(keep_emby_lib=series_id is not None)
-    if series_id is not None:
-        try:
-            engine.patch_emby_lib_cache_after_series_delete(series_id, target)
-        except Exception:
-            pass
+    engine.invalidate_media_caches(keep_emby_lib=True)
+    series_removed, entry = False, None
+    try:
+        if series_id is not None:
+            info = engine.patch_emby_lib_cache_after_series_delete(series_id, target)
+            series_removed = info['remaining'] == 0
+            entry = info['entry']
+            if series_removed and info['series_path']:
+                emby_paths.add(info['series_path'])   # 整部剧都没了：连剧目录一起通知
+        elif tmdb_id is not None:
+            engine.patch_emby_lib_cache_after_movie_delete(tmdb_id, target)
+    except Exception as e:
+        engine.log.warning('删除后缓存修补失败: %s', e)
+    engine.notify_emby_deleted(emby_paths)    # 后台线程，不阻塞返回
 
     target_cn = '本地库' if target == 'local' else '分享库'
     cloud_note = '未处理云端源文件' if target == 'share' else ('删除 %d 个云端源文件' % result['cloud_removed'])
@@ -1058,6 +1071,7 @@ def _delete_title_files(files, target, title, media_type, series_id=None):
         'strm_removed': result['strm_removed'],
         'cloud_removed': result['cloud_removed'],
         'errors': result.get('errors', []),
+        'series_removed': series_removed, 'entry': entry,
     }
 
 
@@ -1093,10 +1107,25 @@ def api_emby_series_delete(series_id: str, body: dict = None):
 
         if not files:
             return {'status': 'success', 'count': 0, 'target': target,
-                    'message': '该库无此剧文件'}
+                    'message': '该库无此剧文件', 'ghost': True}
         if dry_run:
             return {'status': 'success', 'dry_run': True, 'count': len(files), 'target': target}
         return _delete_title_files(files, target, series_name, media_type, series_id=series_id)
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post('/api/emby/series/{series_id}/resync', dependencies=[Depends(auth)])
+def api_emby_series_resync(series_id: str):
+    """不删任何文件：以磁盘真实文件为准，重算/移除片库映射缓存里的这部剧，并通知 Emby 刷新。
+    用于清掉「文件已经没了但海报还在」的失效条目。"""
+    try:
+        info = engine.patch_emby_lib_cache_after_series_delete(series_id)
+        engine.invalidate_media_caches(keep_emby_lib=True)
+        if info['remaining'] == 0 and info['series_path']:
+            engine.notify_emby_deleted([info['series_path']])
+        return {'status': 'success', 'remaining': info['remaining'],
+                'series_removed': info['remaining'] == 0, 'entry': info['entry']}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
@@ -1121,7 +1150,7 @@ def api_movie_delete(body: dict = None):
         return {'status': 'success', 'count': 0, 'target': target}
     if dry_run:
         return {'status': 'success', 'dry_run': True, 'count': len(files), 'target': target}
-    return _delete_title_files(files, target, movie_name, '电影')
+    return _delete_title_files(files, target, movie_name, '电影', tmdb_id=tmdb_id)
 
 
 if __name__ == '__main__':

@@ -312,15 +312,63 @@ def _side_gap_desc(keys):
 
 
 # ═══════════════════ Emby ═══════════════════
-def emby_request(path, params=None, method='GET', timeout=15):
+def emby_request(path, params=None, method='GET', timeout=15, body=None):
     if not EMBY_KEY:
         raise RuntimeError('未配置 EMBY_KEY')
     url = EMBY_HOST + path + ('?' + urllib.parse.urlencode(params) if params else '')
-    req = urllib.request.Request(url, method=method, data=b'' if method == 'POST' else None,
-                                 headers={'X-Emby-Token': EMBY_KEY})
+    headers = {'X-Emby-Token': EMBY_KEY}
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+    else:
+        data = b'' if method == 'POST' else None
+    req = urllib.request.Request(url, method=method, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read()
     return json.loads(raw.decode('utf-8')) if (method == 'GET' and raw) else None
+
+
+def container_to_emby_path(p, target):
+    """容器内路径 → Emby 侧路径（notify_emby_deleted 用）；映射不上返回 None"""
+    root = L_ROOT if target == 'local' else S_ROOT
+    eroot = EMBY_PATHS.local if target == 'local' else EMBY_PATHS.share
+    if not eroot:
+        return None
+    try:
+        rel = Path(p).relative_to(root)
+    except ValueError:
+        return None
+    return eroot.rstrip('/') + ('/' + rel.as_posix() if rel.parts else '')
+
+
+def notify_emby_deleted(emby_paths, background=True):
+    """告诉 Emby「这些路径已删除」（POST /Library/Media/Updated, UpdateType=Deleted）。
+    比 /Library/Refresh 整库扫描快得多，Emby 会直接把对应条目（含没有分集的空剧）移除。
+    失败时退回整库刷新。默认放后台线程，不阻塞删除接口。"""
+    paths = sorted({p for p in (emby_paths or []) if p})
+
+    def _run():
+        if paths:
+            for i in range(0, len(paths), 200):
+                body = {'Updates': [{'Path': p, 'UpdateType': 'Deleted'} for p in paths[i:i + 200]]}
+                ok = False
+                for ep in ('/Library/Media/Updated', '/emby/Library/Media/Updated'):
+                    try:
+                        emby_request(ep, method='POST', timeout=15, body=body)
+                        ok = True
+                        break
+                    except Exception as e:
+                        log.warning('Emby 删除通知失败 %s: %s', ep, e)
+                if not ok:
+                    notify_emby_refresh()
+                    return
+        else:
+            notify_emby_refresh()
+
+    if background:
+        threading.Thread(target=_run, daemon=True, name='emby-notify-deleted').start()
+    else:
+        _run()
 
 
 def notify_emby_refresh():
@@ -2346,6 +2394,49 @@ def emby_library_overview(force=False):
     return out
 
 
+_MEDIA_EXT = {'.strm', '.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.iso'}
+
+
+def _dir_has_media(d):
+    """目录里是否还有媒体文件（一次 scandir，遇到就返回）。无法确认（权限/IO 错误）时保守返回 True。"""
+    try:
+        with os.scandir(d) as it:
+            for e in it:
+                if os.path.splitext(e.name)[1].lower() in _MEDIA_EXT:
+                    return True
+        return False
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+
+
+def _alive_dir_map(paths):
+    """对一批 Emby 文件路径，按父目录去重后检查是否还有媒体文件：{父目录: bool}。
+    只按「目录」判断，与集号无关（只有 S08/S09、没有 S01 的剧也没问题）；
+    十万分集通常只有几千个季目录。库根不可用（NAS 掉挂载）或死目录占比异常时整体不信任，
+    返回空 dict（= 全部视为存在），避免把整库误判成幽灵。"""
+    dirs = {}
+    for p in paths:
+        if not p:
+            continue
+        p = p.replace('\\', '/')
+        d = p.rsplit('/', 1)[0] if '/' in p else ''
+        if not d or d in dirs:
+            continue
+        conv = EMBY_PATHS.to_container(d)
+        if conv is None:
+            dirs[d] = True
+            continue
+        root = L_ROOT if str(conv).startswith(str(L_ROOT) + os.sep) else S_ROOT
+        dirs[d] = True if not root.exists() else _dir_has_media(conv)
+    dead = sum(1 for v in dirs.values() if not v)
+    if len(dirs) > 20 and dead / len(dirs) > 0.5:
+        log.warning('片库映射：%d/%d 个目录检测为空，疑似挂载异常，本次不做幽灵过滤', dead, len(dirs))
+        return {}
+    return dirs
+
+
 def _build_emby_library_overview():
     out = {'series': [], 'movies': []}
     lib_of = EMBY_PATHS.lib_of  # 热循环里要分类 ~10 万个分集路径，先绑定到局部
@@ -2355,10 +2446,17 @@ def _build_emby_library_overview():
         'Limit': 50000,
     }) or {}
     episodes_all = _fetch_all_episodes()
+    alive = _alive_dir_map(ep.get('Path') for ep in episodes_all)
+
+    def _ep_alive(path):
+        p = (path or '').replace('\\', '/')
+        return alive.get(p.rsplit('/', 1)[0] if '/' in p else '', True)
+
     eps_by_series = defaultdict(list)
     for ep in episodes_all:
         sid = ep.get('SeriesId')
-        if sid: eps_by_series[sid].append(ep)
+        if sid and _ep_alive(ep.get('Path')):   # 目录已空的残留分集不算入库
+            eps_by_series[sid].append(ep)
 
     for s in series_data.get('Items', []):
         sid = s.get('Id'); path = s.get('Path', '') or ''; s_lib = lib_of(path)
@@ -2415,8 +2513,13 @@ def _build_emby_library_overview():
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
         'Limit': 50000,
     }) or {}
-    for m in movie_data.get('Items', []):
+    movie_items = movie_data.get('Items', [])
+    m_alive = _alive_dir_map(m.get('Path') for m in movie_items)
+    for m in movie_items:
         path = m.get('Path', '') or ''; m_lib = lib_of(path)
+        _pp = path.replace('\\', '/')
+        if not m_alive.get(_pp.rsplit('/', 1)[0] if '/' in _pp else '', True):
+            continue   # 电影目录已空：Emby 残留条目
         out['movies'].append({
             'id': m.get('Id'), 'name': m.get('Name'),
             'year': m.get('ProductionYear'), 'rating': m.get('CommunityRating'),
@@ -3110,40 +3213,134 @@ def send_morning_report(items: list, force_refresh: bool = False) -> bool:
     return ok
 
 
-def patch_emby_lib_cache_after_series_delete(series_id: str, deleted_target: str):
-    """单剧删除后，就地更新内存 + 磁盘上的片库映射缓存（含 TMDB 对照结果），
-    而不是整体清空——这样片库映射页不需要为了看到最新状态而重新跑一遍
-    很慢的全量 TMDB 对照，其它剧集的对照结果也不会被打回"待对照"。"""
-    for cache in (_emby_lib_cache, {'data': read_emby_lib_cache()}):
-        data = cache.get('data')
-        if not data:
+def _live_series_episodes(series_id: str):
+    """某剧当前「真实存在」的分集：Emby 返回的分集里，路径能映射到容器内且文件已不在磁盘上的，
+    视为 Emby 尚未清理的残留，直接剔除。删除后 Emby 的刷新是异步的，
+    如果直接信 Emby，刚删完的剧集还会被当成\"仍在库里\"，海报就不会消失。
+    路径映射不上的（其它库）无法核实，保留。"""
+    items = (emby_request('/Items', {
+        'ParentId': series_id, 'Recursive': 'true',
+        'IncludeItemTypes': 'Episode',
+        'Fields': 'Path,ParentIndexNumber,IndexNumber', 'Limit': 5000,
+    }) or {}).get('Items') or []
+    live = []
+    for e in items:
+        conv = emby_path_to_container(e.get('Path') or '')
+        if conv is not None:
+            try:
+                if not conv.exists():
+                    continue
+            except OSError:
+                pass
+        live.append(e)
+    return live
+
+
+def _resync_series_entry(entry: dict, live: list):
+    """用真实存在的分集重算缓存里这部剧的分集统计，并按原 TMDB 数据重新判定缺集。"""
+    lib_of = EMBY_PATHS.lib_of
+    season_map, local_set, share_set = {}, set(), set()
+    for ep in live:
+        sn, en = ep.get('ParentIndexNumber'), ep.get('IndexNumber')
+        if sn is None or en is None:
             continue
-        series_list = data.get('series') or []
-        idx = next((i for i, s in enumerate(series_list) if s.get('id') == series_id), None)
+        season_map.setdefault(sn, set()).add(en)
+        lib = lib_of(ep.get('Path') or '')
+        if lib == 'local':
+            local_set.add((sn, en))
+        elif lib == 'share':
+            share_set.add((sn, en))
+    seasons, total_missing = [], 0
+    for sn in sorted(season_map):
+        eps_set = sorted(season_map[sn])
+        lo, hi = eps_set[0], eps_set[-1]
+        miss = sorted(set(range(1, lo)) | (set(range(lo, hi + 1)) - set(eps_set)))
+        total_missing += len(miss)
+        seasons.append({'season': sn, 'episodes': len(eps_set), 'max_ep': hi,
+                        'missing': miss, 'complete': not miss})
+    entry.update({
+        'in_local': bool(local_set), 'in_share': bool(share_set),
+        'seasons': seasons, 'total_seasons': len(seasons),
+        'total_episodes': sum(x['episodes'] for x in seasons),
+        'local_eps': len(local_set), 'share_eps': len(share_set),
+        'have_eps': len(local_set | share_set),
+        'missing_eps': total_missing,
+        'complete': total_missing == 0 and len(seasons) > 0,
+    })
+    old = entry.get('tmdb_info')
+    if old:
+        if old.get('tmdb_total'):
+            fake = {'status': old.get('tmdb_status') or '',
+                    'seasons': [{'season_number': se['season'], 'episode_count': se['tmdb']}
+                                for se in (old.get('seasons') or []) if se.get('tmdb')]}
+            entry['tmdb_info'] = classify_series_by_tmdb(seasons, fake)
+        else:
+            old['local_total'] = entry['total_episodes']
+
+
+def _patch_all_caches(patch):
+    """对 内存 / 总览磁盘 / TMDB 对照磁盘 三份缓存各调用一次 patch(data)->bool，改动了就落盘（保留原时间戳）。"""
+    if _emby_lib_cache.get('data'):
+        patch(_emby_lib_cache['data'])
+    disk = _load_overview_disk()
+    if disk and patch(disk['data']):
+        _save_overview_disk(disk['data'])
+    tmdb_cache = read_emby_lib_cache()
+    if tmdb_cache and patch(tmdb_cache):
+        save_emby_lib_cache(tmdb_cache, keep_ts=True)
+
+
+def patch_emby_lib_cache_after_series_delete(series_id: str, deleted_target: str = ''):
+    """删除 / 同步后就地修补缓存里这部剧（以磁盘真实文件为准）。
+    返回 {'remaining': 剩余分集数, 'entry': 新条目或 None, 'series_path': Emby 侧剧目录}。"""
+    live = _live_series_episodes(series_id)
+    info = {'remaining': len(live), 'entry': None, 'series_path': ''}
+
+    def patch(data):
+        series_list = (data or {}).get('series') or []
+        idx = next((i for i, x in enumerate(series_list) if x.get('id') == series_id), None)
         if idx is None:
-            continue
-        remaining = (emby_request('/Items', {
-            'ParentId': series_id, 'Recursive': 'true',
-            'IncludeItemTypes': 'Episode', 'Fields': 'Path', 'Limit': 5000,
-        }) or {}).get('Items') or []
-        if not remaining:
+            return False
+        info['series_path'] = series_list[idx].get('path') or info['series_path']
+        if not live:
             series_list.pop(idx)
         else:
-            paths = [emby_path_to_container(e.get('Path') or '') for e in remaining]
-            series_list[idx]['in_local'] = any(p and _inside(p, L_ROOT) for p in paths)
-            series_list[idx]['in_share'] = any(p and _inside(p, S_ROOT) for p in paths)
+            _resync_series_entry(series_list[idx], live)
+            info['entry'] = series_list[idx]
         data['series'] = series_list
-        if cache is _emby_lib_cache:
-            _emby_lib_cache['data'] = data
-            _emby_lib_cache['ts'] = time.time()
-        else:
-            save_emby_lib_cache(data)
+        if isinstance(data.get('stats'), dict):
+            data['stats']['total_series'] = len(series_list)
+        return True
+
+    _patch_all_caches(patch)
+    return info
 
 
-def save_emby_lib_cache(data: dict):
+def patch_emby_lib_cache_after_movie_delete(tmdb_id: str, target: str):
+    """按 tmdb_id 删电影后，把缓存里「位于被删库」的电影条目移除。返回移除数。"""
+    flag = 'in_local' if target == 'local' else 'in_share'
+    removed = [0]
+
+    def patch(data):
+        movies = (data or {}).get('movies') or []
+        keep = [m for m in movies if not (str(m.get('tmdb_id') or '') == str(tmdb_id) and m.get(flag))]
+        if len(keep) == len(movies):
+            return False
+        removed[0] = max(removed[0], len(movies) - len(keep))
+        data['movies'] = keep
+        if isinstance(data.get('stats'), dict):
+            data['stats']['total_movies'] = len(keep)
+        return True
+
+    _patch_all_caches(patch)
+    return removed[0]
+
+
+def save_emby_lib_cache(data: dict, keep_ts: bool = False):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     data = dict(data)
-    data['ts'] = time.time()
+    if not (keep_ts and data.get('ts')):
+        data['ts'] = time.time()
     tmp = EMBY_LIB_CACHE_FILE.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
     tmp.replace(EMBY_LIB_CACHE_FILE)

@@ -3479,13 +3479,18 @@ async function deleteMovieByTmdb(tmdbId, target, movieName){
     });
     if (r2.status !== 'success') throw new Error(r2.message || '\u5931\u8d25');
 
-    var doneMsg = '\u2705 \u5df2\u5220\u9664\n\nstrm\uff1a' + (r2.strm_removed || 0) + ' \u4e2a\n\u4e91\u7aef\uff1a' + (r2.cloud_removed || 0) + ' \u4e2a';
-    if (r2.errors && r2.errors.length) doneMsg += '\n\n\u26a0\ufe0f \u90e8\u5206\u9519\u8bef\uff1a\n' + r2.errors.slice(0, 3).join('\n');
-    alert(doneMsg);
-
-    embyLoaded = false;
-    loadEmbyLibrary(false, false);
+    var flag = target === 'local' ? 'in_local' : 'in_share';
+    embyData.movies = embyData.movies.filter(function(x){
+      return !(String(x.tmdb_id || '') === String(tmdbId) && x[flag]);
+    });
+    if (embyData.stats) embyData.stats.total_movies = embyData.movies.length;
+    renderEmbyList();
     closeModal();
+    toast('\u2705 \u5df2\u5220\u9664 strm ' + (r2.strm_removed || 0) + ' \u4e2a' +
+          (target === 'local' ? '\uff0c\u4e91\u7aef ' + (r2.cloud_removed || 0) + ' \u4e2a' : ''), 'success', 3500);
+    if (r2.errors && r2.errors.length) {
+      setTimeout(function(){ alert('\u26a0\ufe0f \u90e8\u5206\u6587\u4ef6\u672a\u5220\u9664\uff1a\n' + r2.errors.slice(0, 3).join('\n')); }, 50);
+    }
   } catch(e){
     alert('\u5220\u9664\u5931\u8d25\uff1a' + e.message);
   }
@@ -3601,7 +3606,14 @@ async function deleteSeriesFromLib(seriesId, target, seriesName){
     if (r1.status !== 'success') throw new Error(r1.message || '\u5931\u8d25');
     var count = r1.count || 0;
     if (count === 0) {
-      alert('\u8be5\u5e93\u65e0\u6b64\u5267\u6587\u4ef6');
+      /* 该库没有文件：常见于 Emby / 缓存里残留了失效条目。提供「同步状态」，不删任何文件 */
+      if (confirm('该库没有此剧文件。\n\n是否按磁盘实际情况同步状态？\n（不会删除任何文件；已无文件的剧会从列表移除）')) {
+        var rs = await api('/api/emby/series/' + seriesId + '/resync', { method: 'POST', body: '{}' });
+        if (rs.status !== 'success') throw new Error(rs.message || '失败');
+        applySeriesDeleteResult(seriesId, rs);
+        closeModal();
+        toast('已同步状态', 'success');
+      }
       return;
     }
 
@@ -3620,18 +3632,18 @@ async function deleteSeriesFromLib(seriesId, target, seriesName){
     });
     if (r2.status !== 'success') throw new Error(r2.message || '\u5931\u8d25');
 
-    var doneMsg = '\u2705 \u5df2\u5220\u9664\n\n' +
-                  'strm\uff1a' + (r2.strm_removed || 0) + ' \u4e2a\n' +
-                  '\u4e91\u7aef\uff1a' + (r2.cloud_removed || 0) + ' \u4e2a';
-    if (r2.errors && r2.errors.length) {
-      doneMsg += '\n\n\u26a0\ufe0f \u90e8\u5206\u9519\u8bef\uff1a\n' + r2.errors.slice(0, 3).join('\n');
-    }
-    alert(doneMsg);
-
-    // 4. 局部刷新：只更新被删剧集自身的数据，不重新拉取/对照整个片库，
-    //    这样其余剧集的 TMDB 对照结果不会被清空，用户还能继续预览、删除下一部。
-    await refreshSingleSeriesInList(seriesId, target);
+    /* 先立即更新界面（海报马上撤下），再提示结果；Emby 那边由服务端后台通知 */
+    applySeriesDeleteResult(seriesId, r2);
     closeModal();
+    var partial = (r2.errors && r2.errors.length) || (r2.strm_removed || 0) < count;
+    toast('\u2705 \u5df2\u5220\u9664 strm ' + (r2.strm_removed || 0) + ' \u4e2a' +
+          (target === 'local' ? '\uff0c\u4e91\u7aef ' + (r2.cloud_removed || 0) + ' \u4e2a' : ''), 'success', 3500);
+    if (partial) {
+      setTimeout(function(){
+        alert('\u26a0\ufe0f \u90e8\u5206\u6587\u4ef6\u672a\u5220\u9664\uff08\u4fdd\u62a4\u673a\u5236\uff1a\u4e91\u7aef\u6e90\u6587\u4ef6\u627e\u4e0d\u5230/\u5339\u914d\u4e0d\u552f\u4e00\u65f6\u4f1a\u4fdd\u7559 strm\uff09\uff1a\n' +
+              (r2.errors || []).slice(0, 3).join('\n'));
+      }, 50);
+    }
   } catch(e){
     alert('\u5220\u9664\u5931\u8d25\uff1a' + e.message);
   }
@@ -3639,25 +3651,39 @@ async function deleteSeriesFromLib(seriesId, target, seriesName){
 
 /* 只重新拉取单部剧集在 Emby 中的最新分集情况，替换/移除列表里对应的一条，
    避免像整页刷新那样把所有剧集的 TMDB 对照状态打回"待对照"。 */
+function applySeriesDeleteResult(seriesId, r){
+  var idx = embyData.series.findIndex(function(x){ return x.id === seriesId; });
+  if (r.series_removed) {
+    if (idx >= 0) embyData.series.splice(idx, 1);
+    delete window.__embySeriesMap[seriesId];
+  } else if (r.entry && idx >= 0) {
+    var md = embyData.series[idx]._md;
+    if (md) r.entry._md = md;
+    embyData.series[idx] = r.entry;
+    window.__embySeriesMap[seriesId] = r.entry;
+  }
+  embyData.stats.total_series = embyData.series.length;
+  $('emby-total').textContent = embyData.stats.total_series || 0;
+  renderEmbyList();
+}
+
 async function refreshSingleSeriesInList(seriesId, deletedTarget){
   try {
-    var r = await api('/api/emby/series/' + seriesId + '/episodes');
-    var eps = (r && r.status === 'success') ? (r.episodes || []) : [];
+    /* 服务端已按磁盘真实文件修补了缓存：直接读回该剧最新条目（缓存只读，不触发 TMDB 对照） */
+    var r = await api('/api/emby/library?force=0&with_tmdb=1&cache_only=1');
+    var fresh = (r && r.series) ? r.series.find(function(x){ return x.id === seriesId; }) : null;
     var idx = embyData.series.findIndex(function(x){ return x.id === seriesId; });
-    if (!eps.length) {
-      // 两个库的文件都已删完：直接从列表移除
+    if (!fresh) {
       if (idx >= 0) embyData.series.splice(idx, 1);
       delete window.__embySeriesMap[seriesId];
     } else if (idx >= 0) {
-      var s = embyData.series[idx];
-      s.in_local = eps.some(function(e){ return e.lib === 'local'; });
-      s.in_share = eps.some(function(e){ return e.lib === 'share'; });
-      // 只更新被删库那一侧的分集计数展示，TMDB 对照结果（match_status/seasons）保留不动
-      window.__embySeriesMap[seriesId] = s;
+      var md = embyData.series[idx]._md;
+      embyData.series[idx] = fresh;
+      if (md) fresh._md = md;
+      window.__embySeriesMap[seriesId] = fresh;
     }
-    var st = embyData.stats;
-    st.total_series = embyData.series.length;
-    $('emby-total').textContent = st.total_series || 0;
+    embyData.stats.total_series = embyData.series.length;
+    $('emby-total').textContent = embyData.stats.total_series || 0;
     renderEmbyList();
   } catch(e) {
     // 局部刷新失败不影响已完成的删除操作，静默忽略
@@ -3676,6 +3702,7 @@ async function loadLibBreakdown(seriesId, ti){
     eps.forEach(function(e){
       if (e.season == null || e.season <= 0) return;
       if (e.lib === 'other') return;
+      if (e.exists === false) return;   /* Emby 残留、文件已不在磁盘 */
       if (!bySeason[e.season]) bySeason[e.season] = { local: {}, share: {} };
       if (e.lib === 'local') bySeason[e.season].local[e.episode] = 1;
       if (e.lib === 'share') bySeason[e.season].share[e.episode] = 1;
