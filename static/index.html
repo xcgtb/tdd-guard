@@ -3060,7 +3060,8 @@ function catText(x){
   }
   return out.join('|');
 }
-function catSeg(x, c){ return String(x.path || '').split(/[\\/]+/).indexOf(c) >= 0; }
+function catClean(n){ return String(n || '').replace(/[^\u4e00-\u9fa5A-Za-z0-9]/g, ''); }
+function catSeg(x, c){ return String(x.path || '').split(/[\\/]+/).some(function(g){ return catClean(g) === c; }); }
 function catHit(x, c){ return embyFilterState.catMode === 'sub' ? catText(x).indexOf(c) >= 0 : catSeg(x, c); }
 function catApply(arr){
   var c = embyFilterState.cat; if (!c) return arr;
@@ -3073,6 +3074,7 @@ function syncCatChip(){
   box.hidden = !c; $('embyCatName').textContent = c ? '分类：' + c : '';
 }
 function dashOpenCat(name, scope){
+  name = catClean(name);
   embyFilterState.cat = name; embyFilterState.filter = 'all'; embyFilterState.scope = (scope === 'local' || scope === 'share') ? scope : 'all';
   embyFilterState.catMode = 'seg';
   var hasS = embyData.series.some(function(x){ return catSeg(x, name); });
@@ -3248,7 +3250,7 @@ function renderEmbyList(){
     else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
     arr = catApply(arr);
     if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
-    if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">' + (embyFilterState.cat ? '没有匹配「' + esc(embyFilterState.cat) + '」的条目（若一直为空，说明 Emby 数据里没有分类/路径字段）' : '无匹配项') + '</div>'; return; }
+    if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">' + (embyFilterState.cat ? '没有匹配「' + esc(embyFilterState.cat) + '」的条目（可先点一次「重新对照」刷新片库数据）' : '无匹配项') + '</div>'; return; }
     embyView = { arr: arr, fn: renderMovieCard };
     list.innerHTML = arr.slice(0, embyPage * EMBY_PAGE).map(renderMovieCard).join('');
     hydratePosters(list);
