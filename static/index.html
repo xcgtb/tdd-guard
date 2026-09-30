@@ -2502,7 +2502,8 @@ async function loadDashEmby(){
   else {
     try {
       var r = await api('/api/emby/library?force=0&with_tmdb=1&cache_only=1');
-      if (r && r.status === 'success') src = { series: r.series || [], movies: r.movies || [], stats: r.stats || {} };
+      if (r && r.status === 'success') await mdLoad();
+      if (r && r.status === 'success') src = { series: r.series || [], movies: r.movies || [], stats: md_sync(r.series || [], r.stats || {}) };
     } catch(e){}
   }
   if (!src) return;
@@ -3086,6 +3087,55 @@ function catApply(arr){
   var c = embyFilterState.cat; if (!c) return arr;
   return arr.filter(function(x){ return catHit(x, c); });
 }
+/* ── 手动完结：TMDB 季数/集数不准时，人工标记某部剧「已完结」，不再计入缺集 / 在更 ── */
+function mdGet(){ return window.__mdSet || {}; }
+async function mdLoad(){
+  try {
+    var r = await api('/api/manual_done');
+    window.__mdSet = (r && r.items) || {};
+    /* 迁移：早期版本把标记存在浏览器里，首次同步到服务器 */
+    var old = {}; try { old = JSON.parse(localStorage.getItem('manualDone') || '{}'); } catch(e){}
+    var ids = Object.keys(old).filter(function(k){ return !window.__mdSet[k]; });
+    for (var i = 0; i < ids.length; i++) {
+      var q = await api('/api/manual_done', { method: 'POST', body: JSON.stringify({ id: ids[i], name: (old[ids[i]] || {}).n || '', done: true }) });
+      if (q && q.items) window.__mdSet = q.items;
+    }
+    if (Object.keys(old).length) { try { localStorage.removeItem('manualDone'); } catch(e){} }
+  } catch(e){ window.__mdSet = window.__mdSet || {}; }
+}
+function md_sync(series, base){
+  var set = mdGet(), st = {}, k;
+  for (k in (base || {})) st[k] = base[k];
+  series.forEach(function(x){
+    var ti = x.tmdb_info; if (!ti) return;
+    if (set[x.id]) {
+      if (!x._mdOrig && (ti.match_status === 'missing' || ti.match_status === 'ongoing')) x._mdOrig = { st: ti.match_status, diff: ti.diff };
+      if (x._mdOrig) {
+        st[x._mdOrig.st] = Math.max(0, (st[x._mdOrig.st] || 0) - 1);
+        st.aligned = (st.aligned || 0) + 1;
+        ti.match_status = 'aligned'; ti.diff = 0; x._md = true;
+      }
+    } else if (x._mdOrig) {
+      ti.match_status = x._mdOrig.st; ti.diff = x._mdOrig.diff; delete x._mdOrig; x._md = false;
+    }
+  });
+  return st;
+}
+async function toggleManualDone(id){
+  var x = (window.__embySeriesMap || {})[id]; if (!x) return;
+  var on = !mdGet()[id];
+  try {
+    var r = await api('/api/manual_done', { method: 'POST', body: JSON.stringify({ id: id, name: x.name || '', done: on }) });
+    if (r.status !== 'success') throw new Error(r.message || '保存失败');
+    window.__mdSet = r.items || {};
+  } catch(e){ toast('保存失败：' + e.message, 'error', 3200); return; }
+  embyData.stats = md_sync(embyData.series, embyData.statsBase || embyData.stats);
+  updateEmbyChips();
+  embyPage = 1; renderEmbyList();
+  showEmbyDetailById(id);
+  toast(on ? '已标记完结，不再计入缺集' : '已取消完结，恢复 TMDB 对照结果', 'success', 2600);
+  if (typeof loadDashEmby === 'function') loadDashEmby();
+}
 function clearEmbyCat(){ embyFilterState.cat = ''; embyPage = 1; renderEmbyList(); }
 function syncCatChip(){
   var c = embyFilterState.cat, box = $('embyCatChip');
@@ -3177,7 +3227,9 @@ async function loadEmbyLibrary(force, withTmdb, cacheOnly){
     if (cacheOnly && r.ts) toast('已载入片库缓存（' + fmtAgo(r.ts) + '对照），需要最新数据请点「对照 TMDB」', 'success', 3200);
     embyData.series = r.series || [];
     embyData.movies = r.movies || [];
-    embyData.stats = r.stats || {};
+    await mdLoad();
+    embyData.statsBase = r.stats || {};
+    embyData.stats = md_sync(embyData.series, embyData.statsBase);
     /* 缓存 Emby 主机地址（后端在返回里带了 emby_host），供"在 Emby 中打开"链接使用 */
     if (r.emby_host) window.__embyHost = r.emby_host;
     window.__embySeriesMap = {};
@@ -3330,6 +3382,8 @@ function renderSeriesCard(s){
   else if (mst === 'no_tmdb')   { statusText = '无 TMDB'; statusCls = 'no'; }
   else if (mst === 'pending')   { statusText = '待对照'; statusCls = 'no'; }
 
+  if (s._md) { statusText = '✓ 已完结'; statusCls = 'ok'; }
+
   var libTag = '';
   if (s.in_local && s.in_share) libTag = '双库';
   else if (s.in_local) libTag = '本地';
@@ -3457,7 +3511,8 @@ function showEmbyDetailById(id){
   if (s.in_local && s.in_share) html += '<span class="emby-badge loc">本地+分享</span>';
   else if (s.in_local) html += '<span class="emby-badge loc">Emby</span>';
   else if (s.in_share) html += '<span class="emby-badge shr">分享</span>';
-  if (mst === 'aligned') html += '<span class="emby-badge ok">✓ 对齐</span>';
+  if (s._md) html += '<span class="emby-badge ok">✓ 手动完结</span>';
+  else if (mst === 'aligned') html += '<span class="emby-badge ok">✓ 对齐</span>';
   else if (mst === 'missing') html += '<span class="emby-badge miss">缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
   else if (mst === 'extra') html += '<span class="emby-badge extra">超 ' + (ti.diff || 0) + ' 集</span>';
   else if (mst === 'ongoing') html += '<span class="emby-badge ongoing">在更</span>';
@@ -3514,11 +3569,14 @@ function showEmbyDetailById(id){
     }
   }
 
+  if (s._md) html += '<div style="margin-top:12px;font-size:12px;color:var(--text-dim)">已手动标记为完结：不再计入缺集 / 在更，下方两库分集明细仍按 TMDB 原始数据显示。标记保存在服务器，所有设备通用。</div>';
   html += '<div id="libBreakdown" style="margin-top:16px;padding:12px;background:var(--surface-hover);border-radius:10px;font-size:12px;color:var(--text-dim)">正在分析两库分集...</div>';
 
   /* "在 Emby 中打开"链接改为读配置，不再硬编码 IP */
   var embyHost = (window.__embyHost || '').replace(/\/+$/, '');
   html += '<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">';
+  if (s._md) html += '<button class="btn gray" onclick="toggleManualDone(\'' + esc(s.id) + '\')">取消完结</button>';
+  else if (mst === 'missing' || mst === 'ongoing') html += '<button class="btn" onclick="toggleManualDone(\'' + esc(s.id) + '\')">手动完结</button>';
   html += '<button class="btn red" onclick="deleteSeriesFromLib(\'' + esc(s.id) + '\',\'local\',\'' + esc(s.name || '').replace(/'/g, '&#39;') + '\')">删除本地库</button>';
   html += '<button class="btn red" onclick="deleteSeriesFromLib(\'' + esc(s.id) + '\',\'share\',\'' + esc(s.name || '').replace(/'/g, '&#39;') + '\')">删除分享库</button>';
   if (s.id && embyHost) {

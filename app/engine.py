@@ -2467,6 +2467,20 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
             'diff': local_total - tmdb_total, 'seasons': season_diff}
 
 
+MANUAL_DONE_FILE = STATE_DIR / 'manual_done.json'
+
+
+def read_manual_done() -> dict:
+    """人工标记「已完结」的剧集：Emby 条目 id → {name, ts}。
+    TMDB 季数 / 集数与实际不符（如国产剧只有一季而 TMDB 有很多季）时手动标记，
+    仅影响缺集统计与提示，不改动任何文件。由 Web「片库映射」弹窗里的「手动完结」写入。"""
+    try:
+        data = json.loads(MANUAL_DONE_FILE.read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def gap_report(max_age=6 * 3600):
     """缺集检测的统一口径：与网页「片库映射 → 缺集」一致，按 TMDB 对照判断。
     优先读网页同一份对照缓存；缓存过期/不存在时现场对照一次。
@@ -2487,9 +2501,12 @@ def gap_report(max_age=6 * 3600):
     stats = {'total': len(series), 'aligned': 0, 'missing': 0, 'extra': 0,
              'ongoing': 0, 'unmatched': 0}
     missing = []
+    done = read_manual_done()  # 手动完结的剧不再算缺集 / 在更，与网页「片库映射」口径一致
     for s_ in series:
         st = (s_.get('tmdb_info') or {}).get('match_status', 'unmatched')
         if st == 'no_tmdb': st = 'unmatched'
+        if done and str(s_.get('id')) in done and st in ('missing', 'ongoing'):
+            st = 'aligned'
         if st in stats: stats[st] += 1
         if st == 'missing': missing.append(s_)
     missing.sort(key=lambda x: (x.get('tmdb_info') or {}).get('diff') or 0)  # diff 为负，越小缺得越多

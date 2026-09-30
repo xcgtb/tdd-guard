@@ -508,6 +508,51 @@ def api_library_stats():
         return {'status': 'error', 'message': str(e)}
 
 
+# ═══════════════════ 手动完结（TMDB 季数 / 集数不准时人工标记） ═══════════════════
+_manual_done_lock = threading.Lock()
+
+
+def _manual_done_path():
+    return engine.MANUAL_DONE_FILE
+
+
+def _read_manual_done() -> dict:
+    return engine.read_manual_done()
+
+
+def _write_manual_done(data: dict):
+    p = _manual_done_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix('.tmp')
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+    tmp.replace(p)
+
+
+@app.get('/api/manual_done', dependencies=[Depends(auth)])
+def api_get_manual_done():
+    return {'status': 'success', 'items': _read_manual_done()}
+
+
+@app.post('/api/manual_done', dependencies=[Depends(auth)])
+def api_set_manual_done(body: dict = None):
+    """标记 / 取消标记某部剧为「已完结」（body: id, name, done）。仅记录，不动任何文件。"""
+    body = body or {}
+    sid = str(body.get('id') or '').strip()
+    if not sid:
+        return {'status': 'error', 'message': '缺少剧集 id'}
+    with _manual_done_lock:
+        data = _read_manual_done()
+        if body.get('done', True):
+            data[sid] = {'name': str(body.get('name') or '')[:200], 'ts': int(time.time())}
+        else:
+            data.pop(sid, None)
+        try:
+            _write_manual_done(data)
+        except OSError as e:
+            return {'status': 'error', 'message': '保存失败：%s' % e}
+    return {'status': 'success', 'items': data}
+
+
 _orphan_lock = threading.Lock()
 
 
