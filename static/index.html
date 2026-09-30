@@ -1185,12 +1185,12 @@ window.addEventListener('unhandledrejection', function(e){
             <div class="dh-label" data-icon="database">STRM 总量</div>
             <div class="dh-big" id="dash-total">-</div>
             <div class="dh-split"><i id="dash-split-l" style="width:0"></i><i id="dash-split-s" style="width:0"></i></div>
-            <div class="dh-legend"><span><b class="dd l"></b>网盘 <em id="stat-local">-</em></span><span><b class="dd s"></b>分享 <em id="stat-share">-</em></span></div>
+            <div class="dh-legend"><span><b class="dd l"></b>网盘 <em id="stat-local">-</em><small id="pct-l"></small></span><span><b class="dd s"></b>分享 <em id="stat-share">-</em><small id="pct-s"></small></span></div>
           </div>
           <div class="dh-nums">
-            <div><em id="dash-series">-</em><span>剧集</span></div>
-            <div><em id="dash-eps">-</em><span>总集数</span></div>
-            <div><em id="dash-movies">-</em><span>电影</span></div>
+            <div><span class="l c1">剧集</span><em id="dash-series">-</em></div>
+            <div><span class="l c2">总集数</span><em id="dash-eps">-</em></div>
+            <div><span class="l c3">电影</span><em id="dash-movies">-</em></div>
           </div>
           <div class="dh-pills">
             <div class="dpill"><div><span class="k">Emby</span><small id="svc-emby-host">—</small></div><span id="svc-emby">检查中…</span></div>
@@ -1420,6 +1420,7 @@ window.addEventListener('unhandledrejection', function(e){
               <button data-s="share" onclick="setEmbyScope('share')">仅分享</button>
             </div>
           </div>
+          <div class="cat-chip" id="embyCatChip" hidden><span id="embyCatName"></span><button onclick="clearEmbyCat()" aria-label="清除分类筛选">✕</button></div>
           <div class="progress-wrap hidden" id="tmdbProgressWrap">
             <div class="progress-bar"><div class="fill" id="tmdbProgressFill" style="width:0%"></div></div>
             <div class="progress-info"><span class="stage" id="tmdbProgressStage">准备中...</span><span id="tmdbProgressEta"></span></div>
@@ -2448,7 +2449,7 @@ function renderLibraryStats(r){
     var bar = m === 'all'
       ? '<i class="l" style="width:' + (row.l / max * 100) + '%"></i><i class="s" style="width:' + (row.s / max * 100) + '%"></i>'
       : '<i class="' + (m === 'share' ? 's' : 'l') + '" style="width:' + (row.n / max * 100) + '%"></i>';
-    return '<div class="cb"><span class="nm">' + esc(row.name) + '</span><span class="tr">' + bar + '</span><span class="ct">' + row.n.toLocaleString() + '</span></div>';
+    return '<div class="cb" data-name="' + esc(row.name) + '" data-scope="' + m + '" onclick="dashOpenCat(this.dataset.name, this.dataset.scope)"><span class="nm">' + esc(row.name) + '</span><span class="tr">' + bar + '</span><span class="ct">' + row.n.toLocaleString() + '</span><span class="go">›</span></div>';
   }).join('') || '<div class="list-empty">暂无数据</div>';
   var summary = '共 ' + (r.local_total + r.share_total).toLocaleString() + ' 个 STRM · 本地 ' + r.local_total.toLocaleString() + ' / 分享 ' + r.share_total.toLocaleString();
   if (r.local_other + r.share_other > 0) summary += '（未分类 ' + (r.local_other + r.share_other).toLocaleString() + '）';
@@ -2462,12 +2463,15 @@ function dashTotals(d){
   $('dash-total').textContent = t ? t.toLocaleString() : '-';
   $('dash-split-l').style.width = t ? (l / t * 100) + '%' : '0';
   $('dash-split-s').style.width = t ? (s / t * 100) + '%' : '0';
+  $('pct-l').textContent = t ? Math.round(l / t * 100) + '%' : '';
+  $('pct-s').textContent = t ? Math.round(s / t * 100) + '%' : '';
 }
-function fmtBig(n){ return n >= 10000 ? (n / 10000).toFixed(2) + '万' : (n || 0).toLocaleString(); }
+function fmtBig(n){ return n >= 10000 ? (n / 10000).toFixed(2) + '<i class="u">万</i>' : (n || 0).toLocaleString(); }
+function fmtUnit(n, u){ return (n || 0).toLocaleString() + '<i class="u">' + u + '</i>'; }
 function renderDashEmby(x){
-  $('dash-series').textContent = (x.series || 0).toLocaleString();
-  $('dash-eps').textContent = fmtBig(x.eps);
-  $('dash-movies').textContent = (x.movies || 0).toLocaleString();
+  $('dash-series').innerHTML = fmtUnit(x.series, '部');
+  $('dash-eps').innerHTML = fmtBig(x.eps);
+  $('dash-movies').innerHTML = fmtUnit(x.movies, '部');
   var st = x.st || {}, total = x.series || 0;
   var pct = total ? Math.round((st.aligned || 0) / total * 100) : 0;
   $('dash-ring').style.setProperty('--p', pct);
@@ -3045,7 +3049,47 @@ function switchExploreTab_init(){
 
 /* ═══════════ 片库映射 ═══════════ */
 var embyData = { series: [], movies: [], stats: {} };
-var embyFilterState = { type: 'series', filter: 'all', scope: 'all' };
+var embyFilterState = { type: 'series', filter: 'all', scope: 'all', cat: '' };
+function catText(x){
+  var skip = { name:1, title:1, overview:1, desc:1, tmdb_info:1, id:1 }, out = [];
+  for (var k in x) {
+    if (skip[k]) continue;
+    var v = x[k];
+    if (typeof v === 'string') out.push(v);
+    else if (Array.isArray(v)) v.forEach(function(i){ if (typeof i === 'string') out.push(i); });
+  }
+  return out.join('|');
+}
+function catSeg(x, c){ return String(x.path || '').split(/[\\/]+/).indexOf(c) >= 0; }
+function catHit(x, c){ return embyFilterState.catMode === 'sub' ? catText(x).indexOf(c) >= 0 : catSeg(x, c); }
+function catApply(arr){
+  var c = embyFilterState.cat; if (!c) return arr;
+  return arr.filter(function(x){ return catHit(x, c); });
+}
+function clearEmbyCat(){ embyFilterState.cat = ''; embyPage = 1; renderEmbyList(); }
+function syncCatChip(){
+  var c = embyFilterState.cat, box = $('embyCatChip');
+  if (!box) return;
+  box.hidden = !c; $('embyCatName').textContent = c ? '分类：' + c : '';
+}
+function dashOpenCat(name, scope){
+  embyFilterState.cat = name; embyFilterState.filter = 'all'; embyFilterState.scope = (scope === 'local' || scope === 'share') ? scope : 'all';
+  embyFilterState.catMode = 'seg';
+  var hasS = embyData.series.some(function(x){ return catSeg(x, name); });
+  var hasM = embyData.movies.some(function(x){ return catSeg(x, name); });
+  if (!hasS && !hasM && (embyData.series.length || embyData.movies.length)) {
+    embyFilterState.catMode = 'sub';
+    hasS = embyData.series.some(function(x){ return catText(x).indexOf(name) >= 0; });
+    hasM = embyData.movies.some(function(x){ return catText(x).indexOf(name) >= 0; });
+  }
+  embyFilterState.type = (!hasS && hasM) ? 'movies' : 'series';
+  $('embySearch').value = ''; embyPage = 1;
+  switchTab('mapping');
+  setEmbyType(embyFilterState.type);
+  document.querySelectorAll('#embyFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.f === 'all'); });
+  document.querySelectorAll('#embyScopeFilter button').forEach(function(b){ b.classList.toggle('active', b.dataset.s === embyFilterState.scope); });
+}
+
 function setEmbyScope(sc){
   embyPage = 1;
   embyFilterState.scope = sc;
@@ -3195,14 +3239,16 @@ function setEmbyFilter(f){
 }
 function renderEmbyList(){
   var list = $('embyList');
+  syncCatChip();
   var keyword = ($('embySearch').value || '').trim().toLowerCase();
   var arr;
   if (embyFilterState.type === 'movies') {
     arr = embyData.movies.slice();
     if (embyFilterState.scope === 'local') arr = arr.filter(function(x){ return x.in_local; });
     else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
+    arr = catApply(arr);
     if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
-    if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
+    if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">' + (embyFilterState.cat ? '没有匹配「' + esc(embyFilterState.cat) + '」的条目（若一直为空，说明 Emby 数据里没有分类/路径字段）' : '无匹配项') + '</div>'; return; }
     embyView = { arr: arr, fn: renderMovieCard };
     list.innerHTML = arr.slice(0, embyPage * EMBY_PAGE).map(renderMovieCard).join('');
     hydratePosters(list);
@@ -3220,8 +3266,9 @@ function renderEmbyList(){
   }
   if (embyFilterState.scope === 'local') arr = arr.filter(function(x){ return x.in_local; });
   else if (embyFilterState.scope === 'share') arr = arr.filter(function(x){ return x.in_share; });
-  if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
-  if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">无匹配项</div>'; return; }
+  arr = catApply(arr);
+    if (keyword) arr = arr.filter(function(x){ return (x.name||'').toLowerCase().indexOf(keyword) >= 0; });
+  if (!arr.length) { embyView = { arr: [], fn: null }; updateEmbyLoadMore(0); list.innerHTML = '<div class="list-empty">' + (embyFilterState.cat ? '没有匹配「' + esc(embyFilterState.cat) + '」的条目（若一直为空，说明 Emby 数据里没有分类/路径字段）' : '无匹配项') + '</div>'; return; }
   var prio = { missing: 0, extra: 1, unmatched: 2, no_tmdb: 2, ongoing: 3, aligned: 4 };
   arr.sort(function(a, b){
     var sa = (a.tmdb_info || {}).match_status || 'unmatched';
@@ -4803,6 +4850,33 @@ html body #exploreLoadMore { display: none !important; }
   .subnav.rail button{text-align:left;padding:10px 14px;display:flex;flex-direction:column;gap:2px}
   .subnav.rail button small{display:block;font-size:10.5px;font-weight:400;color:var(--text-dim)}
 }
+</style>
+
+<style id="v6-patch">
+</style>
+
+<style id="v7-patch">
+.dh-legend small{color:var(--text-dim);font-size:11px;margin-left:-2px}
+@media(max-width:900px){
+  .dash-hero{padding:16px 18px;gap:14px}
+  .dh-big{font-size:34px;margin:4px 0 10px}
+  .dh-legend{margin-top:8px}
+  .dh-pills{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .dpill{padding:8px 10px;align-items:flex-start;flex-direction:column;gap:4px}
+  .dpill small{max-width:100%}
+}
+</style>
+
+<style id="v8-patch">
+.dh-nums{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--border);border-radius:14px;background:var(--surface-hover);overflow:hidden}
+.dh-nums>div{padding:12px 14px 13px;border-left:1px solid var(--border);text-align:left;min-width:0}
+.dh-nums>div:first-child{border-left:none}
+.dh-nums .l{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-mid)}
+.dh-nums .l::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--brand)}
+.dh-nums .l.c2::before{background:var(--brand-2)}.dh-nums .l.c3::before{background:var(--brand-3)}
+.dh-nums em{display:block;margin-top:7px;font-style:normal;font-size:24px;font-weight:800;letter-spacing:-.6px;line-height:1.1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dh-nums .u{font-style:normal;font-size:11.5px;font-weight:500;letter-spacing:0;color:var(--text-dim);margin-left:3px}
+@media(max-width:420px){.dh-nums>div{padding:11px 10px 12px}.dh-nums em{font-size:19px}.dh-nums .u{font-size:10.5px;margin-left:2px}}
 </style>
 </body>
 </html>
