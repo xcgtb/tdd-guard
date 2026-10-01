@@ -1353,6 +1353,108 @@ html[data-theme="dark"] .panel,html[data-theme="dark"] .card,html[data-theme="da
 html:not([data-theme]) .panel,html:not([data-theme]) .card,html:not([data-theme]) .poster-card,html:not([data-theme]) .emby-card{background:var(--surface)!important}
 
 </style>
+
+<style id="ttd-ui-1-6-15-dashboard-center-fix">
+/* 1.6.15 · Mobile dashboard alignment fix
+   总览卡片统一水平居中；不改数据、治理或交互逻辑。 */
+@media(max-width:899px){
+  #tab-dashboard .dash-hero{
+    align-items:center!important;
+  }
+  #tab-dashboard .dh-main{
+    text-align:center!important;
+  }
+  #tab-dashboard .dh-label{
+    justify-content:center!important;
+  }
+  #tab-dashboard .dh-legend{
+    justify-content:center!important;
+  }
+  #tab-dashboard .dh-nums{
+    width:100%!important;
+    align-items:stretch!important;
+    justify-items:stretch!important;
+  }
+  #tab-dashboard .dh-nums>div{
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:center!important;
+    justify-content:center!important;
+    text-align:center!important;
+    padding-left:8px!important;
+    padding-right:8px!important;
+  }
+  #tab-dashboard .dh-nums .l{
+    justify-content:center!important;
+    width:100%!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .dh-nums em{
+    width:100%!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .dh-pills{
+    align-items:stretch!important;
+  }
+  #tab-dashboard .dpill{
+    justify-content:center!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .dpill>div{
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:center!important;
+  }
+  #tab-dashboard .dpill>span{
+    flex:0 0 auto!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .dash-strip{
+    align-items:stretch!important;
+  }
+  #tab-dashboard .ds{
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:center!important;
+    justify-content:center!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .ds .k{
+    justify-content:center!important;
+    width:100%!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .ds .v,
+  #tab-dashboard .ds .s{
+    width:100%!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .panel .row-between{
+    align-items:center!important;
+  }
+  #tab-dashboard .todo-grid{
+    align-items:stretch!important;
+  }
+  #tab-dashboard .todo{
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:center!important;
+    justify-content:center!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .todo .k{
+    justify-content:center!important;
+    width:100%!important;
+    text-align:center!important;
+  }
+  #tab-dashboard .todo b,
+  #tab-dashboard .todo small{
+    width:100%!important;
+    text-align:center!important;
+  }
+}
+</style>
+
 </head>
 <body>
 
@@ -1371,7 +1473,7 @@ html:not([data-theme]) .panel,html:not([data-theme]) .card,html:not([data-theme]
     <header class="header">
       <div class="left">
         <button class="menu-btn" onclick="toggleSidebar(true)" data-icon="menu"></button>
-        <h2 id="tabTitle">治理总览</h2>
+        <h2 id="tabTitle">治理总览</h2><span class="header-version" id="headerVersion" aria-label="当前版本"></span>
       </div>
       <div class="right">
         <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="切换主题" aria-label="切换主题">
@@ -2464,9 +2566,16 @@ function toast(msg, type, ms){
   t.classList.add('show');
   clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove('show'); }, ms);
 }
-function showTaskHint(text){ $('taskHintText').textContent = text || '任务中...'; $('taskHint').classList.add('show'); }
+function showTaskHint(text){
+  $('taskHintText').textContent = text || '任务中...';
+  $('taskHint').classList.add('show');
+  document.body.classList.add('task-running');
+}
 function updateTaskHint(text){ $('taskHintText').textContent = text; }   // 只改文字，不会把用户手动收起的提示条又弹出来
-function hideTaskHint(){ $('taskHint').classList.remove('show'); }
+function hideTaskHint(){
+  $('taskHint').classList.remove('show');
+  document.body.classList.remove('task-running');
+}
 var __hintPolls = 0;   // 正在轮询的任务数：只有最后一个结束才收起提示条，避免互相误关/漏关
 function fmtElapsed(sec){ var m = Math.floor(sec / 60), s = sec % 60; return m + ':' + (s < 10 ? '0' : '') + s; }
 function toggleSidebar(open){ var sb = $('sidebar'); if(open){ sb.classList.add('open'); $('mask').classList.add('show'); document.body.classList.add('drawer-open'); } else { sb.classList.remove('open'); $('mask').classList.remove('show'); document.body.classList.remove('drawer-open'); } }
@@ -2935,7 +3044,10 @@ function renderDashboard(d){
     $('stat-share').textContent = d.shareCount || '-';
     dashTotals(d);
     /* 侧边栏版本号跟随后端（之前硬编码 V1.1 不同步） */
-    if (d.version) { var sv = $('sideVersion'); if (sv) sv.textContent = 'V' + d.version; }
+    if (d.version) {
+      var sv = $('sideVersion'); if (sv) sv.textContent = 'V' + d.version;
+      var hv = $('headerVersion'); if (hv) hv.textContent = 'v' + d.version;
+    }
     var embyOk = d.services && d.services.emby && d.services.emby.ok;
     $('svc-emby').innerHTML = embyOk ? statusOk('在线') : statusNo('离线');
     $('svc-emby-host').textContent = (d.services && d.services.emby && d.services.emby.host) || '—';
@@ -6134,6 +6246,50 @@ tbody tr{background:rgba(255,255,255,.018)!important}
 .ic-list .lib.s{background:var(--info-soft);color:var(--info)}
 .ic-list .n{font-weight:600}
 .ic-list .y{color:var(--text-dim);font-size:11.5px}
+</style>
+
+<style id="ttd-ui-1-6-15-mobile-fix">
+/* ============================================================
+   TTD Guard 1.6.15 · Mobile UI Fix
+   只修复总览移动端布局：版本号、任务提示、底部 Dock 遮挡、Hero 对齐。
+   不改治理逻辑与数据结构。
+   ============================================================ */
+.header .left{display:flex!important;align-items:center!important;min-width:0!important;gap:9px!important}
+.header .left h2{white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.header-version{
+  display:inline-flex!important;align-items:center!important;justify-content:center!important;
+  flex:0 0 auto!important;min-height:24px!important;padding:0 8px!important;
+  border:1px solid rgba(255,255,255,.10)!important;border-radius:999px!important;
+  background:rgba(255,255,255,.045)!important;color:#aaa3b4!important;
+  font:700 10px/1 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif!important;
+  letter-spacing:.2px!important;white-space:nowrap!important;
+}
+html[data-theme="light"] .header-version{background:rgba(20,28,45,.045)!important;border-color:var(--border)!important;color:var(--text-dim)!important}
+
+/* 任务提示不再压住 Hero：手机端给提示条留出实际版面空间 */
+.task-hint{box-sizing:border-box!important;max-width:min(520px,calc(100vw - 24px))!important;white-space:nowrap!important}
+@media(max-width:899px){
+  .main{padding-bottom:calc(118px + env(safe-area-inset-bottom,0px))!important}
+  .task-hint{
+    top:66px!important;bottom:auto!important;
+    min-height:38px!important;padding:8px 12px!important;
+    border-radius:12px!important;font-size:12px!important;
+    z-index:95!important;
+  }
+  body.task-running .main{padding-top:58px!important}
+  #tab-dashboard .dash-hero{width:100%!important;box-sizing:border-box!important}
+  #tab-dashboard .dash-strip{width:100%!important;box-sizing:border-box!important}
+}
+@media(max-width:640px){
+  .header-version{min-height:22px!important;padding:0 7px!important;font-size:9px!important}
+  .header .left{gap:7px!important}
+  .header h2{font-size:16px!important}
+  .task-hint{max-width:calc(100vw - 20px)!important}
+  body.task-running .main{padding-top:56px!important}
+}
+@media(max-width:390px){
+  .header-version{padding:0 6px!important;font-size:8.5px!important}
+}
 </style>
 </body>
 </html>
