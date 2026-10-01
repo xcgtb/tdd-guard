@@ -4082,18 +4082,63 @@ function renderIngest(r){
   h += '<div class="ing-h">单片电影 · ' + (st.movies || 0) + ' 部</div>' + (movHtml || '<div class="ing-empty">暂无新增电影</div>');
   return h;
 }
+function statsAgeStr(ts){
+  if (!ts) return '—';
+  var age = Math.round(Date.now()/1000 - ts);
+  if (age < 60) return age + ' 秒前';
+  if (age < 3600) return Math.floor(age/60) + ' 分钟前';
+  return Math.floor(age/3600) + ' 小时前';
+}
+function updateStatsHint(r){
+  var ageStr = statsAgeStr(r.cache_ts || r.ts || 0);
+  if (r.status === 'error') {
+    $('statsCacheHint').textContent = '❌ 扫描失败：' + (r.error || r.message || '未知错误');
+    return;
+  }
+  if (r.error) {
+    $('statsCacheHint').textContent = '⚠️ 扫描失败：' + r.error + ' · 以下为 ' + ageStr + ' 的数据';
+    return;
+  }
+  if (r.refreshing || r.status === 'pending') { $('statsCacheHint').textContent = '⏳ 后台扫描中…'; return; }
+  $('statsCacheHint').textContent = (r.from_cache ? '📦 来自缓存' : '🔄 现场扫描') + ' · ' + ageStr;
+}
+async function pollIngestStatus(startTs, full){
+  function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+  var deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    var st;
+    try { st = await api('/api/ingest/status', { timeoutMs: 10000 }); }
+    catch(e){ continue; }
+    if ((st.ts || 0) !== (startTs || 0) || !st.refreshing) {
+      var r2;
+      try { r2 = await api('/api/ingest?full=' + (full?1:0) + '&force=0', { timeoutMs: 20000 }); }
+      catch(e){ $('statsCacheHint').textContent = '刷新后读取失败: ' + e.message; return; }
+      if (r2.status === 'pending' && !r2.tree) {
+        $('statsOut').innerHTML = '<div class="ing-plain">后台扫描中，请稍候…</div>';
+      } else {
+        $('statsOut').innerHTML = renderIngest(r2);
+      }
+      updateStatsHint(r2);
+      return;
+    }
+  }
+  $('statsCacheHint').textContent = '⏳ 后台扫描仍在进行，请稍后点「读缓存」查看';
+}
 async function loadStats(full, force){
-  var kw = (full ? 'full ' : '') + (force ? 'force' : '');
   var url = '/api/ingest?full=' + (full?1:0) + '&force=' + (force?1:0);
-  $('statsOut').textContent = force ? '正在现场扫描 Emby（约 10-30 秒）...' : '读取缓存中...';
+  $('statsOut').textContent = force ? '正在请求刷新 Emby…' : '读取缓存中...';
   $('statsCacheHint').textContent = '';
-  try {
-    var r = await api(url);
+  var r;
+  try { r = await api(url, { timeoutMs: 20000 }); }
+  catch(e){ $('statsOut').textContent = '错误: ' + e.message; return; }
+  if (r.status === 'pending' && !r.tree) {
+    $('statsOut').innerHTML = '<div class="ing-plain">后台扫描中，请稍候…</div>';
+  } else {
     $('statsOut').innerHTML = renderIngest(r);
-    var age = r.cache_ts ? Math.round((Date.now()/1000) - r.cache_ts) : null;
-    var ageStr = age == null ? '—' : (age < 60 ? age + ' 秒前' : (age < 3600 ? Math.floor(age/60) + ' 分钟前' : Math.floor(age/3600) + ' 小时前'));
-    $('statsCacheHint').textContent = (r.from_cache ? '📦 来自缓存' : '🔄 现场扫描') + ' · ' + ageStr;
-  } catch(e){ $('statsOut').textContent = '错误: ' + e.message; }
+  }
+  updateStatsHint(r);
+  if (r.refreshing || r.status === 'pending') pollIngestStatus(r.cache_ts || 0, full);
 }
 
 /* ═══════════ 治理策略 ═══════════ */
@@ -4242,16 +4287,21 @@ async function loadIngest(){
     var s = r.settings || {};
     $('ingEnabled').checked = !!s.enabled;
     $('ingInterval').value = s.interval_min || 5;
-    // 显示缓存状态
+    // 显示缓存状态（含后台刷新中 / 上次失败）
     try {
       var st = await api('/api/ingest/status');
+      var flag = st.refreshing ? '⏳ 后台扫描中 · ' : '';
       if (st.has_cache) {
         var age = st.age_sec;
         var ageStr = age < 60 ? age + ' 秒前' : (age < 3600 ? Math.floor(age/60) + ' 分钟前' : Math.floor(age/3600) + ' 小时前');
         var stats = st.stats || {};
-        $('ingStatus').textContent = '📦 缓存于 ' + ageStr + ' · 电影 ' + (stats.movies||0) + ' / 剧集 ' + (stats.series||0) + ' 部 / ' + (stats.episodes||0) + ' 集';
+        var line = '📦 缓存于 ' + ageStr + ' · 电影 ' + (stats.movies||0) + ' / 剧集 ' + (stats.series||0) + ' 部 / ' + (stats.episodes||0) + ' 集';
+        if (st.error) line = '⚠️ 扫描失败：' + st.error + ' · ' + line;
+        $('ingStatus').textContent = flag + line;
+      } else if (st.error) {
+        $('ingStatus').textContent = flag + '❌ 扫描失败：' + st.error;
       } else {
-        $('ingStatus').textContent = '⚪ 暂无缓存，等待后台首次刷新';
+        $('ingStatus').textContent = flag + '⚪ 暂无缓存，等待后台首次刷新';
       }
     } catch(e){ $('ingStatus').textContent = ''; }
   } catch(e){ toast('加载入库设置失败: ' + e.message, 'error'); }
