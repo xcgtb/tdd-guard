@@ -312,9 +312,14 @@ def _side_gap_desc(keys):
 
 
 # ═══════════════════ Emby ═══════════════════
-def emby_request(path, params=None, method='GET', timeout=15, body=None):
+EMBY_TIMEOUT = int(os.environ.get('EMBY_TIMEOUT', '30') or 30)   # 秒；大库 / NAS 繁忙时 15 秒容易超时
+EMBY_RETRIES = 2                                                  # 仅 GET 在超时 / 5xx / 连接错误时重试
+
+
+def emby_request(path, params=None, method='GET', timeout=None, body=None, retries=None):
     if not EMBY_KEY:
         raise RuntimeError('未配置 EMBY_KEY')
+    timeout = timeout or EMBY_TIMEOUT
     url = EMBY_HOST + path + ('?' + urllib.parse.urlencode(params) if params else '')
     headers = {'X-Emby-Token': EMBY_KEY}
     if body is not None:
@@ -322,9 +327,23 @@ def emby_request(path, params=None, method='GET', timeout=15, body=None):
         headers['Content-Type'] = 'application/json'
     else:
         data = b'' if method == 'POST' else None
-    req = urllib.request.Request(url, method=method, data=data, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
+    attempts = 1 + ((EMBY_RETRIES if retries is None else retries) if method == 'GET' else 0)
+    for i in range(attempts):
+        req = urllib.request.Request(url, method=method, data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+            break
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or i == attempts - 1:
+                raise
+            err = e
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            if i == attempts - 1:
+                raise
+            err = e
+        log.warning('Emby 请求失败(%s)，第 %d/%d 次重试: %s', path, i + 1, attempts - 1, err)
+        time.sleep(1 + i)
     return json.loads(raw.decode('utf-8')) if (method == 'GET' and raw) else None
 
 
@@ -2665,24 +2684,33 @@ def action_emby_library(args):
 
 
 # ═══════════════════ 入库监控（缓存层） ═══════════════════
+def _paged_items(params, page_size=1000, max_items=50000):
+    """分页拉取 /Items；任何一页失败都向上抛，由调用方决定是否保留旧缓存。"""
+    items, start = [], 0
+    while len(items) < max_items:
+        data = emby_request('/Items', dict(params, StartIndex=start, Limit=page_size)) or {}
+        page = data.get('Items') or []
+        items.extend(page)
+        total = data.get('TotalRecordCount') or 0
+        if len(page) < page_size or (total and len(items) >= total):
+            break
+        start += page_size
+    return items
+
+
 def _fetch_ingest(hours=24):
-    """实际拉取 Emby 近期入库"""
+    """实际拉取 Emby 近期入库。返回里 `ok=False` 表示至少一项拉取失败（结果不完整，不应覆盖好缓存）。"""
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    min_date = cutoff.strftime('%Y-%m-%dT%H:%M:%S.0000000Z')
     tv_tree = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     mov_tree = defaultdict(lambda: defaultdict(list))
     movies_raw = []
     episodes_raw = []
+    errors = []
 
-    params_mov = {
-        'Recursive': 'true', 'IncludeItemTypes': 'Movie',
-        'Fields': 'DateCreated,Path,Genres',
-        'SortBy': 'DateCreated', 'SortOrder': 'Descending',
-        'Limit': 5000,
-        'MinDateCreated': cutoff.strftime('%Y-%m-%dT%H:%M:%S.0000000Z'),
-    }
+    base = {'Recursive': 'true', 'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'MinDateCreated': min_date}
     try:
-        data = emby_request('/Items', params_mov) or {}
-        for m in data.get('Items', []):
+        for m in _paged_items(dict(base, IncludeItemTypes='Movie', Fields='DateCreated,Path,Genres')):
             dt = parse_dt(m.get('DateCreated'))
             if not dt or dt < cutoff: continue
             movies_raw.append(m)
@@ -2691,23 +2719,17 @@ def _fetch_ingest(hours=24):
             if n and n not in bucket: bucket.append(n)
     except Exception as e:
         log.warning('入库电影拉取失败: %s', e)
+        errors.append('电影: %s' % e)
 
-    params_ep = {
-        'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-        'Fields': 'DateCreated,Path,SeriesName,Genres',
-        'SortBy': 'DateCreated', 'SortOrder': 'Descending',
-        'Limit': 5000,
-        'MinDateCreated': cutoff.strftime('%Y-%m-%dT%H:%M:%S.0000000Z'),
-    }
     try:
-        data = emby_request('/Items', params_ep) or {}
-        for e in data.get('Items', []):
+        for e in _paged_items(dict(base, IncludeItemTypes='Episode', Fields='DateCreated,Path,SeriesName,Genres')):
             dt = parse_dt(e.get('DateCreated'))
             if not dt or dt < cutoff: continue
             episodes_raw.append(e)
             tv_tree[_src(e.get('Path', ''))][parse_emby_library(e, False)][e.get('SeriesName') or '未知剧集'] += 1
     except Exception as e:
         log.warning('入库剧集拉取失败: %s', e)
+        errors.append('剧集: %s' % e)
 
     total_mov = sum(len(v) for c in mov_tree.values() for v in c.values())
     total_series = sum(len(s) for c in tv_tree.values() for s in c.values())
@@ -2716,6 +2738,8 @@ def _fetch_ingest(hours=24):
     return {
         'ts': time.time(),
         'hours': hours,
+        'ok': not errors,
+        'error': '；'.join(errors),
         'stats': {'movies': total_mov, 'series': total_series, 'episodes': total_eps},
         'tree': {
             'tv': {k: {c: dict(s) for c, s in v.items()} for k, v in tv_tree.items()},
@@ -2727,19 +2751,39 @@ def _fetch_ingest(hours=24):
 
 
 def refresh_ingest_cache(hours=24) -> dict:
-    """立即拉取，覆盖缓存"""
+    """立即拉取并覆盖缓存。拉取失败（超时等）时保留上一份完整缓存，只附上失败信息，
+    避免把「+0 部 / +0 集」的残缺结果写成最新数据。"""
     log.info('入库缓存刷新开始（%sh）', hours)
     data = _fetch_ingest(hours=hours)
+    if not data.get('ok', True):
+        old = read_ingest_cache()
+        if old and old.get('ok', True):
+            old['stale_error'] = data.get('error', '')
+            old['stale_error_ts'] = time.time()
+            old['from_cache'] = True
+            _write_ingest_cache(old)
+            log.warning('入库缓存刷新失败，保留旧缓存（%d 秒前）: %s',
+                        int(time.time() - old.get('ts', 0)), data.get('error'))
+            return old
+        # 没有旧缓存可退：仍把失败结果落盘，但带 ok=False，界面据此提示而不是当成「0 新增」
+    _write_ingest_cache(data)
+    st = data.get('stats', {})
+    if not data.get('ok', True):
+        log.warning('入库缓存刷新失败且无旧缓存可保留: %s', data.get('error'))
+        return data
+    log.info('入库缓存刷新完成：电影 %d / 剧集 %d 部 / 集 %d',
+             st.get('movies', 0), st.get('series', 0), st.get('episodes', 0))
+    return data
+
+
+def _write_ingest_cache(data):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = INGEST_CACHE_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
         tmp.replace(INGEST_CACHE_FILE)
-        log.info('入库缓存刷新完成：电影 %d / 剧集 %d 部 / 集 %d',
-                 data['stats']['movies'], data['stats']['series'], data['stats']['episodes'])
     except OSError as e:
         log.warning('入库缓存写入失败: %s', e)
-    return data
 
 
 def read_ingest_cache(max_age=None) -> dict:
@@ -2762,7 +2806,7 @@ def get_ingest(hours=24, force_refresh=False) -> dict:
     if force_refresh:
         return refresh_ingest_cache(hours=hours)
     cached = read_ingest_cache(max_age=600)
-    if cached:
+    if cached and cached.get('ok', True):
         cached['from_cache'] = True
         return cached
     data = refresh_ingest_cache(hours=hours)
@@ -2799,10 +2843,11 @@ def action_stats(args):
     full = 'full' in kw
     data = get_ingest(force_refresh=force)
     st = data.get('stats') or {}
+    warn = data.get('stale_error') or ('' if data.get('ok', True) else data.get('error', ''))
     if not full:
         return {'status': 'success', 'has_more': True,
                 'stats': st, 'from_cache': data.get('from_cache', False),
-                'cache_ts': data.get('ts', 0),
+                'cache_ts': data.get('ts', 0), 'ok': data.get('ok', True), 'warning': warn,
                 'text': '\n'.join([
                     '📊 **近 24 小时入库速报**', '━━━━━━━━━━━━━━━━━━━',
                     f'🎬 单片/电影新增：`+{st.get("movies", 0)}` 部',
@@ -2831,7 +2876,11 @@ def action_stats(args):
                 rep += ['│  • ' + '、'.join(tags[i:i + 3]) for i in range(0, len(tags), 3)]
                 rep.append('└')
     else: rep.append('  • 暂无新增电影')
+    if warn:
+        rep.insert(1, f'⚠️ 本次扫描失败（{esc(warn)}），以下为旧数据')
     return {'status': 'success', 'text': '\n'.join(rep),
+            'ok': data.get('ok', True), 'warning': warn,
+            'from_cache': data.get('from_cache', False), 'cache_ts': data.get('ts', 0),
             'stats': st, 'tree': tree,
             'movies_raw': data.get('movies_raw', []),
             'episodes_raw': data.get('episodes_raw', []),

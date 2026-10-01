@@ -273,7 +273,7 @@ def dashboard():
             dashboard._emby_cache = {'ts': 0, 'ok': False, 'host': ''}
         if now_ts - dashboard._emby_cache['ts'] > 30:
             try:
-                emby_ok = bool(engine.emby_request('/System/Info', timeout=3))
+                emby_ok = bool(engine.emby_request('/System/Info', timeout=3, retries=0))
             except Exception:
                 emby_ok = False
             dashboard._emby_cache = {'ts': now_ts, 'ok': emby_ok, 'host': engine.EMBY_HOST}
@@ -409,6 +409,8 @@ def api_ingest_status():
     return {'status': 'success', 'has_cache': True,
             'ts': data.get('ts', 0),
             'age_sec': int(time.time() - data.get('ts', 0)),
+            'ok': data.get('ok', True),
+            'warning': data.get('stale_error') or ('' if data.get('ok', True) else data.get('error', '')),
             'stats': data.get('stats', {})}
 
 

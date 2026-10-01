@@ -4092,7 +4092,8 @@ async function loadStats(full, force){
     $('statsOut').innerHTML = renderIngest(r);
     var age = r.cache_ts ? Math.round((Date.now()/1000) - r.cache_ts) : null;
     var ageStr = age == null ? '—' : (age < 60 ? age + ' 秒前' : (age < 3600 ? Math.floor(age/60) + ' 分钟前' : Math.floor(age/3600) + ' 小时前'));
-    $('statsCacheHint').textContent = (r.from_cache ? '📦 来自缓存' : '🔄 现场扫描') + ' · ' + ageStr;
+    $('statsCacheHint').textContent = (r.from_cache ? '📦 来自缓存' : '🔄 现场扫描') + ' · ' + ageStr
+    if (r.warning) $('statsCacheHint').textContent += ' · ⚠️ 扫描失败（' + r.warning + '），以上为旧数据';
   } catch(e){ $('statsOut').textContent = '错误: ' + e.message; }
 }
 
