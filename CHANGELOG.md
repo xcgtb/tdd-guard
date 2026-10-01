@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.6.15
+- 双库治理「TMDB 标识冲突」列表重构为折叠卡片：每组冲突一张卡（类型徽章 + TMDB ID + 目录数），点击展开明细，对齐每日简报的展示风格，不再整页平铺。
+- 冲突条目带「电影 / 剧集」类型徽章。
+- 修复 TMDB 电影 / 剧集 ID 空间混用问题：TMDB 的电影与剧集是两个独立编号空间（movie:103 ≠ tv:103），此前同数字的电影和剧集会被误聚合为「同一 TMDB 多身份」（假冲突）、`tmdb_first` 策略下也会因此误判冲突而漏配；现在 TMDB 引用按 `movie:` / `tv:` 分开聚合与匹配，冲突诊断条目附带类型。
+- 配色统一收敛：品牌色从「青→紫→粉」三色渐变收敛为单一品牌蓝 `#4f6ef2` 系，语义色降饱和，aurora 光晕弱化，深色主题底色统一为 `#0d1117` 石墨蓝黑（对齐成熟媒体面板的克制配色）；仅改颜色变量，不动布局。
+- 整理 CHANGELOG 结构（修复 1.6.11 条目插入时遗留的重复标题）。
+
+## 1.6.14
+- 手机端新增 iOS 风格 Floating Dock：总览 / 治理 / 执行 / 更多，桌面端不显示。
+- 手机页面为底部 Dock + Safari 安全区预留独立滚动空间，按钮/列表滚到底部不会被 Dock 遮挡。
+- 手机向下阅读时 Dock 自动收起，向上滚动、停止在顶部或接近页面底部时恢复。
+- 侧滑菜单重做为分组 Glass Drawer：治理 / 内容 / 报告 / 系统，当前项使用轻量胶囊高亮，不再使用赛博霓虹大按钮。
+- 深浅主题统一为雾白 / 石墨黑设计语言，降低蓝紫发光、网格、硬线条和过度渐变；保留主题切换与系统跟随。
+- 桌面端保持左侧常驻导航，手机端使用抽屉导航，所有既有 API、DOM ID、页面功能和治理逻辑保持不变。
+
+## 1.6.12 / 1.6.13
+- UI 迭代中间版本，改动已并入 1.6.11 与 1.6.14 说明。
+
+## 1.6.11
+- 全局 UI 视觉重构为 Obsidian Aurora：降低赛博蓝与硬线条，采用石墨黑底、紫/洋红/薄荷绿语义色和柔和玻璃层。
+- 治理总览改为胶囊/岛屿式信息层级，快捷入口、待处理、健康度、标签、分段控件统一圆角语言。
+- 桌面端与手机 Web 统一视觉体系；手机端采用抽屉式侧栏与更稳定的卡片/胶囊布局，不改变任何页面接口、DOM ID、事件或 API。
+- 修复治理策略测试桩缺少 `match_strategy` 时的兼容性问题，默认回退为 `title_year`。
+
+## 1.6.10
+
+- 双库治理配对策略可切换：新增 `match_strategy` 规则，`title_year`（默认）与 `tmdb_first` 两档。
+- `title_year`：按「剧名 + 年份」配对，TMDB 不参与（1.6.8 起的默认安全行为）。
+- `tmdb_first`：优先按 TMDB ID 配对，可跨译名/命名差异、减少漏配；同一 TMDB 在本地对应多个不同身份时判定为冲突、不自动配，交由身份冲突诊断人工处理；无 TMDB 或本地无对应时回退「剧名 + 年份」。
+- `match_strategy` 纳入治理规则指纹：切换配对策略后，旧治理计划自动标记「规则已变更」、禁止执行，需重新扫描。
+- 治理详情证据区分身份来源（`tmdb_first` / `filesystem:title+year`），执行记录可追溯。
+- 规则设置页新增「双库配对策略」切换。
+- 新增 3 项回归测试：跨译名配对、同 TMDB 冲突不配、无 TMDB 回退；全量测试 201 passed。
+
 ## 1.6.9
 - 双库治理新增“身份冲突诊断”：同一个 TMDB ID 被不同剧名/年份目录使用时，明确列为 TMDB 标识冲突；冲突只提示、不自动删除，避免程序猜错对象。
 - 治理详情新增完整匹配证据：匹配来源、匹配依据、本地路径、分享路径、本地/分享 TMDB、TMDB 一致性及身份来源。
@@ -304,3 +338,9 @@
 - 探索页面筛选扩展。
 - 片库映射改为网格卡片布局。
 - 统一 root 运行，修复 yml 配置被历史 `config.json` 覆盖的问题。
+
+## 1.6.12
+- UI 4.1 Obsidian / Soft Neon visual refinement.
+- Reworked governance dashboard surfaces into compact rounded islands and pills.
+- Fixed mobile Emby/TMDB service cards from oversized stretched oval layout.
+- Improved desktop/mobile responsive dashboard composition without changing APIs, DOM IDs, or business logic.

@@ -24,6 +24,7 @@ DEFAULTS = {
 
     # 治理策略
     'strategy_decision':             'quality_first',
+    'match_strategy':                'title_year',  # title_year | tmdb_first —— 双库治理配对身份策略
     'strategy_multi_season_protect': 'compare',  # off | compare | full —— 多季合集保护档位（compare 即“开启”）
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
     'strategy_exempt_keywords':      '',
@@ -155,6 +156,9 @@ def get_strategy() -> dict:
         dec = 'quality_first'
     if dec not in ('quality_first', 'keep_local', 'keep_share'):
         dec = 'quality_first'
+    ms = cfg.get('match_strategy', 'title_year')
+    if ms not in ('title_year', 'tmdb_first'):
+        ms = 'title_year'
     sa = cfg.get('strategy_special_action', 'compare')
     if sa == 'keep':
         sa = 'ignore'
@@ -170,6 +174,7 @@ def get_strategy() -> dict:
         mp = 'compare'
     return {
         'decision': dec,
+        'match_strategy': ms,
         'multi_season_protect': mp,
         'tie_keep_local': cfg.get('strategy_tie_keep_local', '0') == '1',
         'exempt_keywords': [x.strip() for x in (cfg.get('strategy_exempt_keywords') or '').split(',') if x.strip()],
@@ -186,6 +191,11 @@ def update_strategy(**kwargs) -> dict:
         if d not in ('quality_first', 'keep_local', 'keep_share'):
             d = 'quality_first'
         cfg['strategy_decision'] = d
+    if 'match_strategy' in kwargs:
+        ms = str(kwargs['match_strategy'])
+        if ms not in ('title_year', 'tmdb_first'):
+            ms = 'title_year'
+        cfg['match_strategy'] = ms
     if 'multi_season_protect' in kwargs:
         mp = str(kwargs['multi_season_protect'])
         if mp in ('1', 'true', 'on'):

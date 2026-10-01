@@ -657,6 +657,11 @@ def api_set_strategy(body: dict = None):
         if d not in ('quality_first', 'keep_local', 'keep_share'):
             raise HTTPException(400, 'decision 必须是 quality_first / keep_local / keep_share')
         kwargs['decision'] = d
+    if 'match_strategy' in body:
+        ms = str(body['match_strategy'])
+        if ms not in ('title_year', 'tmdb_first'):
+            raise HTTPException(400, 'match_strategy 必须是 title_year / tmdb_first')
+        kwargs['match_strategy'] = ms
     if 'multi_season_protect' in body:
         mp = str(body['multi_season_protect'])
         if mp in ('1', 'true', 'on'):

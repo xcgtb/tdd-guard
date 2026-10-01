@@ -511,7 +511,11 @@ class Lib:
         self.tv = defaultdict(lambda: defaultdict(list))
         self.meta = {}
         self.by_base = defaultdict(set)
-        self.tmdb_refs = defaultdict(set)
+        # TMDB 的电影与剧集是两个独立编号空间（movie:103 ≠ tv:103），
+        # 因此键带类型前缀，避免跨类型误聚合/误配对。
+        self.tmdb_refs = defaultdict(set)  # 键: 'movie:<id>' / 'tv:<id>' -> 治理 key 集合
+        self.key_tmdb_movie = {}  # 治理 key -> 电影类文件携带的 TMDB ID（tmdb_first 策略用）
+        self.key_tmdb_tv = {}     # 治理 key -> 剧集类文件携带的 TMDB ID
         self.strm_count = 0
         if not root.exists(): return
         for dirpath, _dirs, names in os.walk(str(root)):
@@ -525,8 +529,6 @@ class Lib:
             self.meta[key] = (disp, base, year)
             self.by_base[base].add(key)
             tm = re.search(r'(?i)tmdb(?:id)?[=\-: ]*(\d+)', folder or '')
-            if tm:
-                self.tmdb_refs[tm.group(1)].add(key)
             for n in strms:
                 self.strm_count += 1
                 f = d / n
@@ -535,8 +537,16 @@ class Lib:
                 # 扁平剧集则由剧集分类路径提供上下文。
                 allow_bare_ep = (parse_season_dir(pname) is not None or _under_tv_category(d, root))
                 ep = get_ep(n, pname, allow_bare_ep=allow_bare_ep)
-                if ep: self.tv[key][ep[0]].append(f)
-                else: self.mov[key].append(f)
+                if ep:
+                    self.tv[key][ep[0]].append(f)
+                    if tm:
+                        self.tmdb_refs['tv:' + tm.group(1)].add(key)
+                        self.key_tmdb_tv.setdefault(key, tm.group(1))
+                else:
+                    self.mov[key].append(f)
+                    if tm:
+                        self.tmdb_refs['movie:' + tm.group(1)].add(key)
+                        self.key_tmdb_movie.setdefault(key, tm.group(1))
 
     def find(self, meta, container):
         key, (_, base, year) = meta
@@ -546,6 +556,32 @@ class Lib:
         cands = [k for k in self.by_base.get(base, ())
                  if k in container and self.meta[k][2] == year]
         return cands[0] if len(cands) == 1 else None
+
+
+def _match_governance_key(S, L, skey, container, strategy, kind):
+    """跨库配对（分享 key -> 本地 key）。
+
+    ``title_year``（默认）：按「剧名 + 年份」配对，TMDB 完全不参与（安全档）。
+    ``tmdb_first``：优先按 TMDB ID 配对——两边 TMDB 一致且本地唯一时直接配对
+    （可跨越译名/命名差异）；同一 TMDB 在本地对应多个不同身份时判定为冲突、
+    不自动配，交给 ``_identity_conflicts`` 人工处理；无 TMDB 或本地无对应时
+    回退到「剧名 + 年份」。
+
+    ``kind``：'movie' 或 'tv'。TMDB 的电影与剧集是两个独立编号空间
+    （movie:103 ≠ tv:103），必须同类型匹配，否则会把不同作品误判成冲突。
+    """
+    if strategy == 'tmdb_first':
+        s_map = S.key_tmdb_movie if kind == 'movie' else S.key_tmdb_tv
+        stm = s_map.get(skey)
+        if stm:
+            cands = [k for k in L.tmdb_refs.get(kind + ':' + stm, ()) if k in container]
+            if len(cands) == 1:
+                return cands[0]
+            if len(cands) > 1:
+                # 同 TMDB 多个身份：存疑，宁可不配也不配错
+                return None
+            # 0 个候选 -> 回退剧名 + 年份
+    return L.find((skey, S.meta[skey]), container)
 
 
 # ═══════════════════ Lib 短时效缓存 ═══════════════════
@@ -1592,18 +1628,22 @@ def _identity_conflicts(S, L):
     """
     by_tmdb = defaultdict(list)
     for lib_name, lib in (('local', L), ('share', S)):
-        for tid, keys in lib.tmdb_refs.items():
+        for tid_full, keys in lib.tmdb_refs.items():
+            # tid_full 形如 'movie:103' / 'tv:103'：电影与剧集是独立 ID 空间，分开聚合
+            kind, _, tid = tid_full.partition(':')
             for key in keys:
                 disp, base, year = lib.meta.get(key, ('', '', None))
-                by_tmdb[tid].append({'lib': lib_name, 'title': disp, 'base': base,
-                                     'year': year, 'key': key})
+                by_tmdb[tid_full].append({'lib': lib_name, 'title': disp, 'base': base,
+                                          'year': year, 'key': key, 'kind': kind, 'tmdb': tid})
     out = []
-    for tid, rows in sorted(by_tmdb.items()):
+    for tid_full, rows in sorted(by_tmdb.items()):
         identities = {(r['base'].casefold(), r.get('year') or '') for r in rows}
         if len(identities) <= 1:
             continue
         # 同一身份在双库出现不算冲突；只有一个 TMDB 对应多个不同身份才报告。
-        out.append({'tmdb': tid, 'count': len(rows), 'identities': [
+        first = rows[0]
+        out.append({'tmdb': first.get('tmdb', ''), 'kind': first.get('kind', 'movie'),
+                    'count': len(rows), 'identities': [
             {'title': r['title'], 'year': r.get('year'), 'lib': r['lib']} for r in rows
         ]})
     return out
@@ -1625,8 +1665,7 @@ def _build_plan_with_libs():
     acts = []
 
     for key, s_files in S.mov.items():
-        meta = (key, S.meta[key])
-        lk = L.find(meta, L.mov)
+        lk = _match_governance_key(S, L, key, L.mov, s.get('match_strategy', 'title_year'), 'movie')
         if not lk: continue
         disp, l_files = S.meta[key][0], L.mov[lk]
 
@@ -1659,7 +1698,7 @@ def _build_plan_with_libs():
 
     for key, s_seasons in S.tv.items():
         disp = S.meta[key][0]
-        lk = L.find((key, S.meta[key]), L.tv)
+        lk = _match_governance_key(S, L, key, L.tv, s.get('match_strategy', 'title_year'), 'tv')
         l_seasons = L.tv[lk] if lk else {}
 
         # 入库未满静默期：只要任意一季（任一侧）刚有变动，整部剧暂不治理，
@@ -1789,8 +1828,13 @@ def _build_plan_with_libs():
                 if y:
                     year = y.group(1); break
         a.meta = _attach_governance_evidence(a.meta, title, year, sf or ([f for f in a.files] if a.kind == 'shr' else []), lf or ([f for f in a.files] if a.kind == 'loc' else []))
-        a.meta['identity_source'] = 'filesystem:title+year'
-        a.meta['tmdb_role'] = '辅助元数据，不参与跨标题匹配'
+        if s.get('match_strategy', 'title_year') == 'tmdb_first':
+            a.meta['identity_source'] = 'tmdb_first'
+            a.meta['tmdb_role'] = '优先匹配键；同 TMDB 多身份列为冲突不处理'
+            a.meta['match_basis'] = 'TMDB 优先（冲突/缺失回退剧名+年份）'
+        else:
+            a.meta['identity_source'] = 'filesystem:title+year'
+            a.meta['tmdb_role'] = '辅助元数据，不参与跨标题匹配'
 
     if gate.skipped:
         log.info('入库未满 %d 分钟，静默跳过 %d 个标题（不进入本次治理队列）', gate.minutes, gate.skipped)

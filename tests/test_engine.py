@@ -57,6 +57,7 @@ def _patch_strategy(monkeypatch_dict):
     """覆盖 engine._strategy()，避免测试依赖 /data/config.json 的真实内容"""
     base = {
         'decision': 'quality_first',
+        'match_strategy': 'title_year',
         'multi_season_protect': 'compare',
         'tie_keep_local': False,
         'exempt_keywords': [],
@@ -907,3 +908,48 @@ def test_governance_action_exposes_match_evidence():
     assert any('百分之十 (2015)' in x for x in m['local_paths'])
     assert any('百分之十 (2015)' in x for x in m['share_paths'])
     assert m['tmdb'] == ['64165']
+
+
+# ═══════════════════ 配对策略切换（1.6.10） ═══════════════════
+class TestMatchStrategy:
+    def test_tmdb_first_pairs_across_different_titles(self):
+        """tmdb_first：TMDB ID 一致时，可跨不同译名/命名配对；title_year 则配不上。"""
+        _reset_libs()
+
+        _strm(engine.L_ROOT, '奇异博士 (2016) [tmdb-284052]', '奇异博士.2160p.strm')
+        _strm(engine.S_ROOT, 'Doctor Strange (2016) [tmdb-284052]', 'Doctor Strange.720p.strm')
+
+        # title_year（默认）：剧名不同 -> 不配 -> 无删除动作
+        _patch_strategy({'match_strategy': 'title_year'})
+        assert not [a for a in engine.build_plan() if a.kind in ('loc', 'shr')]
+
+        # tmdb_first：TMDB 一致 -> 配 -> 分享 720p 劣于本地 2160p，删分享
+        _patch_strategy({'match_strategy': 'tmdb_first'})
+        acts = [a for a in engine.build_plan() if a.kind in ('loc', 'shr')]
+        assert len(acts) == 1
+        assert acts[0].kind == 'shr'
+        assert acts[0].meta['identity_source'] == 'tmdb_first'
+
+    def test_tmdb_first_does_not_match_when_tmdb_conflicts(self):
+        """tmdb_first：同一 TMDB 在本地对应多个不同身份时，判定冲突、不自动配。"""
+        _reset_libs()
+
+        _strm(engine.L_ROOT, '甲电影 (2020) [tmdb-999999]', '甲电影.2160p.strm')
+        _strm(engine.L_ROOT, '乙电影 (2021) [tmdb-999999]', '乙电影.720p.strm')
+        _strm(engine.S_ROOT, '甲电影 (2020) [tmdb-999999]', '甲电影.720p.strm')
+
+        _patch_strategy({'match_strategy': 'tmdb_first'})
+        # 本地同 TMDB 有「甲电影」和「乙电影」两个身份 -> 冲突，不配，无删除动作
+        assert not [a for a in engine.build_plan() if a.kind in ('loc', 'shr')]
+
+    def test_tmdb_first_falls_back_to_title_year_when_no_tmdb(self):
+        """tmdb_first：无 TMDB 时回退「剧名+年份」，同名同年仍正常配对。"""
+        _reset_libs()
+
+        _strm(engine.L_ROOT, '回退电影 (2020)', '回退电影.2160p.strm')
+        _strm(engine.S_ROOT, '回退电影 (2020)', '回退电影.720p.strm')
+
+        _patch_strategy({'match_strategy': 'tmdb_first'})
+        acts = [a for a in engine.build_plan() if a.kind in ('loc', 'shr')]
+        assert len(acts) == 1
+        assert acts[0].kind == 'shr'
