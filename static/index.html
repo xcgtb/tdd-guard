@@ -2865,6 +2865,7 @@ async function loadExplore(append){
     } else {
       renderExploreCards(r.cards || []);
     }
+    exploreLiveSync(r.cards || []);
     if (r.cards && r.cards.length) {
       var label = r.is_search ? '搜索结果' : '第 ' + exploreState.page + ' / ' + exploreState.totalPages + ' 页';
       $('explorePageInfo').textContent = label + ' · 共 ' + (r.total_results || 0) + ' 条';
@@ -2895,7 +2896,7 @@ function appendExploreCards(cards){
     var subBtn = c.type === 'tv'
       ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" data-tmdb="' + esc(c.tmdb_id) + '" data-title="' + esc(c.title) + '" data-poster="' + esc(c.poster || '') + '">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
       : '';
-    return '<div class="poster-card">'
+    return '<div class="poster-card" data-tid="' + esc(c.tmdb_id) + '" data-type="' + c.type + '">'
       + '<div class="poster-wrap">' + posterHtml
       + '<span class="badge-type">' + typeLabel + '</span>'
       + (c.rating ? '<span class="badge-rate">' + icon('star') + c.rating + '</span>' : '')
@@ -2935,6 +2936,25 @@ function _subscribedTmdbIds(){
   var set = {};
   currentSubs.forEach(function(s){ if (s.tmdb_id) set[String(s.tmdb_id)] = true; });
   return set;
+}
+/* 探索页先按缓存秒出，再对已入库的剧集向 Emby 取实时分集，校准「已入库 x/y 集」 */
+async function exploreLiveSync(cards){
+  var tv = cards.filter(function(c){ return c.type === 'tv' && c.emby_id && c.eps; });
+  for (var i = 0; i < tv.length; i += 60) {
+    var part = tv.slice(i, i + 60);
+    var entries = await liveSyncSeries(part.map(function(c){ return c.emby_id; }));
+    part.forEach(function(c){
+      var e = entries[c.emby_id]; if (!e) return;
+      var tot = (e.tmdb_info || {}).tmdb_total;
+      c.eps = { local: e.local_eps || 0, share: e.share_eps || 0, have: e.have_eps || 0, total: tot > 0 ? tot : c.eps.total };
+      c.in_local = !!e.in_local; c.in_share = !!e.in_share;
+      var el = document.querySelector('#exploreGrid .poster-card[data-tid="' + c.tmdb_id + '"][data-type="tv"] .badge-status');
+      if (!el) return;
+      var st = exploreStatus(c);
+      el.textContent = st.status; el.className = 'badge-status ' + st.cls;
+    });
+    applyLiveEntries(entries);
+  }
 }
 function exploreStatus(c){
   // 剧集：带集数进度
@@ -2982,7 +3002,7 @@ function renderExploreCards(cards){
     var subBtn = c.type === 'tv'
       ? '<button class="sub-btn ' + (isSub ? 'on' : '') + '" data-tmdb="' + esc(c.tmdb_id) + '" data-title="' + esc(c.title) + '" data-poster="' + esc(c.poster || '') + '">' + (isSub ? '✓ 已订阅' : '+ 订阅') + '</button>'
       : '';
-    return '<div class="poster-card">'
+    return '<div class="poster-card" data-tid="' + esc(c.tmdb_id) + '" data-type="' + c.type + '">'
       + '<div class="poster-wrap">' + posterHtml
       + '<span class="badge-type">' + typeLabel + '</span>'
       + (c.rating ? '<span class="badge-rate">' + icon('star') + c.rating + '</span>' : '')
@@ -3224,7 +3244,7 @@ async function loadEmbyLibrary(force, withTmdb, cacheOnly){
     // 没有对照缓存（首次使用 / 缓存太旧）：退回快速模式，只拉 Emby 库，不触发 TMDB 对照
     if (cacheOnly && r.status === 'nocache') return loadEmbyLibrary(false, false);
     if (r.status !== 'success') throw new Error(r.message || '失败');
-    if (cacheOnly && r.ts) toast('已载入片库缓存（' + fmtAgo(r.ts) + '对照），需要最新数据请点「对照 TMDB」', 'success', 3200);
+    if (cacheOnly && r.ts) toast('已载入片库（Emby 分集 ' + fmtAgo(r.ts) + '同步，' + (r.tmdb_ts ? 'TMDB ' + fmtAgo(r.tmdb_ts) + '对照' : 'TMDB 尚未对照') + '），可见卡片会自动校准最新分集', 'success', 3600);
     embyData.series = r.series || [];
     embyData.movies = r.movies || [];
     await mdLoad();
@@ -3265,6 +3285,7 @@ function embyMore(){
   l.insertAdjacentHTML('beforeend', embyView.arr.slice(from, embyPage * EMBY_PAGE).map(embyView.fn).join(''));
   hydratePosters(l);
   updateEmbyLoadMore(embyView.arr.length);
+  scheduleVerifyVisible();
 }
 function embyCheckMore(){
   var t = $('tab-mapping');
@@ -3358,6 +3379,7 @@ function renderEmbyList(){
   list.innerHTML = arr.slice(0, embyPage * EMBY_PAGE).map(renderSeriesCard).join('');
   hydratePosters(list);
   updateEmbyLoadMore(arr.length);
+  scheduleVerifyVisible();
 }
 function toggleSeasonList(id){
   var el = document.getElementById(id);
@@ -3405,7 +3427,7 @@ function renderSeriesCard(s){
     epInfo = (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
   }
 
-  return '<div class="poster-card emby-poster-card st-' + mst + '" onclick="showEmbyDetailById(\'' + esc(s.id) + '\')">'
+  return '<div class="poster-card emby-poster-card st-' + mst + '" data-sid="' + esc(s.id) + '" onclick="showEmbyDetailById(\'' + esc(s.id) + '\')">'
     + '<div class="poster-wrap">' + poster
     + '<span class="badge-type">剧集</span>'
     + '<span class="badge-status ' + statusCls + '">' + statusText + '</span>'
@@ -3496,6 +3518,127 @@ async function deleteMovieByTmdb(tmdbId, target, movieName){
   }
 }
 
+function embyDetBadges(s){
+  var ti = s.tmdb_info || {}, mst = ti.match_status || 'unmatched', html = '';
+  if (s.in_local && s.in_share) html += '<span class="emby-badge loc">本地+分享</span>';
+  else if (s.in_local) html += '<span class="emby-badge loc">Emby</span>';
+  else if (s.in_share) html += '<span class="emby-badge shr">分享</span>';
+  if (s._md) html += '<span class="emby-badge ok">✓ 手动完结</span>';
+  else if (mst === 'aligned') html += '<span class="emby-badge ok">✓ 对齐</span>';
+  else if (mst === 'missing') html += '<span class="emby-badge miss">缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
+  else if (mst === 'extra') html += '<span class="emby-badge extra">超 ' + (ti.diff || 0) + ' 集</span>';
+  else if (mst === 'ongoing') html += '<span class="emby-badge ongoing">在更</span>';
+  else if (mst === 'unmatched') html += '<span class="emby-badge dim">未匹配</span>';
+  else if (mst === 'no_tmdb') html += '<span class="emby-badge dim">无 TMDB</span>';
+  else if (mst === 'pending') html += '<span class="emby-badge gen">待对照</span>';
+  if (s.year) html += '<span class="emby-badge gen">' + s.year + '</span>';
+  return html;
+}
+function embyDetCount(s){
+  var ti = s.tmdb_info || {};
+  if (ti.tmdb_total != null && ti.tmdb_total > 0) {
+    var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
+    return '已入库 ' + have + '/' + ti.tmdb_total + ' 集';
+  }
+  if (s.in_local && s.in_share) return '本地 ' + (s.local_eps || 0) + ' / 分享 ' + (s.share_eps || 0) + ' 集';
+  return 'Emby ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
+}
+
+/* ═══════════ 单剧实时同步（弹窗 / 片库卡片 / 探索页共用 /api/emby/series/live） ═══════════ */
+var __liveVerified = {}, __liveInflight = {}, __liveTimer = null;
+function _liveSig(x){
+  var ti = x.tmdb_info || {}, o = x._mdOrig;
+  return [x.have_eps, x.local_eps, x.share_eps, x.total_episodes, x.in_local, x.in_share, ti.tmdb_total,
+          o ? o.st : ti.match_status, o ? o.diff : ti.diff].join('|');
+}
+function calcEmbyStatsBase(){
+  var st = { total_series: embyData.series.length, total_movies: embyData.movies.length, aligned: 0, missing: 0, extra: 0,
+             ongoing: 0, unmatched: 0, no_tmdb: 0, pending: 0, complete_series: 0, incomplete_series: 0 };
+  embyData.series.forEach(function(x){
+    var k = x._mdOrig ? x._mdOrig.st : (x.tmdb_info || {}).match_status;
+    if (k in st) st[k] += 1;
+    if (x.complete) st.complete_series += 1; else st.incomplete_series += 1;
+  });
+  return st;
+}
+function refreshEmbyStatsUI(){
+  var st = embyData.stats || {};
+  var m = { 'emby-total': st.total_series, 'emby-aligned': st.aligned, 'emby-missing': st.missing, 'emby-extra': st.extra,
+            'emby-ongoing': st.ongoing, 'emby-unmatched': (st.unmatched || 0) + (st.no_tmdb || 0) };
+  for (var k in m) { var e = $(k); if (e) e.textContent = m[k] || 0; }
+  updateEmbyChips();
+}
+/* 用服务端实时条目替换列表里的剧（保留手动完结标记），变了的卡片就地重绘；返回有变化的 id 列表 */
+function applyLiveEntries(entries){
+  var changed = [];
+  Object.keys(entries || {}).forEach(function(id){
+    var old = (window.__embySeriesMap || {})[id], ne = entries[id];
+    __liveVerified[id] = Date.now();
+    if (!old || !ne) return;
+    var idx = embyData.series.indexOf(old);
+    if (idx < 0 || _liveSig(old) === _liveSig(ne)) return;
+    embyData.series[idx] = ne;
+    window.__embySeriesMap[id] = ne;
+    changed.push(id);
+  });
+  if (!changed.length) return changed;
+  embyData.statsBase = calcEmbyStatsBase();
+  embyData.stats = md_sync(embyData.series, embyData.statsBase);
+  refreshEmbyStatsUI();
+  var list = $('embyList');
+  changed.forEach(function(id){
+    var el = list && list.querySelector('.poster-card[data-sid="' + id + '"]');
+    if (!el) return;
+    var t = document.createElement('div');
+    t.innerHTML = renderSeriesCard(window.__embySeriesMap[id]);
+    el.replaceWith(t.firstChild);
+  });
+  if (list) hydratePosters(list);
+  return changed;
+}
+async function liveSyncSeries(ids){
+  ids = ids.filter(function(id){ return id && !__liveInflight[id]; });
+  if (!ids.length) return {};
+  ids.forEach(function(id){ __liveInflight[id] = 1; });
+  try {
+    var r = await api('/api/emby/series/live', { method: 'POST', body: JSON.stringify({ ids: ids }) });
+    return (r && r.status === 'success') ? (r.entries || {}) : {};
+  } catch(e){ return {}; }
+  finally { ids.forEach(function(id){ delete __liveInflight[id]; }); }
+}
+/* 片库列表：可见的剧里 5 分钟内没校准过的，批量向 Emby 取实时分集，就地更新卡片 */
+function scheduleVerifyVisible(){
+  clearTimeout(__liveTimer);
+  __liveTimer = setTimeout(verifyVisibleSeries, 300);
+}
+async function verifyVisibleSeries(){
+  if (!embyView.fn || embyView.fn !== renderSeriesCard) return;
+  var now = Date.now();
+  var ids = embyView.arr.slice(0, embyPage * EMBY_PAGE).filter(function(x){
+    return x.id && now - (__liveVerified[x.id] || 0) > 300000;
+  }).map(function(x){ return x.id; });
+  for (var i = 0; i < ids.length; i += 60) {
+    applyLiveEntries(await liveSyncSeries(ids.slice(i, i + 60)));
+  }
+}
+/* 弹窗：实时分集和卡片对不上时，校准条目并重绘头部（不关弹窗） */
+function _epsDiffer(s, eps){
+  var L = {}, S = {};
+  eps.forEach(function(e){
+    if (e.season == null || e.episode == null || e.exists === false) return;
+    if (e.lib === 'local') L[e.season + ':' + e.episode] = 1;
+    else if (e.lib === 'share') S[e.season + ':' + e.episode] = 1;
+  });
+  return Object.keys(L).length !== (s.local_eps || 0) || Object.keys(S).length !== (s.share_eps || 0);
+}
+async function syncDetailLive(id){
+  applyLiveEntries(await liveSyncSeries([id]));
+  var s = (window.__embySeriesMap || {})[id], hb = $('embyDetBadges');
+  if (!s || !hb || hb.getAttribute('data-sid') !== id) return;
+  hb.innerHTML = embyDetBadges(s);
+  $('embyDetCount').textContent = embyDetCount(s);
+}
+
 function showEmbyDetailById(id){
   var s = (window.__embySeriesMap || {})[id];
   if (!s) return;
@@ -3512,29 +3655,8 @@ function showEmbyDetailById(id){
   html += '</div>';
   html += '<div style="flex:1;min-width:0">';
   html += '<h3 style="margin:0 0 8px;font-size:16px;line-height:1.3;word-break:break-word">' + esc(s.name || '?') + '</h3>';
-  html += '<div class="emby-badges">';
-  if (s.in_local && s.in_share) html += '<span class="emby-badge loc">本地+分享</span>';
-  else if (s.in_local) html += '<span class="emby-badge loc">Emby</span>';
-  else if (s.in_share) html += '<span class="emby-badge shr">分享</span>';
-  if (s._md) html += '<span class="emby-badge ok">✓ 手动完结</span>';
-  else if (mst === 'aligned') html += '<span class="emby-badge ok">✓ 对齐</span>';
-  else if (mst === 'missing') html += '<span class="emby-badge miss">缺 ' + Math.abs(ti.diff || 0) + ' 集</span>';
-  else if (mst === 'extra') html += '<span class="emby-badge extra">超 ' + (ti.diff || 0) + ' 集</span>';
-  else if (mst === 'ongoing') html += '<span class="emby-badge ongoing">在更</span>';
-  else if (mst === 'unmatched') html += '<span class="emby-badge dim">未匹配</span>';
-  else if (mst === 'no_tmdb') html += '<span class="emby-badge dim">无 TMDB</span>';
-  else if (mst === 'pending') html += '<span class="emby-badge gen">待对照</span>';
-  if (s.year) html += '<span class="emby-badge gen">' + s.year + '</span>';
-  html += '</div>';
-  html += '<div style="margin-top:8px;font-size:12px;color:#6b7280">';
-  if (ti.tmdb_total != null && ti.tmdb_total > 0) {
-    var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
-    html += '已入库 ' + have + '/' + ti.tmdb_total + ' 集';
-  } else if (s.in_local && s.in_share) {
-    html += '本地 ' + (s.local_eps || 0) + ' / 分享 ' + (s.share_eps || 0) + ' 集';
-  } else {
-    html += 'Emby ' + (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
-  }
+  html += '<div class="emby-badges" id="embyDetBadges" data-sid="' + esc(s.id) + '">' + embyDetBadges(s) + '</div>';
+  html += '<div id="embyDetCount" style="margin-top:8px;font-size:12px;color:#6b7280">' + embyDetCount(s) + '</div>';
   html += '</div>';
   html += '</div></div>';
 
@@ -3697,6 +3819,8 @@ async function loadLibBreakdown(seriesId, ti){
     var r = await api('/api/emby/series/' + seriesId + '/episodes');
     if (r.status !== 'success') throw new Error(r.message || '\u5931\u8d25');
     var eps = r.episodes || [];
+    var cur = (window.__embySeriesMap || {})[seriesId];
+    if (cur && _epsDiffer(cur, eps)) syncDetailLive(seriesId);
 
     var bySeason = {};
     eps.forEach(function(e){

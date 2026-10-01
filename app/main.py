@@ -472,24 +472,23 @@ def api_tmdb_progress():
 
 @app.get('/api/emby/library', dependencies=[Depends(auth)])
 def api_emby_library(force: int = 0, with_tmdb: int = 1, cache_only: int = 0):
-    # 只读缓存模式（进入「片库映射」页时用）：有 24 小时内的 TMDB 对照缓存就秒回，
-    # 没有就返回 nocache，绝不因为打开页面而触发对照
+    # 视图 = 最新总览缓存（Emby 分集）⊕ TMDB 剧集结构仓库，现算、毫秒级，绝不因读取而访问 TMDB。
+    # 只读缓存模式（进入「片库映射」页时用）：有总览缓存就秒回，完全没有才返回 nocache
     if cache_only:
-        cached = engine.read_emby_lib_cache(max_age=24 * 3600)
-        if cached:
-            cached['from_cache'] = True
-            return cached
+        if engine.overview_cached():
+            data = engine.library_view()
+            data['from_cache'] = True
+            return data
         return {'status': 'nocache'}
     # 快速模式：不查 TMDB
     if not with_tmdb:
         return engine.action_emby_library(Args(force=False, with_tmdb=False))
     # 读缓存模式
-    if not force:
-        cached = engine.read_emby_lib_cache(max_age=6 * 3600)
-        if cached:
-            cached['from_cache'] = True
-            return cached
-    # force=1：启动后台任务，立即返回
+    if not force and engine.overview_cached():
+        data = engine.library_view()
+        data['from_cache'] = True
+        return data
+    # force=1（或完全没有缓存）：启动后台对照任务，立即返回
     prog = engine.get_tmdb_scan_progress()
     if prog.get('running'):
         return {'status': 'running', 'message': 'TMDB 对照已在后台运行', 'progress': prog}
@@ -498,6 +497,17 @@ def api_emby_library(force: int = 0, with_tmdb: int = 1, cache_only: int = 0):
     return {'status': 'started', 'message': 'TMDB 对照已在后台启动'}
 
 
+@app.post('/api/emby/series/live', dependencies=[Depends(auth)])
+def api_emby_series_live(body: dict = None):
+    """单剧实时同步（弹窗 / 片库卡片 / 探索页共用）：向 Emby 取这些剧的实时分集，
+    必要时修补总览缓存，返回带 tmdb_info 的最新条目。"""
+    ids = [str(i) for i in ((body or {}).get('ids') or []) if i][:60]
+    if not ids:
+        return {'status': 'success', 'entries': {}}
+    try:
+        return {'status': 'success', 'entries': engine.live_sync_series(ids)}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
 
 
 @app.get('/api/library_stats', dependencies=[Depends(auth)])

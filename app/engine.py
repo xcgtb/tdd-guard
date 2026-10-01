@@ -551,6 +551,7 @@ def _fetch_all_episodes(force=False):
                 'Recursive': 'true',
                 'IncludeItemTypes': 'Episode',
                 'Fields': 'SeriesId,ParentIndexNumber,IndexNumber,Path',
+                'EnableImages': 'false', 'EnableUserData': 'false',
                 'StartIndex': start,
                 'Limit': page_size,
             }) or {}
@@ -2087,15 +2088,54 @@ class TmdbError(Exception):
     pass
 
 
+class TmdbAuthError(TmdbError):
+    pass
+
+
+def _tmdb_http(key, path, params):
+    """单次 TMDB 请求（含重试 / 429 退避）。404 返回 None；Key 无效抛 TmdbAuthError；其它失败抛 TmdbError。"""
+    params = dict(params)
+    headers = {}
+    if key.startswith('eyJ'):
+        headers['Authorization'] = f'Bearer {key}'
+    else:
+        params['api_key'] = key
+    url = f'{TMDB_BASE}{path}?{urllib.parse.urlencode(params)}'
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as r:
+                return json.loads(r.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403): raise TmdbAuthError(f'TMDB Key 无效或无权限 (HTTP {e.code})')
+            if e.code == 429:
+                time.sleep(int(e.headers.get('Retry-After', '2')) + 1); continue
+            if e.code == 404: return None
+            if e.code in (400, 422) or attempt == 2: raise TmdbError(f'TMDB 返回 HTTP {e.code}')
+            time.sleep(1.5)
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            if attempt == 2: raise TmdbError(f'无法访问 TMDB: {e}')
+            time.sleep(1.5)
+    raise TmdbError('TMDB 多次请求失败')
+
+
+# 进程级共享的 TMDB 响应缓存：只在首次使用时读盘，之后全是内存命中；有改动才写盘
+_tmdb_shared = {'path': None, 'cache': {}, 'dirty': False}
+_tmdb_shared_lock = threading.Lock()
+
+
 class Tmdb:
     def __init__(self):
         self.key = (RUNTIME_CFG.get('tmdb_key') or '').strip()
         self.cache_file = STATE_DIR / 'tmdb_cache.json'
         self.calls = self.hits = 0
-        try:
-            self.cache = json.loads(self.cache_file.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            self.cache = {}
+        with _tmdb_shared_lock:
+            if _tmdb_shared['path'] != self.cache_file:
+                try:
+                    cache = json.loads(self.cache_file.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    cache = {}
+                _tmdb_shared.update(path=self.cache_file, cache=cache, dirty=False)
+            self.cache = _tmdb_shared['cache']
 
     def get(self, path, ttl=6 * 3600, **params):
         params.setdefault('language', TMDB_LANG)
@@ -2104,74 +2144,137 @@ class Tmdb:
         if hit and time.time() - hit['ts'] < ttl:
             self.hits += 1
             return hit['data']
-        headers = {}
-        if self.key.startswith('eyJ'):
-            headers['Authorization'] = f'Bearer {self.key}'
-        else:
-            params['api_key'] = self.key
-        url = f'{TMDB_BASE}{path}?{urllib.parse.urlencode(params)}'
-        data = None
-        for attempt in range(3):
-            try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as r:
-                    data = json.loads(r.read().decode('utf-8'))
-                break
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403): raise TmdbError(f'TMDB Key 无效或无权限 (HTTP {e.code})')
-                if e.code == 429:
-                    time.sleep(int(e.headers.get('Retry-After', '2')) + 1); continue
-                if e.code == 404: return None
-                if attempt == 2: raise TmdbError(f'TMDB 返回 HTTP {e.code}')
-                time.sleep(1.5)
-            except (urllib.error.URLError, OSError, ValueError) as e:
-                if attempt == 2: raise TmdbError(f'无法访问 TMDB: {e}')
-                time.sleep(1.5)
-        if data is None: raise TmdbError('TMDB 多次请求失败')
+        data = _tmdb_http(self.key, path, params)
+        if data is None: return None
         self.cache[ck] = {'ts': time.time(), 'data': data}
+        _tmdb_shared['dirty'] = True
         self.calls += 1
         time.sleep(0.03)
         return data
 
     def save(self):
+        with _tmdb_shared_lock:
+            if not _tmdb_shared['dirty'] or _tmdb_shared['cache'] is not self.cache:
+                return
+            try:
+                STATE_DIR.mkdir(parents=True, exist_ok=True)
+                cut = time.time() - 86400
+                for k in [k for k, v in list(self.cache.items()) if v['ts'] <= cut]:
+                    self.cache.pop(k, None)
+                tmp = self.cache_file.with_suffix('.tmp')
+                tmp.write_text(json.dumps(dict(self.cache), ensure_ascii=False), encoding='utf-8')
+                tmp.replace(self.cache_file)
+                _tmdb_shared['dirty'] = False
+            except OSError as e:
+                log.warning('TMDB 缓存写入失败: %s', e)
+
+
+# ═══════════════════ TMDB 剧集结构仓库（每部剧一条：状态 + 各季集数） ═══════════════════
+TMDB_META_FILE = STATE_DIR / 'tmdb_tv_meta.json'
+_tmdb_meta = {'path': None, 'data': {}, 'dirty': False}
+_tmdb_meta_lock = threading.Lock()
+
+
+def _meta_load():
+    """调用方持锁。首次（或路径变化）时读盘。"""
+    if _tmdb_meta['path'] != TMDB_META_FILE:
+        try:
+            data = json.loads(TMDB_META_FILE.read_text(encoding='utf-8'))
+            if not isinstance(data, dict): data = {}
+        except (OSError, ValueError):
+            data = {}
+        _tmdb_meta.update(path=TMDB_META_FILE, data=data, dirty=False)
+    return _tmdb_meta['data']
+
+
+def _meta_save():
+    with _tmdb_meta_lock:
+        if not _tmdb_meta['dirty']:
+            return
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
-            cut = time.time() - 86400
-            self.cache = {k: v for k, v in self.cache.items() if v['ts'] > cut}
-            tmp = self.cache_file.with_suffix('.tmp')
-            tmp.write_text(json.dumps(self.cache, ensure_ascii=False), encoding='utf-8')
-            tmp.replace(self.cache_file)
+            tmp = TMDB_META_FILE.with_suffix('.tmp')
+            tmp.write_text(json.dumps(_tmdb_meta['data'], ensure_ascii=False), encoding='utf-8')
+            tmp.replace(TMDB_META_FILE)
+            _tmdb_meta['dirty'] = False
         except OSError as e:
-            log.warning('TMDB 缓存写入失败: %s', e)
+            log.warning('TMDB 剧集结构仓库写入失败: %s', e)
 
 
-_emby_index_cache = {'ts': 0, 'data': None}
+def _meta_ttl(e):
+    if e.get('missing'): return 86400
+    return 7 * 86400 if e.get('status') in ('Ended', 'Canceled') else 12 * 3600
 
 
-def emby_library_index(force=False):
-    if not force and _emby_index_cache['data'] and time.time() - _emby_index_cache['ts'] < 300:
-        return _emby_index_cache['data']
-    out = {}
-    for item_type in ('Movie', 'Series'):
+def tmdb_meta_snapshot():
+    """当前仓库的只读视图（条目只整体替换、不原地改，可直接读）"""
+    with _tmdb_meta_lock:
+        return _meta_load()
+
+
+def _fetch_tv_meta(key, tid):
+    info = _tmdb_http(key, f'/tv/{tid}', {'language': TMDB_LANG})
+    if info is None:
+        return {'ts': time.time(), 'missing': True}
+    seasons = {}
+    for s in info.get('seasons') or []:
+        sn, ec = s.get('season_number') or 0, s.get('episode_count') or 0
+        if sn > 0 and ec > 0: seasons[str(sn)] = ec
+    return {'ts': time.time(), 'status': info.get('status') or '', 'seasons': seasons}
+
+
+def tmdb_tv_meta(ids, fetch=True, force_ids=None, workers=8, progress=None, stale_ok=False, errors=None):
+    """取一批 TMDB 剧集的结构：{tmdb_id: {'ts','status','seasons'} 或 {'ts','missing'}}。
+    fetch=True 时并发拉取缺失/过期（stale_ok=True 则过期的也先用旧的，只补缺失）/ force_ids 里的条目。
+    单个拉取失败保留旧条目（id 记入 errors）；Key 无效抛 TmdbAuthError 中止。progress(done, total)。"""
+    ids = [str(i) for i in dict.fromkeys(ids) if i]
+    force_ids = {str(i) for i in (force_ids or ())}
+    now = time.time()
+    with _tmdb_meta_lock:
+        meta = _meta_load()
+        todo = [i for i in ids if i in force_ids or i not in meta
+                or (not stale_ok and now - meta[i].get('ts', 0) >= _meta_ttl(meta[i]))]
+        out = {i: meta[i] for i in ids if i in meta}
+    key = (RUNTIME_CFG.get('tmdb_key') or '').strip()
+    if not (fetch and todo and key):
+        return out
+    done = 0
+    if progress: progress(0, len(todo))
+
+    def one(tid):
         try:
-            data = emby_request('/Items', {
-                'Recursive': 'true', 'IncludeItemTypes': item_type,
-                'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags',
-                'Limit': 50000,
-            }) or {}
-            for it in data.get('Items', []):
-                tmdb_id = str((it.get('ProviderIds') or {}).get('Tmdb') or '')
-                if not tmdb_id: continue
-                out[tmdb_id] = {
-                    'id': it.get('Id'), 'name': it.get('Name'), 'type': it.get('Type'),
-                    'path': it.get('Path', '') or '', 'year': it.get('ProductionYear'),
-                    'rating': it.get('CommunityRating'),
-                    'has_image': 'Primary' in (it.get('ImageTags') or {}),
-                }
+            return tid, _fetch_tv_meta(key, tid)
+        except TmdbAuthError:
+            raise
         except Exception as e:
-            log.warning('Emby 索引拉取失败 (%s): %s', item_type, e)
-    _emby_index_cache['ts'] = time.time()
-    _emby_index_cache['data'] = out
+            log.warning('TMDB 查询失败 %s: %s', tid, e)
+            return tid, None
+
+    ex = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
+        for tid, ent in ex.map(one, todo):
+            done += 1
+            if ent is None:
+                if errors is not None: errors.append(tid)
+            else:
+                with _tmdb_meta_lock:
+                    _meta_load()[tid] = ent
+                    _tmdb_meta['dirty'] = True
+                out[tid] = ent
+            if progress and (done % 20 == 0 or done == len(todo)): progress(done, len(todo))
+            if done % 500 == 0: _meta_save()
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)
+        _meta_save()
     return out
+
+
+def _meta_to_info(ent):
+    """仓库条目 → classify_series_by_tmdb 认的 tmdb_info（404 → None）"""
+    if not ent or ent.get('missing'): return None
+    return {'status': ent.get('status', ''),
+            'seasons': [{'season_number': int(sn), 'episode_count': ec}
+                        for sn, ec in (ent.get('seasons') or {}).items()]}
 
 
 REGION_MAP = {
@@ -2240,38 +2343,38 @@ def action_explore(args):
             if gid:
                 params['with_genres'] = str(gid)
 
-    # 一次请求 TMDB 2 页，合并为 40 张卡片
-    try:
-        params1 = dict(params); params1['page'] = page * 2 - 1
-        params2 = dict(params); params2['page'] = page * 2
-        res1 = t.get(tmdb_path, **params1) or {}
-        res2 = t.get(tmdb_path, **params2) or {}
-        results = (res1.get('results') or []) + (res2.get('results') or [])
-        total_pages_raw = res1.get('total_pages') or 1
-        res = {
-            'results': results,
-            'total_pages': max(1, total_pages_raw // 2),
-            'total_results': res1.get('total_results', 0),
-        }
-    except TmdbError as e:
-        return {'status': 'error', 'message': str(e)}
+    # 一次请求 TMDB 2 页（并发），合并为 40 张卡片；第 2 页越界/失败不影响第 1 页
+    params1 = dict(params); params1['page'] = page * 2 - 1
+    params2 = dict(params); params2['page'] = page * 2
 
-    emby_index = emby_library_index()
-    # 分库集数映射：tmdb_id -> {local_eps, share_eps, have_eps}，仅 tv 用
-    eps_map = {}
-    if media == 'tv':
+    def _page(p):
         try:
-            ov = emby_library_overview()
-            for sr in ov.get('series', []):
-                tid = sr.get('tmdb_id')
-                if tid:
-                    eps_map[tid] = {
-                        'local_eps': sr.get('local_eps', 0),
-                        'share_eps': sr.get('share_eps', 0),
-                        'have_eps': sr.get('have_eps', 0),
-                    }
+            return t.get(tmdb_path, **p) or {}
+        except TmdbError as e:
+            return e
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        res1, res2 = ex.map(_page, (params1, params2))
+    if isinstance(res1, TmdbError):
+        return {'status': 'error', 'message': str(res1)}
+    if isinstance(res2, TmdbError):
+        res2 = {}
+    results = (res1.get('results') or []) + (res2.get('results') or [])
+    total_pages_raw = res1.get('total_pages') or 1
+    res = {
+        'results': results,
+        'total_pages': max(1, total_pages_raw // 2),
+        'total_results': res1.get('total_results', 0),
+    }
+
+    emby_index = _explore_index()
+    # 总集数来自 TMDB 剧集结构仓库：只给「已入库的剧」补缺失条目（并发），其余走内存
+    meta = {}
+    if media == 'tv':
+        tv_ids = [str(i.get('id', '')) for i in results[:40] if f"tv:{i.get('id', '')}" in emby_index]
+        try:
+            meta = tmdb_tv_meta(tv_ids, stale_ok=True)
         except Exception as e:
-            log.warning('探索页分库集数缓存构建失败: %s', e)
+            log.warning('探索页 TMDB 剧集结构获取失败: %s', e)
 
     cards = []
     for item in (res.get('results') or [])[:40]:
@@ -2281,33 +2384,20 @@ def action_explore(args):
         year_str = date_str[:4] if date_str else ''
         rating = item.get('vote_average') or 0
         poster = item.get('poster_path')
-        emby_hit = emby_index.get(tmdb_id)
+        emby_hit = emby_index.get(f'{"tv" if media == "tv" else "movie"}:{tmdb_id}')
         in_emby = emby_hit is not None
-        hit_lib = emby_lib_of(emby_hit.get('path') or '') if in_emby else ''
-        in_local = hit_lib == 'local'
-        in_share = hit_lib == 'share'
+        in_local = bool(in_emby and emby_hit['in_local'])
+        in_share = bool(in_emby and emby_hit['in_share'])
         if poster: poster_url = f'{TMDB_IMG}{poster}'
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
 
-        # 入库进度（仅剧集）：分库集数 + TMDB 总集数
+        # 入库进度（仅剧集）：分库集数（总览缓存）+ TMDB 总集数（结构仓库）
         eps = None
         if media == 'tv' and in_emby:
-            e = eps_map.get(tmdb_id) or {'local_eps': 0, 'share_eps': 0, 'have_eps': 0}
-            tmdb_total = 0
-            try:
-                info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
-                tmdb_total = sum(
-                    (s.get('episode_count') or 0)
-                    for s in (info or {}).get('seasons', [])
-                    if (s.get('season_number') or 0) > 0
-                )
-            except (TmdbError, Exception):
-                tmdb_total = 0
-            eps = {
-                'local': e['local_eps'], 'share': e['share_eps'],
-                'have': e['have_eps'], 'total': tmdb_total,
-            }
+            eps = {'local': emby_hit['local_eps'], 'share': emby_hit['share_eps'],
+                   'have': emby_hit['have_eps'],
+                   'total': sum(((meta.get(tmdb_id) or {}).get('seasons') or {}).values())}
 
         cards.append({
             'tmdb_id': tmdb_id, 'title': title, 'year': year_str,
@@ -2324,6 +2414,28 @@ def action_explore(args):
             'total_results': res.get('total_results', 0),
             'cards': cards, 'is_search': bool(query),
             'tmdb_calls': t.calls, 'tmdb_hits': t.hits}
+
+
+def _explore_index():
+    """探索页的入库索引：来自片库总览缓存（有缓存就不同步重建），键 'tv:<id>' / 'movie:<id>'，
+    电影和剧集的 tmdb_id 空间不同，不能混用。"""
+    out = {}
+    try:
+        ov = emby_library_overview()
+    except Exception as e:
+        log.warning('探索页入库索引获取失败: %s', e)
+        return out
+    for kind, key in (('tv', 'series'), ('movie', 'movies')):
+        for s in ov.get(key) or []:
+            tid = s.get('tmdb_id')
+            if not tid: continue
+            out[f'{kind}:{tid}'] = {
+                'id': s.get('id'), 'has_image': bool(s.get('has_image')),
+                'in_local': bool(s.get('in_local')), 'in_share': bool(s.get('in_share')),
+                'local_eps': s.get('local_eps', 0), 'share_eps': s.get('share_eps', 0),
+                'have_eps': s.get('have_eps', 0),
+            }
+    return out
 
 
 _emby_lib_cache = {'ts': 0, 'data': None}
@@ -2584,22 +2696,96 @@ def read_manual_done() -> dict:
         return {}
 
 
-def gap_report(max_age=6 * 3600):
-    """缺集检测的统一口径：与网页「片库映射 → 缺集」一致，按 TMDB 对照判断。
-    优先读网页同一份对照缓存；缓存过期/不存在时现场对照一次。
-    返回 {'missing': [...], 'stats': {...}, 'from_cache': bool, 'cache_ts': float}"""
-    data = read_emby_lib_cache(max_age=max_age)
-    from_cache = bool(data)
-    if not data:
-        from argparse import Namespace as _NS
-        data = action_emby_library(_NS(force=False, with_tmdb=True))
-        if data.get('status') == 'error':
-            return {'status': 'error', 'message': data.get('message', '')}
+def _compose_entry(s, meta, has_key):
+    """总览条目 + TMDB 结构仓库 → 带 tmdb_info 的新条目（不改缓存里的原 dict）"""
+    e = dict(s)
+    tid = s.get('tmdb_id')
+    if not tid:
+        e['tmdb_info'] = {'match_status': 'no_tmdb' if has_key else 'unmatched',
+                          'tmdb_status': None, 'local_total': s.get('total_episodes', 0),
+                          'tmdb_total': None, 'diff': None, 'seasons': []}
+    elif str(tid) not in meta and has_key:
+        e['tmdb_info'] = {'match_status': 'pending', 'tmdb_status': None,
+                          'local_total': s.get('total_episodes', 0),
+                          'tmdb_total': None, 'diff': None, 'seasons': []}
+    else:
+        e['tmdb_info'] = classify_series_by_tmdb(s.get('seasons', []), _meta_to_info(meta.get(str(tid))))
+    return e
+
+
+def _view_stats(series, movies):
+    stats = {'total_series': len(series), 'total_movies': len(movies),
+             'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0, 'unmatched': 0, 'no_tmdb': 0,
+             'pending': 0, 'complete_series': 0, 'incomplete_series': 0}
+    for s in series:
+        st = (s.get('tmdb_info') or {}).get('match_status', 'unmatched')
+        if st in stats: stats[st] += 1
+        if s.get('complete'): stats['complete_series'] += 1
+        else: stats['incomplete_series'] += 1
+    return stats
+
+
+def _compose_view(data, ov_ts, tmdb_errors=0):
+    meta = tmdb_meta_snapshot()
+    has_key = bool((RUNTIME_CFG.get('tmdb_key') or '').strip())
+    series = [_compose_entry(s, meta, has_key) for s in data.get('series') or []]
+    movies = list(data.get('movies') or [])
+    try:
+        tmdb_ts = float(_cfg.load_config().get('tmdb_scan_last_ts') or 0)
+    except (ValueError, TypeError):
+        tmdb_ts = 0
+    return {'status': 'success', 'stats': _view_stats(series, movies), 'series': series,
+            'movies': movies, 'tmdb_errors': tmdb_errors, 'emby_host': EMBY_HOST,
+            'ts': ov_ts, 'tmdb_ts': tmdb_ts}
+
+
+def overview_cached():
+    """是否已有片库总览缓存（内存或磁盘）"""
+    return bool(_emby_lib_cache['data']) or _load_overview_disk() is not None
+
+
+def library_view(fetch_tmdb=False, force=False):
+    """片库视图 = 最新总览（Emby 分集，内存/磁盘缓存 + 后台刷新）⊕ TMDB 结构仓库，每次请求现算（纯 CPU）。
+    fetch_tmdb=True 时只补仓库里缺失的剧（并发）；已有的不管多旧都先用，由每日对照负责刷新。"""
+    data = emby_library_overview(force=force)
+    ov_ts = _emby_lib_cache['ts']
+    errors = []
+    if fetch_tmdb:
         try:
-            save_emby_lib_cache(data)  # 落盘，让网页读到的也是这一份，两边数据一致
-            data['ts'] = time.time()
-        except Exception:
-            pass
+            tmdb_tv_meta([s.get('tmdb_id') for s in data.get('series') or []], stale_ok=True, errors=errors)
+        except TmdbError as e:
+            log.warning('TMDB 对照失败: %s', e)
+            errors.append('*')
+    view = _compose_view(data, ov_ts, len(errors))
+    if view['stats']['pending'] and not fetch_tmdb:
+        _kick_meta_fill([s.get('tmdb_id') for s in view['series'] if s['tmdb_info']['match_status'] == 'pending'])
+    return view
+
+
+_meta_fill_lock = threading.Lock()
+
+
+def _kick_meta_fill(ids):
+    """仓库里缺失的剧在后台补齐（单飞）——读取视图本身永远不等 TMDB，下次刷新就有了。"""
+    def run():
+        if not _meta_fill_lock.acquire(blocking=False):
+            return
+        try:
+            tmdb_tv_meta(ids, stale_ok=True)
+        except Exception as e:
+            log.warning('后台补齐 TMDB 剧集结构失败: %s', e)
+        finally:
+            _meta_fill_lock.release()
+    threading.Thread(target=run, daemon=True, name='tmdb-meta-fill').start()
+
+
+def gap_report(max_age=6 * 3600):
+    """缺集检测的统一口径：与网页「片库映射 → 缺集」一致（同一个 library_view）。
+    返回 {'missing': [...], 'stats': {...}, 'from_cache': bool, 'cache_ts': float}"""
+    try:
+        data = library_view(fetch_tmdb=True)
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
     series = data.get('series') or []
     stats = {'total': len(series), 'aligned': 0, 'missing': 0, 'extra': 0,
              'ongoing': 0, 'unmatched': 0}
@@ -2607,7 +2793,7 @@ def gap_report(max_age=6 * 3600):
     done = read_manual_done()  # 手动完结的剧不再算缺集 / 在更，与网页「片库映射」口径一致
     for s_ in series:
         st = (s_.get('tmdb_info') or {}).get('match_status', 'unmatched')
-        if st == 'no_tmdb': st = 'unmatched'
+        if st in ('no_tmdb', 'pending'): st = 'unmatched'
         if done and str(s_.get('id')) in done and st in ('missing', 'ongoing'):
             st = 'aligned'
         if st in stats: stats[st] += 1
@@ -2615,7 +2801,7 @@ def gap_report(max_age=6 * 3600):
     missing.sort(key=lambda x: (x.get('tmdb_info') or {}).get('diff') or 0)  # diff 为负，越小缺得越多
     return {'status': 'success', 'missing': missing, 'stats': stats,
             'movies_total': len(data.get('movies') or []),
-            'from_cache': from_cache, 'cache_ts': data.get('ts') or 0}
+            'from_cache': True, 'cache_ts': data.get('ts') or 0}
 
 
 def action_emby_library(args):
@@ -2623,45 +2809,9 @@ def action_emby_library(args):
     with_tmdb = getattr(args, 'with_tmdb', True)
     if with_tmdb is None: with_tmdb = True
     try:
-        data = emby_library_overview(force=force)
+        return library_view(fetch_tmdb=bool(with_tmdb), force=force)
     except Exception as e:
         return {'status': 'error', 'message': f'拉取 Emby 库失败: {e}'}
-    series = data['series']; movies = data['movies']
-    tmdb_errors = 0
-    # 所有 series 先标 pending
-    for s in series:
-        s['tmdb_info'] = {'match_status': 'pending', 'tmdb_status': None,
-                          'local_total': s.get('total_episodes', 0),
-                          'tmdb_total': None, 'diff': None, 'seasons': []}
-
-    if with_tmdb:
-        t = Tmdb()
-        has_key = bool(t.key)
-        for s in series:
-            tmdb_id = s.get('tmdb_id')
-            if not tmdb_id:
-                s['tmdb_info'] = {'match_status': 'no_tmdb' if has_key else 'unmatched',
-                                  'tmdb_status': None, 'local_total': s.get('total_episodes', 0),
-                                  'tmdb_total': None, 'diff': None, 'seasons': []}
-                continue
-            try:
-                info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
-            except TmdbError as e:
-                log.warning('TMDB 查询失败 %s: %s', tmdb_id, e); info = None; tmdb_errors += 1
-            except Exception as e:
-                log.warning('TMDB 查询异常 %s: %s', tmdb_id, e); info = None; tmdb_errors += 1
-            s['tmdb_info'] = classify_series_by_tmdb(s.get('seasons', []), info)
-        t.save()
-    stats = {'total_series': len(series), 'total_movies': len(movies),
-             'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0, 'unmatched': 0, 'no_tmdb': 0,
-             'complete_series': 0, 'incomplete_series': 0}
-    for s in series:
-        st = (s.get('tmdb_info') or {}).get('match_status', 'unmatched')
-        if st in stats: stats[st] += 1
-        if s.get('complete'): stats['complete_series'] += 1
-        else: stats['incomplete_series'] += 1
-    return {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
-            'tmdb_errors': tmdb_errors, 'emby_host': EMBY_HOST}
 
 
 # ═══════════════════ 入库监控（缓存层） ═══════════════════
@@ -3290,6 +3440,79 @@ def _patch_all_caches(patch):
         save_emby_lib_cache(tmdb_cache, keep_ts=True)
 
 
+def _live_episodes_by_dir(series_id: str):
+    """单剧实时分集：分页拉 Emby（不截断、不要图片/用户数据），再按「父目录」核实：
+    目录已空/不存在的残留分集剔除（与总览同口径，一目录一次 scandir，不逐文件 stat）。"""
+    items, start = [], 0
+    while True:
+        data = emby_request('/Items', {
+            'ParentId': series_id, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
+            'Fields': 'Path,ParentIndexNumber,IndexNumber',
+            'EnableImages': 'false', 'EnableUserData': 'false',
+            'StartIndex': start, 'Limit': 5000,
+        }) or {}
+        page = data.get('Items') or []
+        items.extend(page)
+        if len(page) < 5000 or len(items) >= data.get('TotalRecordCount', 0):
+            break
+        start += 5000
+    alive = _alive_dir_map(e.get('Path') for e in items)
+    out = []
+    for e in items:
+        p = (e.get('Path') or '').replace('\\', '/')
+        if alive.get(p.rsplit('/', 1)[0] if '/' in p else '', True):
+            out.append(e)
+    return out
+
+
+_ENTRY_STAT_KEYS = ('in_local', 'in_share', 'seasons', 'total_episodes', 'local_eps', 'share_eps',
+                    'have_eps', 'missing_eps', 'complete')
+
+
+def live_sync_series(ids, workers=8):
+    """批量单剧实时同步（弹窗 / 片库卡片 / 探索页共用）：逐剧向 Emby 取实时分集，重算后若与总览缓存不同，
+    就地修补内存+磁盘缓存（保留时间戳）。Emby 返回 0 集时不动缓存（不删剧）。
+    返回 {id: 带 tmdb_info 的最新条目}（仅限总览里存在的剧）。"""
+    ids = list(dict.fromkeys(str(i) for i in ids if i))[:60]
+
+    def one(sid):
+        try:
+            return sid, _live_episodes_by_dir(sid)
+        except Exception as e:
+            log.warning('单剧实时同步失败 %s: %s', sid, e)
+            return sid, None
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(ids) or 1))) as ex:
+        live_map = {sid: live for sid, live in ex.map(one, ids) if live}
+    ov = emby_library_overview()
+    by_id = {s.get('id'): s for s in ov.get('series') or []}
+    changed = {}
+    for sid, live in live_map.items():
+        old = by_id.get(sid)
+        if old is None:
+            continue
+        new = dict(old)
+        _resync_series_entry(new, live)
+        if any(new.get(k) != old.get(k) for k in _ENTRY_STAT_KEYS):
+            changed[sid] = live
+
+    def patch(data):
+        lst, hit = (data or {}).get('series') or [], False
+        for i, s in enumerate(lst):
+            if s.get('id') in changed:
+                new = dict(s)
+                _resync_series_entry(new, changed[s['id']])
+                lst[i] = new   # 整条替换，并发读取的请求不会看到半成品
+                hit = True
+        return hit
+    if changed:
+        _patch_all_caches(patch)
+    meta = tmdb_meta_snapshot()
+    has_key = bool((RUNTIME_CFG.get('tmdb_key') or '').strip())
+    want = set(ids)
+    return {s['id']: _compose_entry(s, meta, has_key)
+            for s in emby_library_overview().get('series') or [] if s.get('id') in want}
+
+
 def patch_emby_lib_cache_after_series_delete(series_id: str, deleted_target: str = ''):
     """删除 / 同步后就地修补缓存里这部剧（以磁盘真实文件为准）。
     返回 {'remaining': 剩余分集数, 'entry': 新条目或 None, 'series_path': Emby 侧剧目录}。"""
@@ -3402,47 +3625,27 @@ def _refresh_tmdb_scan():
         data = emby_library_overview(force=True)
         series = data['series']
         movies = data['movies']
-        total = len(series)
-        _tmdb_scan_progress['total'] = total
-        _tmdb_scan_progress['stage'] = f'对照 TMDB（共 {total} 部）...'
-        t = Tmdb()
-        has_key = bool(t.key)
-        tmdb_errors = 0
-        for i, s_ in enumerate(series):
-            tmdb_id = s_.get('tmdb_id')
-            if not tmdb_id:
-                s_['tmdb_info'] = {'match_status': 'no_tmdb' if has_key else 'unmatched',
-                                   'tmdb_status': None,
-                                   'local_total': s_.get('total_episodes', 0),
-                                   'tmdb_total': None, 'diff': None, 'seasons': []}
-            else:
-                try:
-                    info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
-                except TmdbError as e:
-                    log.warning('TMDB 查询失败 %s: %s', tmdb_id, e)
-                    info = None; tmdb_errors += 1
-                except Exception as e:
-                    log.warning('TMDB 查询异常 %s: %s', tmdb_id, e)
-                    info = None; tmdb_errors += 1
-                s_['tmdb_info'] = classify_series_by_tmdb(s_.get('seasons', []), info)
-            _tmdb_scan_progress['done'] = i + 1
-            if (i + 1) % 20 == 0 or (i + 1) == total:
+        ids = sorted({str(s_['tmdb_id']) for s_ in series if s_.get('tmdb_id')})
+        _tmdb_scan_progress['stage'] = f'对照 TMDB（共 {len(ids)} 部）...'
+
+        def _prog(done, total):
+            _tmdb_scan_progress.update(done=done, total=total)
+            if total and (done % 100 == 0 or done == total):
                 el = time.time() - _tmdb_scan_progress['started_at']
-                eta = el / (i + 1) * (total - i - 1)
-                log.info('TMDB 进度 %d/%d (%.0f%%) ETA %.0f 秒', i + 1, total,
-                         (i + 1) / total * 100 if total else 100, eta)
-        t.save()
-        stats = {'total_series': len(series), 'total_movies': len(movies),
-                 'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0,
-                 'unmatched': 0, 'no_tmdb': 0, 'pending': 0,
-                 'complete_series': 0, 'incomplete_series': 0}
-        for s_ in series:
-            st = (s_.get('tmdb_info') or {}).get('match_status', 'unmatched')
-            if st in stats: stats[st] += 1
-            if s_.get('complete'): stats['complete_series'] += 1
-            else: stats['incomplete_series'] += 1
-        res = {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
+                log.info('TMDB 进度 %d/%d (%.0f%%) 已用 %.0f 秒', done, total, done / total * 100, el)
+        # 已完结的剧按仓库 TTL（7 天）；其余超过 1 小时的强制重拉，保证每日对照拿到最新集数
+        now = time.time()
+        old = tmdb_meta_snapshot()
+        force_ids = {i for i in ids if i in old and old[i].get('status') not in ('Ended', 'Canceled')
+                     and now - old[i].get('ts', 0) > 3600}
+        errors = []
+        tmdb_tv_meta(ids, force_ids=force_ids, progress=_prog, errors=errors)
+        tmdb_errors = len(errors)
+        view = _compose_view(data, _emby_lib_cache['ts'] or time.time(), tmdb_errors)
+        stats = view['stats']
+        res = {'status': 'success', 'stats': stats, 'series': view['series'], 'movies': movies,
                'tmdb_errors': tmdb_errors, 'with_tmdb': True, 'emby_host': EMBY_HOST}
+        # 旧版对照快照：不再供界面读取，仅为兼容（外部脚本 / 回滚）而保留
         save_emby_lib_cache(res)
         cfg = _cfg.load_config()
         cfg['tmdb_scan_last_ts'] = str(time.time())
@@ -3698,8 +3901,6 @@ def invalidate_media_caches(keep_emby_lib=False):
     keep_emby_lib=True 时保留片库映射缓存（单剧删除会就地修补它，避免整页重跑 TMDB 对照）。"""
     _ep_cache['ts'] = 0
     _ep_cache['data'] = None
-    _emby_index_cache['ts'] = 0
-    _emby_index_cache['data'] = None
     if not keep_emby_lib:
         _emby_lib_cache['ts'] = 0
         _emby_lib_cache['data'] = None
