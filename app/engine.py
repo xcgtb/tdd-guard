@@ -2146,8 +2146,9 @@ class Tmdb:
             return hit['data']
         data = _tmdb_http(self.key, path, params)
         if data is None: return None
-        self.cache[ck] = {'ts': time.time(), 'data': data}
-        _tmdb_shared['dirty'] = True
+        with _tmdb_shared_lock:   # save() 会遍历同一个 dict，写入也要持锁
+            self.cache[ck] = {'ts': time.time(), 'data': data}
+            _tmdb_shared['dirty'] = True
         self.calls += 1
         time.sleep(0.03)
         return data
