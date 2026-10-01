@@ -269,3 +269,13 @@ def test_web_refresh_skipped_when_cache_fresh(tmp_path, monkeypatch):
 def engine_action_args(kw=''):
     import argparse
     return argparse.Namespace(kw=kw)
+
+
+def test_action_stats_pending_not_reported_as_zero(monkeypatch):
+    """无缓存、后台首次扫描中：Web 返回 pending，不能落到 success 分支显示「+0」"""
+    from app import engine
+    monkeypatch.setattr(engine, 'get_ingest',
+                        lambda **kw: {'status': 'pending', 'refreshing': True, 'stats': {}, 'cache_ts': 0})
+    r = engine.action_stats(type('A', (), {'kw': ''})(), wait=False)
+    assert r['status'] == 'pending' and r['refreshing'] is True
+    assert '+0' not in r['text']

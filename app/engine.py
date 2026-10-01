@@ -2500,7 +2500,7 @@ def emby_library_overview(force=False):
                 threading.Thread(target=_overview_bg_refresh, daemon=True,
                                  name='emby-overview-refresh').start()
             return _emby_lib_cache['data']
-    out = _build_emby_library_overview()
+    out = _build_emby_library_overview(force=force)
     _emby_lib_cache['ts'] = time.time()
     _emby_lib_cache['data'] = out
     _save_overview_disk(out)
@@ -2550,7 +2550,7 @@ def _alive_dir_map(paths):
     return dirs
 
 
-def _build_emby_library_overview():
+def _build_emby_library_overview(force=False):
     out = {'series': [], 'movies': []}
     lib_of = EMBY_PATHS.lib_of  # 热循环里要分类 ~10 万个分集路径，先绑定到局部
     series_data = emby_request('/Items', {
@@ -2558,7 +2558,7 @@ def _build_emby_library_overview():
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
         'Limit': 50000,
     }) or {}
-    episodes_all = _fetch_all_episodes()
+    episodes_all = _fetch_all_episodes(force=force)   # 重新对照要拿 Emby 最新分集，不复用 10 分钟分集缓存
     alive = _alive_dir_map(ep.get('Path') for ep in episodes_all)
 
     def _ep_alive(path):
@@ -3119,6 +3119,10 @@ def action_stats(args, wait=True):
     force = kw == 'force' or 'force' in kw
     full = 'full' in kw
     data = get_ingest(force_refresh=force, wait=wait)
+    if data.get('status') == 'pending':   # 还没有任何缓存，后台首次扫描中：不能当成「+0」返回
+        return {'status': 'pending', 'stats': {}, 'has_more': False, 'from_cache': False,
+                'cache_ts': 0, 'refreshing': data.get('refreshing', True), 'error': data.get('error'),
+                'text': '📊 首次扫描中，请稍候…'}
     if data.get('status') == 'error':
         msg = data.get('message') or '入库拉取失败'
         return {'status': 'error', 'message': msg, 'stats': {}, 'has_more': False,

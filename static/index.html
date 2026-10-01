@@ -2890,7 +2890,7 @@ function appendExploreCards(cards){
     } else if (c.poster.indexOf('/api/emby/poster/') === 0) {
       posterHtml = '<img data-emby-src="' + esc(c.poster) + '" alt="" loading="lazy">';
     } else {
-      posterHtml = '<img src="' + esc(c.poster) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.innerHTML=\'<div class=&quot;no-img&quot;>暂无海报</div>\'">';
+      posterHtml = '<img src="' + esc(c.poster) + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=&quot;no-img&quot;>暂无海报</div>\'">';
     }
     var isSub = subSet[String(c.tmdb_id)];
     var subBtn = c.type === 'tv'
@@ -2996,7 +2996,7 @@ function renderExploreCards(cards){
     } else if (c.poster.indexOf('/api/emby/poster/') === 0) {
       posterHtml = '<img data-emby-src="' + esc(c.poster) + '" alt="" loading="lazy">';
     } else {
-      posterHtml = '<img src="' + esc(c.poster) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.innerHTML=\'<div class=&quot;no-img&quot;>暂无海报</div>\'">';
+      posterHtml = '<img src="' + esc(c.poster) + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=&quot;no-img&quot;>暂无海报</div>\'">';
     }
     var isSub = subSet[String(c.tmdb_id)];
     var subBtn = c.type === 'tv'
