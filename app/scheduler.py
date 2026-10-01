@@ -23,7 +23,16 @@ _bg_state = {
     'last_ingest_check': 0,
     'last_sub_check': 0,
     'last_tmdb_attempt': 0,
+    'morning_date': '',        # 晨报重试计数所属的日期
+    'morning_attempts': 0,
+    'morning_next_try': 0,
 }
+
+# 晨报发送失败（Telegram 不通等）时的重试：每天最多 5 次，间隔 1 / 2 / 5 / 10 / 15 分钟，
+# 之后当天不再自动重试（可在 Web「晨报推送」手动发送）。以前每 30 秒重建并重发一次，永不停止。
+MORNING_MAX_ATTEMPTS = 5
+MORNING_BACKOFF_SEC = (60, 120, 300, 600, 900)
+TMDB_PRESCAN_STALE_SEC = 12 * 3600
 
 
 # ═══════════════════ 双库治理：定时巡检（只扫描+通知，不自动清理） ═══════════════════
@@ -234,15 +243,39 @@ def _tick(now: float):
                 _cfg.mark_morning_prescan(today)
             except Exception as e:
                 engine.log.warning('晨报预扫失败: %s', e)
+            # 晨报的缺集段只读 TMDB 对照缓存；缓存偏旧就趁预扫在后台刷新一次（单飞，已在跑则跳过）
+            if scan_enabled and now - last_ts > TMDB_PRESCAN_STALE_SEC \
+                    and not engine.get_tmdb_scan_progress().get('running'):
+                threading.Thread(target=engine.refresh_tmdb_scan, daemon=True, name='tmdb-scan-prescan').start()
 
     # ── 到点发送 ──
     if lt_minutes >= target_minutes and mr.get('last_date') != today:
-        try:
-            ok = engine.send_morning_report(mr.get('items') or [], force_refresh=False)
-            if ok:
-                engine.log.info('晨报已发送')
-        except Exception as e:
-            engine.log.warning('晨报发送失败: %s', e)
+        _morning_send_tick(mr, today, now)
+
+
+def _morning_send_tick(mr: dict, today: str, now: float):
+    """到点发送晨报，带每日重试上限与退避；重试时续发未发完的段落，不重建、不重复。"""
+    st = _bg_state
+    if st['morning_date'] != today:
+        st.update(morning_date=today, morning_attempts=0, morning_next_try=0)
+    if st['morning_attempts'] >= MORNING_MAX_ATTEMPTS or now < st['morning_next_try']:
+        return
+    st['morning_attempts'] += 1
+    try:
+        ok = engine.send_morning_report(mr.get('items') or [], force_refresh=False, resume=True)
+    except Exception as e:
+        engine.log.warning('晨报发送异常: %s', e)
+        ok = False
+    if ok:
+        engine.log.info('晨报已发送')
+        return
+    n = st['morning_attempts']
+    st['morning_next_try'] = now + MORNING_BACKOFF_SEC[min(n - 1, len(MORNING_BACKOFF_SEC) - 1)]
+    if n >= MORNING_MAX_ATTEMPTS:
+        engine.log.error('晨报连续 %d 次发送失败，今天不再自动重试（请检查 Telegram 配置，或在 Web 手动发送）', n)
+    else:
+        engine.log.warning('晨报发送失败（第 %d/%d 次），%d 秒后重试', n, MORNING_MAX_ATTEMPTS,
+                           st['morning_next_try'] - now)
 
 
 def _loop():

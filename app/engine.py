@@ -2122,7 +2122,7 @@ class Tmdb:
                 if e.code in (401, 403): raise TmdbError(f'TMDB Key 无效或无权限 (HTTP {e.code})')
                 if e.code == 429:
                     time.sleep(int(e.headers.get('Retry-After', '2')) + 1); continue
-                if e.code == 404: return None
+                if e.code in (404, 422): return None   # 422=页码越界等无效参数，重试没有意义
                 if attempt == 2: raise TmdbError(f'TMDB 返回 HTTP {e.code}')
                 time.sleep(1.5)
             except (urllib.error.URLError, OSError, ValueError) as e:
@@ -2147,14 +2147,32 @@ class Tmdb:
             log.warning('TMDB 缓存写入失败: %s', e)
 
 
-_emby_index_cache = {'ts': 0, 'data': None}
+_emby_index_cache = {'ts': 0, 'data': None, 'degraded': False}
+_INDEX_TTL = 300           # 正常缓存 5 分钟
+_INDEX_DEGRADED_TTL = 30   # 有一类没取到时只缓存 30 秒，尽快重试
+
+
+def emby_index_key(kind, tmdb_id):
+    """索引键：电影与剧集的 TMDB ID 是两个独立的编号空间，必须带类型（kind = 'movie' | 'tv'）。"""
+    return '%s:%s' % (kind, tmdb_id)
+
+
+def emby_index_degraded():
+    return bool(_emby_index_cache.get('degraded'))
 
 
 def emby_library_index(force=False):
-    if not force and _emby_index_cache['data'] and time.time() - _emby_index_cache['ts'] < 300:
-        return _emby_index_cache['data']
-    out = {}
-    for item_type in ('Movie', 'Series'):
+    """{'movie:<tmdb>' / 'tv:<tmdb>': 条目}。
+    某一类（电影 / 剧集）请求失败时：沿用上一份缓存里同类型的条目，标记 degraded，
+    并把缓存时间缩到 30 秒——不会把残缺索引当成有效结果缓存 5 分钟（否则故障期间已入库的片会显示「未入库」）。"""
+    c = _emby_index_cache
+    ttl = _INDEX_DEGRADED_TTL if c.get('degraded') else _INDEX_TTL
+    if not force and c['data'] is not None and time.time() - c['ts'] < ttl:
+        return c['data']
+    prev = c['data'] or {}
+    out, degraded = {}, False
+    for item_type, kind in (('Movie', 'movie'), ('Series', 'tv')):
+        part = {}
         try:
             data = emby_request('/Items', {
                 'Recursive': 'true', 'IncludeItemTypes': item_type,
@@ -2164,7 +2182,7 @@ def emby_library_index(force=False):
             for it in data.get('Items', []):
                 tmdb_id = str((it.get('ProviderIds') or {}).get('Tmdb') or '')
                 if not tmdb_id: continue
-                out[tmdb_id] = {
+                part[emby_index_key(kind, tmdb_id)] = {
                     'id': it.get('Id'), 'name': it.get('Name'), 'type': it.get('Type'),
                     'path': it.get('Path', '') or '', 'year': it.get('ProductionYear'),
                     'rating': it.get('CommunityRating'),
@@ -2172,8 +2190,10 @@ def emby_library_index(force=False):
                 }
         except Exception as e:
             log.warning('Emby 索引拉取失败 (%s): %s', item_type, e)
-    _emby_index_cache['ts'] = time.time()
-    _emby_index_cache['data'] = out
+            degraded = True
+            part = {k: v for k, v in prev.items() if k.startswith(kind + ':')}
+        out.update(part)
+    c.update(ts=time.time(), data=out, degraded=degraded)
     return out
 
 
@@ -2283,7 +2303,14 @@ def action_explore(args):
     # 一次请求 TMDB 2 页，合并为 40 张卡片；同时并发拉 Emby 索引，两边等待时间重叠
     def _page(n):
         p = dict(params); p['page'] = page * 2 - 1 + n
-        return t.get(tmdb_path, **p) or {}
+        try:
+            return t.get(tmdb_path, **p) or {}
+        except TmdbError as e:
+            if n == 0:
+                raise
+            # 总页数为奇数时，第二页越界：当作空页，不让整页加载失败
+            log.info('探索页第二页 TMDB 请求失败，按空页处理: %s', e)
+            return {}
 
     try:
         with ThreadPoolExecutor(max_workers=3) as ex:
@@ -2300,7 +2327,7 @@ def action_explore(args):
     results = (res1.get('results') or []) + (res2.get('results') or [])
     res = {
         'results': results,
-        'total_pages': max(1, (res1.get('total_pages') or 1) // 2),
+        'total_pages': max(1, ((res1.get('total_pages') or 1) + 1) // 2),   # 每页取 TMDB 两页，向上取整
         'total_results': res1.get('total_results', 0),
     }
     tm['tmdb_list_ms'] = int((time.time() - t0) * 1000)
@@ -2342,7 +2369,7 @@ def action_explore(args):
         ex2 = ThreadPoolExecutor(max_workers=8)
         for item in page_items:
             tid = str(item.get('id', ''))
-            hit = emby_index.get(tid)
+            hit = emby_index.get(emby_index_key('tv', tid))
             if hit and tid not in eps_futs:
                 eps_futs[tid] = ex2.submit(_tv_progress, tid, hit['id'])
 
@@ -2354,7 +2381,7 @@ def action_explore(args):
         year_str = date_str[:4] if date_str else ''
         rating = item.get('vote_average') or 0
         poster = item.get('poster_path')
-        emby_hit = emby_index.get(tmdb_id)
+        emby_hit = emby_index.get(emby_index_key('tv' if media == 'tv' else 'movie', tmdb_id))
         in_emby = emby_hit is not None
         hit_lib = emby_lib_of(emby_hit.get('path') or '') if in_emby else ''
         in_local = hit_lib == 'local'
@@ -2383,6 +2410,7 @@ def action_explore(args):
             'total_pages': min(res.get('total_pages', 1), 20),
             'total_results': res.get('total_results', 0),
             'cards': cards, 'is_search': bool(query),
+            'emby_degraded': emby_index_degraded(),
             'tmdb_calls': t.calls, 'tmdb_hits': t.hits}
 
 
@@ -2644,13 +2672,15 @@ def read_manual_done() -> dict:
         return {}
 
 
-def gap_report(max_age=6 * 3600):
+def gap_report(max_age=6 * 3600, allow_scan=True):
     """缺集检测的统一口径：与网页「片库映射 → 缺集」一致，按 TMDB 对照判断。
     优先读网页同一份对照缓存；缓存过期/不存在时现场对照一次。
     返回 {'missing': [...], 'stats': {...}, 'from_cache': bool, 'cache_ts': float}"""
     data = read_emby_lib_cache(max_age=max_age)
     from_cache = bool(data)
     if not data:
+        if not allow_scan:
+            return {'status': 'nocache', 'message': '尚无 TMDB 对照缓存'}
         from argparse import Namespace as _NS
         data = action_emby_library(_NS(force=False, with_tmdb=True))
         if data.get('status') == 'error':
@@ -3088,6 +3118,8 @@ def _tmdb_series_info(tmdb_id):
             'status': info.get('status', ''),
             'seasons': aired_seasons,
             'total_episodes': len(aired),   # 已播集数（不含未播集 / S00）
+            'last_aired_ep': (last_s, last_e) if (last_s > 0 and last_e > 0) else None,
+            'last_air_date': last.get('air_date') or '',
             'aired': aired,                 # {(季, 集)}
         }
     except Exception as e:
@@ -3100,7 +3132,88 @@ def _ep_key_num(k):
     return (int(m.group(1)) * 10000 + int(m.group(2))) if m else 0
 
 
+SUB_LOG_FILE = STATE_DIR / 'subscriptions_updates.json'
+SUB_GAP_GRACE_HOURS = 48      # 最新一集刚播出不满这么久，还没入库不算缺集
+_sub_check_lock = threading.Lock()
+_sub_log_lock = threading.Lock()
+
+
+def _grace_aired(aired, have, tmdb_info, hours=SUB_GAP_GRACE_HOURS):
+    """刚播出不久的「最新一集」通常还没入库：宽限期内把它从已播集合里剔除，不算缺集。
+    TMDB 的 air_date 只有日期，按当天 00:00 UTC 起算。"""
+    last = (tmdb_info or {}).get('last_aired_ep')
+    air = ((tmdb_info or {}).get('last_air_date') or '')[:10]
+    if hours <= 0 or not last or not air or tuple(last) in have or tuple(last) not in aired:
+        return aired
+    try:
+        d = datetime.datetime.strptime(air, '%Y-%m-%d').replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return aired
+    age_h = (datetime.datetime.now(datetime.timezone.utc) - d).total_seconds() / 3600
+    return aired - {tuple(last)} if age_h < hours else aired
+
+
+def _append_sub_updates(updates):
+    """把本轮检查产生的变更写入日志（保留 7 天）。晨报读这份日志，而不是重新跑一遍检查——
+    检查会推进状态文件，重跑只会得到「无变化」。"""
+    if not updates:
+        return
+    now = time.time()
+    with _sub_log_lock:
+        try:
+            rows = json.loads(SUB_LOG_FILE.read_text(encoding='utf-8'))
+            if not isinstance(rows, list): rows = []
+        except (OSError, ValueError):
+            rows = []
+        rows = [r for r in rows if isinstance(r, dict) and now - r.get('ts', 0) < 7 * 86400]
+        for u in updates:
+            rows.append({'ts': now, 'name': u.get('name'), 'tmdb_id': u.get('tmdb_id'),
+                         'new_ep': u.get('new_ep'), 'missing': u.get('missing')})
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = SUB_LOG_FILE.with_suffix('.tmp')
+            tmp.write_text(json.dumps(rows[-500:], ensure_ascii=False), encoding='utf-8')
+            tmp.replace(SUB_LOG_FILE)
+        except OSError as e:
+            log.warning('订阅变更日志写入失败: %s', e)
+
+
+def recent_sub_updates(hours=24) -> list:
+    try:
+        rows = json.loads(SUB_LOG_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    cut = time.time() - hours * 3600
+    return [r for r in rows if isinstance(r, dict) and r.get('ts', 0) >= cut] if isinstance(rows, list) else []
+
+
+def _merge_sub_updates(rows, state):
+    """同一部剧在窗口内的多条变更合并成一行：新集取「最早的旧集 → 最新的新集」；
+    缺集以最后一次为准，若状态文件显示现在已补齐则不再显示。"""
+    by_tmdb = {str(v.get('tmdb_id')): v for v in (state or {}).values() if isinstance(v, dict)}
+    merged = {}
+    for r in sorted(rows, key=lambda x: x.get('ts', 0)):
+        key = str(r.get('tmdb_id') or r.get('name'))
+        m = merged.setdefault(key, {'name': r.get('name'), 'new_ep': None, 'missing': None})
+        ne = r.get('new_ep')
+        if ne:
+            m['new_ep'] = {'old': (m['new_ep'] or ne).get('old'), 'new': ne.get('new')}
+        if r.get('missing'):
+            m['missing'] = r['missing']
+    for key, m in merged.items():
+        st = by_tmdb.get(key)
+        if m['missing'] and st is not None and not st.get('gap_eps'):
+            m['missing'] = None
+    return [m for m in merged.values() if m['new_ep'] or m['missing']]
+
+
 def check_subscriptions(send_notify=True) -> dict:
+    """同一时刻只允许一个检查读改写状态文件（定时轮询 / Web / Bot 可能同时触发，否则会重复上报）。"""
+    with _sub_check_lock:
+        return _check_subscriptions(send_notify)
+
+
+def _check_subscriptions(send_notify=True) -> dict:
     """
     改进版：
       1. 拿 Emby 已有集 + 最大集号（新集判定）
@@ -3149,18 +3262,23 @@ def check_subscriptions(send_notify=True) -> dict:
             else:
                 cur_key = prev_key
 
-        # 缺集判定：TMDB 已播集逐集对照 Emby 已有集，Emby 多出来的集不抵扣缺口
+        # 缺集判定：TMDB 已播集逐集对照 Emby 已有集，Emby 多出来的集不抵扣缺口。
+        # 只在「出现了之前没提示过的缺集」时才上报：同一批缺集不会每轮（默认 30 分钟）重复推送；
+        # 补齐后再出现新缺口会重新提示。刚播出不满 48 小时的最新一集不算缺。
+        gap_eps = list(prev.get('gap_eps') or [])
         if tmdb_info and latest:
-            aired = tmdb_info.get('aired') or set()
             have = latest.get('episodes') or set()
+            aired = _grace_aired(tmdb_info.get('aired') or set(), have, tmdb_info)
             lack = aired - have
-            if lack:
+            keys = sorted('S%02dE%02d' % se for se in lack)
+            if set(keys) - set(gap_eps):
                 missing_update = {
                     'tmdb_total': len(aired),
                     # emby_total 取「已播范围内 Emby 有的集数」，保证 tmdb_total - emby_total == diff
                     'emby_total': len(aired & have),
                     'diff': len(lack),
                 }
+            gap_eps = keys
 
         state[sid] = {
             'tmdb_id': tmdb_id,
@@ -3168,6 +3286,7 @@ def check_subscriptions(send_notify=True) -> dict:
             'latest_ep': cur_key or prev_key,
             'tmdb_total': (tmdb_info or {}).get('total_episodes', 0),
             'tmdb_status': (tmdb_info or {}).get('status', ''),
+            'gap_eps': gap_eps,
             'updated_at': now_str,
         }
 
@@ -3181,6 +3300,7 @@ def check_subscriptions(send_notify=True) -> dict:
             })
 
     _save_sub_state(state)
+    _append_sub_updates(updates)
 
     if send_notify and updates:
         lines = [tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
@@ -3198,6 +3318,10 @@ def check_subscriptions(send_notify=True) -> dict:
 
 
 # ═══════════════════ 晨报 ═══════════════════
+class _SectionDone(Exception):
+    """晨报某一段已写完，提前结束该段（内部用）"""
+
+
 MORNING_GAP_TOP = 50   # 晨报里最多列出多少部缺集剧（按缺得最多排序），完整清单看 Web
 
 
@@ -3218,26 +3342,40 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
 
     if 'subscriptions' in items:
         try:
-            r = check_subscriptions(send_notify=False)
-            lines += ['', f"🔔 <b>订阅更新</b>　<i>{r.get('total', 0)} 部订阅</i>"]
-            ups = r.get('updates') or []
-            if ups:
-                for u in ups[:10]:
-                    name = html.escape(str(u.get('name') or ''))
-                    if u.get('new_ep'):
-                        lines.append(f"📺 《{name}》 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
-                    if u.get('missing'):
-                        lines.append(f"⚠️ 《{name}》缺 <b>{u['missing']['diff']}</b> 集")
-                if len(ups) > 10:
-                    lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
+            cfg = _cfg.load_config()
+            sub_on = cfg.get('subscribe_enabled', '1') == '1'
+            n_subs = len([x for x in _cfg.get_subscriptions() if x.get('enabled', True)])
+            if force_refresh and sub_on:
+                # 立即现场检查；变更同样写入日志，不会被这次检查「吃掉」
+                check_subscriptions(send_notify=False)
+            lines += ['', f"🔔 <b>订阅更新</b>　<i>{n_subs} 部订阅 · 近 24 小时</i>"]
+            if not sub_on:
+                lines.append('⏸ 订阅检查已在设置里关闭')
             else:
-                lines.append('✅ 无变化')
+                ups = _merge_sub_updates(recent_sub_updates(24), _load_sub_state())
+                if ups:
+                    for u in ups[:10]:
+                        name = html.escape(str(u.get('name') or ''))
+                        if u.get('new_ep'):
+                            lines.append(f"📺 《{name}》 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
+                        if u.get('missing'):
+                            lines.append(f"⚠️ 《{name}》缺 <b>{u['missing']['diff']}</b> 集")
+                    if len(ups) > 10:
+                        lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
+                else:
+                    lines.append('✅ 无变化')
         except Exception as e:
             lines += ['', f'🔔 订阅检查失败: {html.escape(str(e))}']
 
     if 'emby_gap' in items:
         try:
-            rep = gap_report()
+            # 晨报只读缓存（任意时效），绝不在调度线程里现场跑全库 TMDB 对照；
+            # 只有手动「立即发送」(force_refresh) 才允许过期时现场对照。
+            rep = gap_report(max_age=6 * 3600 if force_refresh else None, allow_scan=force_refresh)
+            if rep.get('status') == 'nocache':
+                lines += ['', '🧩 <b>Emby 缺集</b>',
+                          '<i>尚无 TMDB 对照数据，请先在 Web「片库映射」执行一次对照</i>']
+                raise _SectionDone()
             if rep.get('status') == 'error':
                 raise RuntimeError(rep.get('message'))
 
@@ -3246,6 +3384,9 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
             broken = sorted(rep['missing'], key=_diff, reverse=True)
             total_gap = sum(_diff(x) for x in broken)
             lines += ['', f"🧩 <b>Emby 缺集</b>　<i>{len(broken)} 部 · 共缺 {total_gap} 集</i>"]
+            cts = rep.get('cache_ts') or 0
+            if cts and time.time() - cts > 12 * 3600:
+                lines.append(f"<i>对照数据截至 {datetime.datetime.fromtimestamp(cts):%m-%d %H:%M}</i>")
             if broken:
                 shown = broken[:MORNING_GAP_TOP]
                 # 折叠引用：默认只露前几行（缺得最多的排最前），点一下展开，再点收起
@@ -3256,21 +3397,39 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
                     lines.append(f'<i>…另有 {len(broken) - len(shown)} 部，完整清单见 Web「片库映射」</i>')
             else:
                 lines.append('✅ 全部对齐')
+        except _SectionDone:
+            pass
         except Exception as e:
             lines += ['', f'🧩 Emby 检查失败: {html.escape(str(e))}']
 
     return '\n'.join(lines)
 
 
-def send_morning_report(items: list, force_refresh: bool = False) -> bool:
+_morning_pending = {'date': '', 'parts': [], 'sent': 0}
+_morning_lock = threading.Lock()
+
+
+def send_morning_report(items: list, force_refresh: bool = False, resume: bool = False) -> bool:
     """
     force_refresh=True → 立即扫描（晨报时间前预扫/手动测试用）
+    resume=True（调度器重试用）→ 当天已生成过、没发完的晨报直接续发剩余段落：
+      不重新生成（省掉重建的开销），也不会把已经发出的段落再发一遍。
     """
-    text = build_morning_report(items, force_refresh=force_refresh)
-    ok = notify_telegram(text)
-    if ok:
-        _cfg.mark_morning_report_sent(datetime.date.today().isoformat())
-    return ok
+    today = datetime.date.today().isoformat()
+    with _morning_lock:
+        p = _morning_pending
+        if resume and p['date'] == today and p['parts']:
+            parts = p['parts']
+        else:
+            parts = split_telegram_html(build_morning_report(items, force_refresh=force_refresh))
+            p.update(date=today, parts=parts, sent=0)
+        while p['sent'] < len(parts):
+            if not notify_telegram(parts[p['sent']]):
+                return False
+            p['sent'] += 1
+        p.update(date='', parts=[], sent=0)
+    _cfg.mark_morning_report_sent(today)
+    return True
 
 
 def _live_series_episodes(series_id: str):

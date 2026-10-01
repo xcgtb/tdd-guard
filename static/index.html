@@ -2860,6 +2860,10 @@ async function loadExplore(append){
     var r = await api('/api/explore?' + qs);
     if (r.status !== 'success') throw new Error(r.message || '加载失败');
     exploreState.totalPages = r.total_pages || 1;
+    if (r.emby_degraded && !exploreState._degradedWarned) {
+      exploreState._degradedWarned = true;
+      toast('\u26a0\ufe0f Emby \u6682\u65f6\u65e0\u6cd5\u5b8c\u6574\u8bfb\u53d6\uff0c\u5165\u5e93\u72b6\u6001\u53ef\u80fd\u4e0d\u51c6\u786e', 4000);
+    } else if (!r.emby_degraded) { exploreState._degradedWarned = false; }
     if (append) {
       appendExploreCards(r.cards || []);
     } else {
