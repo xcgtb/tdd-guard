@@ -2816,49 +2816,105 @@ def action_emby_library(args):
 
 
 # ═══════════════════ 入库监控（缓存层） ═══════════════════
+INGEST_PAGE = 200            # 每页条数：小页 + StartIndex 翻页，避免大库一次性 SortBy 超时
+INGEST_MAX_ITEMS = 20000     # 单类型硬上限，防止异常库无限翻页
+INGEST_TIMEOUT = 30          # 单个 Emby 请求超时（秒），失败重试一次
+INGEST_STALE_SEC = 600       # 缓存超过 10 分钟视为过期（Web 触发后台刷新）
+
+# 单飞刷新：同一时刻只允许一个真正的 Emby 拉取，其余并发调用者等待并复用结果。
+# 用 _INGEST_SEQ 判断「我等待期间是否已有人刷完」——比时间戳可靠，不受线程调度影响。
+_INGEST_FETCH_LOCK = threading.Lock()
+_INGEST_STATE_LOCK = threading.Lock()
+_INGEST_SEQ = 0
+_INGEST_STATE = {'refreshing': False, 'error': None, 'error_ts': 0.0}
+_INGEST_LAST = {'data': None, 'ts': 0.0}
+
+
+def ingest_state() -> dict:
+    """当前刷新状态（只读，供 Web 状态接口与错误提示）"""
+    with _INGEST_STATE_LOCK:
+        return {'refreshing': _INGEST_STATE['refreshing'],
+                'error': _INGEST_STATE['error'],
+                'error_ts': _INGEST_STATE['error_ts']}
+
+
+def _ingest_seq() -> int:
+    with _INGEST_STATE_LOCK:
+        return _INGEST_SEQ
+
+
+def _age_str(sec):
+    sec = max(0, int(sec or 0))
+    if sec < 60:
+        return f'{sec} 秒'
+    if sec < 3600:
+        return f'{sec // 60} 分钟'
+    return f'{sec // 3600} 小时'
+
+
+def _ingest_page(item_type, fields, start):
+    """拉一页 /Items；超时 30s 并重试一次，仍失败则抛出（不吞异常）"""
+    params = {
+        'Recursive': 'true', 'IncludeItemTypes': item_type,
+        'Fields': fields,
+        'SortBy': 'DateCreated', 'SortOrder': 'Descending',
+        'Limit': INGEST_PAGE, 'StartIndex': start,
+        'EnableTotalRecordCount': 'false',
+        'EnableImages': 'false', 'EnableUserData': 'false',
+    }
+    last = None
+    for _ in range(2):
+        try:
+            return emby_request('/Items', params, timeout=INGEST_TIMEOUT) or {}
+        except Exception as e:  # 网络抖动/超时：重试一次
+            last = e
+    raise last
+
+
+def _ingest_fetch_type(item_type, fields, cutoff):
+    """按 DateCreated 倒序分页拉取；遇到早于 cutoff 的条目或短页立即停止"""
+    items, start = [], 0
+    while start < INGEST_MAX_ITEMS:
+        page = _ingest_page(item_type, fields, start).get('Items') or []
+        if not page:
+            break
+        stop = False
+        for it in page:
+            dt = parse_dt(it.get('DateCreated'))
+            if dt is None:
+                continue
+            if dt < cutoff:
+                stop = True
+                break
+            items.append(it)
+            if len(items) >= INGEST_MAX_ITEMS:
+                stop = True
+                break
+        if stop or len(page) < INGEST_PAGE:
+            break
+        start += len(page)
+    return items
+
+
 def _fetch_ingest(hours=24):
-    """实际拉取 Emby 近期入库"""
+    """实际拉取 Emby 近期入库；电影与剧集并发（2 线程），任何一路失败都抛出"""
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='ingest') as ex:
+        f_mov = ex.submit(_ingest_fetch_type, 'Movie', 'DateCreated,Path,Genres', cutoff)
+        f_ep = ex.submit(_ingest_fetch_type, 'Episode',
+                         'DateCreated,Path,SeriesName,Genres', cutoff)
+        movies_raw = f_mov.result()
+        episodes_raw = f_ep.result()
+
     tv_tree = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     mov_tree = defaultdict(lambda: defaultdict(list))
-    movies_raw = []
-    episodes_raw = []
-
-    params_mov = {
-        'Recursive': 'true', 'IncludeItemTypes': 'Movie',
-        'Fields': 'DateCreated,Path,Genres',
-        'SortBy': 'DateCreated', 'SortOrder': 'Descending',
-        'Limit': 5000,
-        'MinDateCreated': cutoff.strftime('%Y-%m-%dT%H:%M:%S.0000000Z'),
-    }
-    try:
-        data = emby_request('/Items', params_mov) or {}
-        for m in data.get('Items', []):
-            dt = parse_dt(m.get('DateCreated'))
-            if not dt or dt < cutoff: continue
-            movies_raw.append(m)
-            n = m.get('Name')
-            bucket = mov_tree[_src(m.get('Path', ''))][parse_emby_library(m, True)]
-            if n and n not in bucket: bucket.append(n)
-    except Exception as e:
-        log.warning('入库电影拉取失败: %s', e)
-
-    params_ep = {
-        'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-        'Fields': 'DateCreated,Path,SeriesName,Genres',
-        'SortBy': 'DateCreated', 'SortOrder': 'Descending',
-        'Limit': 5000,
-        'MinDateCreated': cutoff.strftime('%Y-%m-%dT%H:%M:%S.0000000Z'),
-    }
-    try:
-        data = emby_request('/Items', params_ep) or {}
-        for e in data.get('Items', []):
-            dt = parse_dt(e.get('DateCreated'))
-            if not dt or dt < cutoff: continue
-            episodes_raw.append(e)
-            tv_tree[_src(e.get('Path', ''))][parse_emby_library(e, False)][e.get('SeriesName') or '未知剧集'] += 1
-    except Exception as e:
-        log.warning('入库剧集拉取失败: %s', e)
+    for m in movies_raw:
+        n = m.get('Name')
+        bucket = mov_tree[_src(m.get('Path', ''))][parse_emby_library(m, True)]
+        if n and n not in bucket:
+            bucket.append(n)
+    for e in episodes_raw:
+        tv_tree[_src(e.get('Path', ''))][parse_emby_library(e, False)][e.get('SeriesName') or '未知剧集'] += 1
 
     total_mov = sum(len(v) for c in mov_tree.values() for v in c.values())
     total_series = sum(len(s) for c in tv_tree.values() for s in c.values())
@@ -2872,24 +2928,78 @@ def _fetch_ingest(hours=24):
             'tv': {k: {c: dict(s) for c, s in v.items()} for k, v in tv_tree.items()},
             'mov': {k: {c: list(ns) for c, ns in v.items()} for k, v in mov_tree.items()},
         },
-        'movies_raw': [{'name': m.get('Name'), 'path': m.get('Path',''), 'created': m.get('DateCreated')} for m in movies_raw[:200]],
-        'episodes_raw': [{'name': e.get('Name'), 'series': e.get('SeriesName'), 'path': e.get('Path',''), 'created': e.get('DateCreated')} for e in episodes_raw[:500]],
+        'movies_raw': [{'name': m.get('Name'), 'path': m.get('Path', ''), 'created': m.get('DateCreated')} for m in movies_raw[:200]],
+        'episodes_raw': [{'name': e.get('Name'), 'series': e.get('SeriesName'), 'path': e.get('Path', ''), 'created': e.get('DateCreated')} for e in episodes_raw[:500]],
     }
 
 
-def refresh_ingest_cache(hours=24) -> dict:
-    """立即拉取，覆盖缓存"""
-    log.info('入库缓存刷新开始（%sh）', hours)
-    data = _fetch_ingest(hours=hours)
+def _write_ingest_cache(data) -> bool:
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = INGEST_CACHE_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
         tmp.replace(INGEST_CACHE_FILE)
-        log.info('入库缓存刷新完成：电影 %d / 剧集 %d 部 / 集 %d',
-                 data['stats']['movies'], data['stats']['series'], data['stats']['episodes'])
+        return True
     except OSError as e:
         log.warning('入库缓存写入失败: %s', e)
+        return False
+
+
+def _ingest_refresh_once(hours, entry_seq):
+    """
+    单飞刷新。拿到锁后若发现等待期间已有别人刷完（seq 变了），直接复用结果。
+    返回 (data, error)：成功 (data, None)；失败 (None, 错误文本)——
+    失败绝不覆盖缓存，只记录错误文本与时间。
+    """
+    global _INGEST_SEQ
+    with _INGEST_FETCH_LOCK:
+        with _INGEST_STATE_LOCK:
+            if _INGEST_SEQ != entry_seq and _INGEST_LAST['data'] is not None:
+                return _INGEST_LAST['data'], None
+            _INGEST_STATE['refreshing'] = True
+        try:
+            data = _fetch_ingest(hours=hours)
+        except Exception as e:
+            log.warning('入库拉取失败: %s', e)
+            with _INGEST_STATE_LOCK:
+                _INGEST_STATE['error'] = str(e)
+                _INGEST_STATE['error_ts'] = time.time()
+            return None, str(e)
+        finally:
+            with _INGEST_STATE_LOCK:
+                _INGEST_STATE['refreshing'] = False
+        _write_ingest_cache(data)
+        with _INGEST_STATE_LOCK:
+            _INGEST_SEQ += 1
+            _INGEST_STATE['error'] = None
+            _INGEST_LAST['data'] = data
+            _INGEST_LAST['ts'] = data['ts']
+        log.info('入库缓存刷新完成：电影 %d / 剧集 %d 部 / 集 %d',
+                 data['stats']['movies'], data['stats']['series'], data['stats']['episodes'])
+        return data, None
+
+
+def _ingest_start_background(hours=24) -> bool:
+    """启动后台刷新线程；已有刷新在跑则不起新线程（单飞），返回 False"""
+    if not _INGEST_FETCH_LOCK.acquire(blocking=False):
+        return False
+    _INGEST_FETCH_LOCK.release()
+    threading.Thread(target=_ingest_refresh_once, args=(hours, _ingest_seq()),
+                     daemon=True, name='ingest-refresh').start()
+    return True
+
+
+def refresh_ingest_cache(hours=24, wait=True) -> dict:
+    """
+    wait=True（定时任务/Bot/晨报）：同步拉取，失败抛异常（缓存保持不变）
+    wait=False（Web 后台）：起线程后立即返回 None
+    """
+    if not wait:
+        _ingest_start_background(hours)
+        return None
+    data, err = _ingest_refresh_once(hours, _ingest_seq())
+    if data is None:
+        raise RuntimeError(err or '入库拉取失败')
     return data
 
 
@@ -2904,21 +3014,80 @@ def read_ingest_cache(max_age=None) -> dict:
     return data
 
 
-def get_ingest(hours=24, force_refresh=False) -> dict:
-    """
-    统一入口：
-      force_refresh=True  → 立即拉最新
-      force_refresh=False → 优先读缓存（10 分钟时效），过期则刷新
-    """
-    if force_refresh:
-        return refresh_ingest_cache(hours=hours)
-    cached = read_ingest_cache(max_age=600)
+def _ingest_error_if_newer(cache_ts):
+    st = ingest_state()
+    if st['error'] and st['error_ts'] > (cache_ts or 0):
+        return st['error']
+    return None
+
+
+def _get_ingest_web(hours, force_refresh):
+    """Web 路径：立即返回缓存（不限时效），需要时起后台刷新，绝不阻塞在 Emby"""
+    cached = read_ingest_cache()
+    cache_ts = cached.get('ts', 0) if cached else 0
+    stale = (not cached) or (time.time() - cache_ts > INGEST_STALE_SEC)
+    started = _ingest_start_background(hours) if (force_refresh or stale) else False
+    refreshing = bool(started or ingest_state()['refreshing'])
+    if not cached:
+        return {'status': 'pending', 'refreshing': refreshing, 'cache_ts': 0,
+                'from_cache': False, 'stats': {},
+                'error': _ingest_error_if_newer(0)}
+    result = dict(cached)
+    result['from_cache'] = True
+    result['refreshing'] = refreshing
+    result['cache_ts'] = cache_ts
+    err = _ingest_error_if_newer(cache_ts)
+    if err:
+        result['error'] = err
+    return result
+
+
+def _get_ingest_sync(hours, force_refresh):
+    """同步路径（定时任务/Bot/晨报）：失败时旧缓存照旧返回并标 stale；无缓存返回 error"""
+    cached = read_ingest_cache()
+    if not force_refresh and cached and (time.time() - cached.get('ts', 0) <= INGEST_STALE_SEC):
+        out = dict(cached)
+        out['from_cache'] = True
+        return out
+    data, err = _ingest_refresh_once(hours, _ingest_seq())
+    if data is not None:
+        out = dict(data)
+        out['from_cache'] = False
+        return out
     if cached:
-        cached['from_cache'] = True
-        return cached
-    data = refresh_ingest_cache(hours=hours)
-    data['from_cache'] = False
-    return data
+        out = dict(cached)
+        out['from_cache'] = True
+        out['stale'] = True
+        out['error'] = err
+        return out
+    return {'status': 'error', 'message': err or '入库拉取失败', 'stats': {},
+            'from_cache': False, 'refreshing': False, 'cache_ts': 0}
+
+
+def get_ingest(hours=24, force_refresh=False, wait=False) -> dict:
+    """
+    wait=False（Web）：立即返回缓存，必要时后台刷新
+    wait=True（定时任务/Bot/晨报）：同步；失败时旧缓存标 stale，无缓存则 status=error
+    """
+    if wait:
+        return _get_ingest_sync(hours, force_refresh)
+    return _get_ingest_web(hours, force_refresh)
+
+
+def ingest_status() -> dict:
+    """供 /api/ingest/status：只读缓存与刷新状态，不触发刷新"""
+    data = read_ingest_cache()
+    st = ingest_state()
+    if not data:
+        return {'status': 'success', 'has_cache': False,
+                'refreshing': bool(st['refreshing']),
+                'error': st['error'] or None}
+    ts = data.get('ts', 0)
+    return {'status': 'success', 'has_cache': True, 'ts': ts,
+            'age_sec': int(time.time() - ts),
+            'stats': data.get('stats', {}),
+            'refreshing': bool(st['refreshing']),
+            'error': (st['error'] if (st['error'] and st['error_ts'] > ts) else None)}
 
 
 def _recent(item_type, fields, limit, cutoff):
@@ -2940,21 +3109,33 @@ def _src(path):
     return '本地影视库' if lib == 'local' else ('分享影视库' if lib == 'share' else '其它库')
 
 
-def action_stats(args):
+def action_stats(args, wait=True):
     """
-    force_refresh kw: 'force' 时立即拉
-    默认读缓存，无缓存刷新
+    kw 含 'force' 立即扫描、含 'full' 输出完整清单。
+    wait=False（Web）：立即返回缓存，后台刷新；wait=True（Bot/晨报）：同步。
+    失败时不再返回 +0：有旧缓存则照旧返回并提示「扫描失败」，无缓存则 status=error。
     """
     kw = getattr(args, 'kw', '') or ''
     force = kw == 'force' or 'force' in kw
     full = 'full' in kw
-    data = get_ingest(force_refresh=force)
+    data = get_ingest(force_refresh=force, wait=wait)
+    if data.get('status') == 'error':
+        msg = data.get('message') or '入库拉取失败'
+        return {'status': 'error', 'message': msg, 'stats': {}, 'has_more': False,
+                'from_cache': False, 'cache_ts': 0, 'refreshing': False, 'error': msg,
+                'text': f'📊 入库统计失败：{msg}'}
     st = data.get('stats') or {}
+    cache_ts = data.get('ts') or data.get('cache_ts') or 0
+    err = data.get('error')
+    warn = ''
+    if err:
+        warn = f'⚠️ 扫描失败：{err} · 以下为 {_age_str(time.time() - cache_ts)}前的缓存\n'
     if not full:
-        return {'status': 'success', 'has_more': True,
-                'stats': st, 'from_cache': data.get('from_cache', False),
-                'cache_ts': data.get('ts', 0),
-                'text': '\n'.join([
+        return {'status': 'success', 'has_more': True, 'stats': st,
+                'from_cache': data.get('from_cache', False),
+                'stale': data.get('stale', False), 'error': err,
+                'cache_ts': cache_ts,
+                'text': warn + '\n'.join([
                     '📊 **近 24 小时入库速报**', '━━━━━━━━━━━━━━━━━━━',
                     f'🎬 单片/电影新增：`+{st.get("movies", 0)}` 部',
                     f'📺 连载/剧集新增：`+{st.get("series", 0)}` 部共 `+{st.get("episodes", 0)}` 集'])}
@@ -2982,12 +3163,13 @@ def action_stats(args):
                 rep += ['│  • ' + '、'.join(tags[i:i + 3]) for i in range(0, len(tags), 3)]
                 rep.append('└')
     else: rep.append('  • 暂无新增电影')
-    return {'status': 'success', 'text': '\n'.join(rep),
+    return {'status': 'success', 'text': warn + '\n'.join(rep),
             'stats': st, 'tree': tree,
             'movies_raw': data.get('movies_raw', []),
             'episodes_raw': data.get('episodes_raw', []),
             'from_cache': data.get('from_cache', False),
-            'cache_ts': data.get('ts', 0)}
+            'stale': data.get('stale', False), 'error': err,
+            'cache_ts': cache_ts}
 
 
 def action_played(args):
@@ -3300,10 +3482,15 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
         try:
             # 晨报使用强制刷新（或读缓存）
             s_res = action_stats(argparse.Namespace(kw='force' if force_refresh else ''))
-            st = s_res.get('stats') or {}
-            lines += ['', '📊 <b>近 24 小时入库</b>',
-                      f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
-                      f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
+            if s_res.get('status') == 'error':
+                lines += ['', f'📊 入库统计失败: {html.escape(str(s_res.get("message") or "未知错误"))}']
+            else:
+                st = s_res.get('stats') or {}
+                if s_res.get('error'):
+                    lines += ['', f'⚠️ 入库扫描失败：{html.escape(str(s_res["error"]))}（以下为缓存）']
+                lines += ['', '📊 <b>近 24 小时入库</b>',
+                          f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
+                          f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
         except Exception as e:
             lines += ['', f'📊 入库统计失败: {html.escape(str(e))}']
 

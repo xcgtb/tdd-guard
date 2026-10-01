@@ -390,26 +390,20 @@ def api_clean(body: dict = None):
 @app.get('/api/ingest', dependencies=[Depends(auth)])
 def api_ingest(full: int = 0, force: int = 0):
     """
-    full=1 完整清单，force=1 强制立即刷新
-    默认读缓存（10 分钟时效），过期自动刷新
+    full=1 完整清单，force=1 强制刷新（后台）
+    立即返回缓存（不限时效），缓存过期或 force 时在后台刷新，不阻塞请求
     """
     try:
         kw = ('full ' if full else '') + ('force ' if force else '')
-        return engine.action_stats(Args(kw=kw.strip()))
+        return engine.action_stats(Args(kw=kw.strip()), wait=False)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
 
 @app.get('/api/ingest/status', dependencies=[Depends(auth)])
 def api_ingest_status():
-    """只读缓存状态，不触发刷新"""
-    data = engine.read_ingest_cache()
-    if not data:
-        return {'status': 'success', 'has_cache': False}
-    return {'status': 'success', 'has_cache': True,
-            'ts': data.get('ts', 0),
-            'age_sec': int(time.time() - data.get('ts', 0)),
-            'stats': data.get('stats', {})}
+    """只读缓存与刷新状态，不触发刷新（含 refreshing / error）"""
+    return engine.ingest_status()
 
 
 # ═══════════════════ Emby 统计 / 追更 / 搜片 / 日志 ═══════════════════
