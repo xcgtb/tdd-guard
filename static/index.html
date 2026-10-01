@@ -1099,6 +1099,81 @@ body::before { display: none !important; }
   .cat-card .cat-name { font-size: 11px !important; }
 }
 
+/* ═══════════ Cyberpunk responsive shell v1.6.8 ═══════════ */
+:root{
+  --cy-cyan:#22d3ee; --cy-violet:#a78bfa; --cy-pink:#f472b6; --cy-green:#34d399;
+  --cy-glow:0 0 0 1px rgba(34,211,238,.16),0 0 24px rgba(34,211,238,.07);
+}
+html[data-theme="dark"], html:not([data-theme]){
+  --bg:#050816; --bg-soft:#08101f; --surface:rgba(8,16,31,.78); --surface-solid:#0b1326;
+  --surface-hover:rgba(34,211,238,.055); --surface-active:rgba(167,139,250,.10);
+  --text:#e6f7ff; --text-mid:#9db3c4; --text-dim:#637b8c;
+  --border:rgba(91,214,255,.12); --border-strong:rgba(91,214,255,.24); --border-input:rgba(91,214,255,.22);
+  --brand:#22d3ee; --brand-2:#a78bfa; --brand-3:#f472b6;
+  --grad-brand:linear-gradient(100deg,#22d3ee,#8b5cf6 55%,#f472b6);
+  --shadow-sm:0 0 0 1px rgba(34,211,238,.07),0 8px 22px rgba(0,0,0,.28);
+  --shadow-md:0 0 0 1px rgba(34,211,238,.10),0 14px 36px rgba(0,0,0,.34);
+  --shadow-lg:0 0 0 1px rgba(34,211,238,.14),0 24px 60px rgba(0,0,0,.48);
+}
+body{background:
+ radial-gradient(circle at 10% -10%,rgba(34,211,238,.13),transparent 32%),
+ radial-gradient(circle at 90% 0%,rgba(167,139,250,.12),transparent 30%),
+ linear-gradient(rgba(34,211,238,.025) 1px,transparent 1px),
+ linear-gradient(90deg,rgba(34,211,238,.025) 1px,transparent 1px),var(--bg)!important;
+ background-size:auto,auto,28px 28px,28px 28px,auto!important;}
+.sidebar,.topbar{backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);}
+.sidebar{border-right:1px solid rgba(34,211,238,.14)!important;background:rgba(4,10,22,.82)!important;box-shadow:12px 0 50px rgba(0,0,0,.2);}
+.logo,.brand{filter:drop-shadow(0 0 12px rgba(34,211,238,.22));}
+.panel,.card,.stat-card,.section-card,.setting-card{border:1px solid var(--border)!important;background:var(--surface)!important;box-shadow:var(--cy-glow),var(--shadow-sm)!important;}
+.panel:hover,.card:hover,.stat-card:hover,.section-card:hover,.setting-card:hover{border-color:rgba(34,211,238,.24)!important;}
+.btn{border:1px solid var(--border-strong)!important;box-shadow:0 0 0 1px rgba(34,211,238,.04),0 5px 16px rgba(0,0,0,.18);}
+.btn.primary,.btn.brand{background:var(--grad-brand)!important;color:#041019!important;border-color:transparent!important;font-weight:800;}
+.btn:hover{transform:translateY(-1px);box-shadow:0 0 18px rgba(34,211,238,.14),0 8px 20px rgba(0,0,0,.22);}
+input,select,textarea{background:rgba(3,9,20,.62)!important;border-color:var(--border-input)!important;color:var(--text)!important;}
+.tab.active{color:#dffaff!important;text-shadow:0 0 12px rgba(34,211,238,.28);}
+.tab.active:after{background:linear-gradient(90deg,var(--cy-cyan),var(--cy-violet),var(--cy-pink))!important;box-shadow:0 0 12px rgba(34,211,238,.45);}
+.list-item{border-color:var(--border)!important;background:rgba(7,15,29,.58)!important;}
+.list-item:hover{background:rgba(34,211,238,.055)!important;border-color:rgba(34,211,238,.22)!important;}
+.badge,.tag,.chip{border-color:var(--border)!important;background:rgba(34,211,238,.055)!important;}
+.gov-reason-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))!important;}
+#govTruthGrid .meta-row{min-height:54px;border:1px solid var(--border)!important;background:rgba(2,8,18,.42)!important;border-radius:12px;padding:9px 11px;}
+#govTruthGrid .v{overflow-wrap:anywhere;}
+.modal{max-width:min(760px,calc(100vw - 28px))!important;border:1px solid rgba(34,211,238,.22)!important;box-shadow:0 0 50px rgba(34,211,238,.09),var(--shadow-lg)!important;background:rgba(6,13,27,.96)!important;}
+/* 桌面：内容宽度和操作区统一，避免卡片参差 */
+.main{padding:22px clamp(14px,2.2vw,34px)!important;}
+.panel,.card{overflow:hidden;}
+.row-between{gap:12px;flex-wrap:wrap;}
+/* 手机：侧栏变为横向滚动导航，卡片单列/双列自适应，按钮不挤爆 */
+@media(max-width:900px){
+  .sidebar{width:72px!important;}
+  .sidebar .nav-label,.sidebar .section-title,.sidebar .version,.sidebar .logo-text{display:none!important;}
+  .main{margin-left:72px!important;padding:14px!important;}
+  .topbar{padding:10px 12px!important;}
+  .cards{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:10px!important;}
+  .grid-2,.grid-3,.grid-4{grid-template-columns:1fr!important;}
+  .toolbar,.actions{flex-wrap:wrap!important;}
+  .toolbar .btn,.actions .btn{min-height:40px;}
+  table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;}
+}
+@media(max-width:560px){
+  .sidebar{position:fixed!important;bottom:0!important;left:0!important;top:auto!important;width:100%!important;height:62px!important;z-index:1000!important;border-right:0!important;border-top:1px solid rgba(34,211,238,.16)!important;}
+  .sidebar nav{display:flex!important;overflow-x:auto!important;height:100%;padding:5px 8px!important;gap:4px!important;}
+  .sidebar .nav-item{min-width:68px!important;flex:0 0 auto!important;justify-content:center!important;border-radius:10px!important;}
+  .sidebar .nav-item span:not(.icon){display:none!important;}
+  .main{margin-left:0!important;padding:10px 10px 78px!important;}
+  .topbar{position:sticky!important;top:0;z-index:900;margin:0 -10px 10px!important;padding:9px 10px!important;}
+  .cards{grid-template-columns:1fr 1fr!important;gap:8px!important;}
+  .card,.panel{border-radius:13px!important;}
+  .card{padding:11px!important;}
+  h2{font-size:20px!important;} h3{font-size:15px!important;}
+  .btn{min-height:38px;padding:8px 11px!important;font-size:12px!important;}
+  .modal{max-height:calc(100vh - 28px)!important;overflow:auto!important;}
+  #govTruthGrid{grid-template-columns:1fr 1fr!important;}
+}
+@media(max-width:380px){.cards{grid-template-columns:1fr!important;}#govTruthGrid{grid-template-columns:1fr!important;}}
+
+.path-list{margin-top:5px;font-size:11px;line-height:1.55;word-break:break-all;color:var(--text-mid);}
+#govIdentityConflicts{border-top:1px dashed rgba(245,158,11,.18);padding-top:9px;}
 </style>
 <script>
 /* 尽早设置主题，避免页面闪烁（FOUC） */
@@ -1366,6 +1441,7 @@ window.addEventListener('unhandledrejection', function(e){
           <div id="govTruth" class="panel" style="margin-top:12px;padding:12px;background:rgba(255,255,255,.025);display:none">
             <div class="row-between" style="margin-bottom:8px"><b>治理事实快照</b><span id="govTruthStatus" style="font-size:11px;color:#9ca3af">—</span></div>
             <div class="gov-reason-grid" id="govTruthGrid"></div>
+            <div id="govIdentityConflicts" style="display:none;margin-top:12px"></div>
           </div>
         </div>
         <div class="cards" id="govStats" style="display:none">
@@ -2142,6 +2218,7 @@ function renderGovTruth(d){
   status.textContent='规则 '+rules+' · 扫描 '+(scan.ts?fmtGovTs(scan.ts):'尚无');
   var rows=[
     ['扫描状态', scan.usable ? '可执行' : (scan.found ? (scan.plan_state==='done'?'已执行':'需重新扫描') : '尚无扫描')],
+    ['身份冲突', String(r.identity_conflict_count||0)+' 个 TMDB 标识冲突（不自动删除）'],
     ['待处理', String(r.total_clean_cnt||0)+' 项 / '+String((r.del_local_files||0)+(r.del_share_files||0))+' 文件'],
     ['保护 / 豁免', String((r.protected_items||[]).length)+' / '+String(r.exempted_count||0)],
     ['静默跳过', String(r.quiet_skipped||0)+' 项'],
@@ -2152,6 +2229,13 @@ function renderGovTruth(d){
     ['扫描规则', (scan.rule_aligned === false ? '⚠️ 已变化，请重新扫描' : '✅ 与当前规则一致')]
   ];
   grid.innerHTML=rows.map(function(x){return '<div class="meta-row"><span class="k">'+esc(x[0])+'</span><span class="v">'+esc(x[1])+'</span></div>';}).join('');
+  var conflicts=r.identity_conflicts||[], cb=$('govIdentityConflicts');
+  if(cb){
+    cb.style.display=conflicts.length?'':'none';
+    cb.innerHTML=conflicts.length ? '<div style="font-size:12px;font-weight:800;color:#f59e0b;margin-bottom:7px">⚠ TMDB 标识冲突 · 仅提示，不进入自动清理</div>'+conflicts.map(function(c){
+      return '<div class="meta-row" style="display:block;margin:6px 0;border-color:rgba(245,158,11,.22)!important"><div><b>TMDB '+esc(c.tmdb)+'</b> · '+esc(String(c.count||0))+' 个目录</div><div class="path-list">'+(c.identities||[]).map(function(x){return '<div>['+esc(x.lib==='local'?'本地':'分享')+'] '+esc(x.title||'—')+(x.year?' ('+esc(x.year)+')':'')+'</div>';}).join('')+'</div></div>';
+    }).join('') : '';
+  }
 }
 async function loadGovTruth(){
   try { var d=await api('/api/governance/summary'); if(d.status==='success'){ renderGovTruth(d); return d; } } catch(e){}
@@ -2760,6 +2844,14 @@ function showGovDetail(d){
   if (meta.share_quality != null) rows.push('<div class="meta-row"><span class="k">分享画质分</span><span class="v">' + meta.share_quality + '</span></div>');
   if (meta.libs && meta.libs.length) rows.push('<div class="meta-row"><span class="k">所在库</span><span class="v">' + esc(meta.libs.join(' / ')) + '</span></div>');
   if (meta.members && meta.members.length) rows.push('<div class="meta-row" style="display:block"><div class="k" style="margin-bottom:6px">包含 ' + (meta.member_count || meta.members.length) + ' 项</div><div class="ing-tags" style="max-height:220px;overflow-y:auto">' + meta.members.map(function(m){ return '<span>' + esc(m) + '</span>'; }).join('') + '</div></div>');
+  if (meta.match_basis) rows.push('<div class="meta-row"><span class="k">匹配来源</span><span class="v">' + esc(meta.match_basis) + '</span></div>');
+  if (meta.match_basis_detail) rows.push('<div class="meta-row"><span class="k">匹配依据</span><span class="v">' + esc(meta.match_basis_detail) + '</span></div>');
+  if (meta.local_paths && meta.local_paths.length) rows.push('<div class="meta-row" style="display:block"><div class="k">本地路径</div><div class="v path-list">' + meta.local_paths.map(function(x){return '<div>'+esc(x)+'</div>';}).join('') + '</div></div>');
+  if (meta.share_paths && meta.share_paths.length) rows.push('<div class="meta-row" style="display:block"><div class="k">分享路径</div><div class="v path-list">' + meta.share_paths.map(function(x){return '<div>'+esc(x)+'</div>';}).join('') + '</div></div>');
+  if (meta.tmdb && meta.tmdb.length) rows.push('<div class="meta-row"><span class="k">TMDB</span><span class="v">' + esc(meta.tmdb.join(' / ')) + (meta.tmdb_consistent ? '' : ' <b style="color:#f59e0b">⚠ 标识不一致</b>') + '</span></div>');
+  if (meta.local_tmdb && meta.local_tmdb.length) rows.push('<div class="meta-row"><span class="k">本地 TMDB</span><span class="v">' + esc(meta.local_tmdb.join(' / ')) + '</span></div>');
+  if (meta.share_tmdb && meta.share_tmdb.length) rows.push('<div class="meta-row"><span class="k">分享 TMDB</span><span class="v">' + esc(meta.share_tmdb.join(' / ')) + '</span></div>');
+  if (meta.identity_source) rows.push('<div class="meta-row"><span class="k">身份来源</span><span class="v">' + esc(meta.identity_source) + '</span></div>');
   if (meta.keywords) rows.push('<div class="meta-row"><span class="k">命中关键词</span><span class="v">' + esc((meta.keywords || []).join(', ')) + '</span></div>');
   rows.push('<div class="meta-row"><span class="k">涉及文件数</span><span class="v">' + (d.files_count || 0) + '</span></div>');
   var html = '<h3>' + icon('info') + '详情</h3>' + rows.join('') +

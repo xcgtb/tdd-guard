@@ -76,13 +76,35 @@ def get_ep(name: str, parent_name: str = '', allow_bare_ep: bool = True) -> Opti
 
 @lru_cache(maxsize=16384)
 def title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:
-    """返回 (唯一key, 展示名, base, 年份)"""
+    """返回历史兼容的 (key, 展示名, base, 年份)。
+
+    注意：这里保留 TMDB key 语义给旧接口/工具使用；双库治理不得把 TMDB
+    编号当作文件系统事实身份，治理侧使用 :func:`governance_title_key`。
+    """
     t = RE_TMDB.search(folder)
     y = RE_YEAR.search(folder)
     year = y.group(1) if y else None
     base = re.sub(r'\s+', ' ', RE_BRACKET.sub('', folder)).strip() or folder
     disp = base + (f' ({year})' if year else '')
     return (f'tmdb:{t.group(1)}' if t else disp), disp, base, year
+
+
+@lru_cache(maxsize=16384)
+def governance_title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:
+    """双库治理的真实媒体身份：剧名 + 年份。
+
+    TMDB 只是第三方元数据，Emby/整理工具把错误的 TMDB ID 写进目录名时，
+    不能因此把《A》与《B》合并，更不能因此产生跨片治理动作。治理扫描
+    必须先以用户可见的目录剧名和年份建立身份；TMDB ID 仅作为辅助信息。
+    """
+    y = RE_YEAR.search(folder)
+    year = y.group(1) if y else None
+    base = re.sub(r'\s+', ' ', RE_BRACKET.sub('', folder)).strip() or folder
+    norm = re.sub(r'[._:\-]+', ' ', base)
+    norm = re.sub(r'\s+', ' ', norm).strip().casefold()
+    key = f'title:{norm}|year:{year or ""}'
+    disp = base + (f' ({year})' if year else '')
+    return key, disp, base, year
 
 # ═══════════════════ 画质评分 ═══════════════════
 # 画质分层比较，避免「1080p DV > 4K HDR」这类跨分辨率错判。

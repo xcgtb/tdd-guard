@@ -26,6 +26,7 @@ os.environ['INGEST_QUIET_MINUTES'] = '0'
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
 import engine  # noqa: E402
+import core  # noqa: E402
 
 
 def _reset():
@@ -160,9 +161,9 @@ class TestMediaContextParsing:
         movie = _touch(engine.L_ROOT, '电影/外语电影/星球大战 Ep 4 {tmdb-501}/Star Wars Ep 4.1080p.strm')
         tv = _touch(engine.L_ROOT, '剧集/欧美剧集/某剧 {tmdb-502}/某剧.EP04.1080p.strm')
         lib = engine.Lib(engine.L_ROOT)
-        assert movie in lib.mov['tmdb:501']
-        assert not lib.tv['tmdb:501']
-        assert tv in lib.tv['tmdb:502'][1]
+        assert movie in lib.mov[core.governance_title_key('星球大战 Ep 4 {tmdb-501}')[0]]
+        assert not lib.tv[core.governance_title_key('星球大战 Ep 4 {tmdb-501}')[0]]
+        assert tv in lib.tv[core.governance_title_key('某剧 {tmdb-502}')[0]][1]
 
 
 class TestMovieByTmdb:
@@ -264,3 +265,13 @@ class TestReviewFollowups:
         left = sorted(p.name for p in (engine.S_ROOT / d).iterdir())
         assert left == ['Movie (2020) - 2160p-mediainfo.json', 'Movie (2020) - 2160p.nfo',
                         'Movie (2020) - 2160p.strm']
+
+class TestGovernanceIdentity:
+    def test_wrong_tmdb_must_not_cross_match_different_title_or_year(self):
+        _reset()
+        _touch(engine.L_ROOT, '电影/欧美电影/奇异博士 (2016) {tmdb-999}/奇异博士.1080p.strm')
+        _touch(engine.S_ROOT, '电影/欧美电影/百分之十 (2015) {tmdb-999}/百分之十.1080p.strm')
+        loc = engine.Lib(engine.L_ROOT)
+        shr = engine.Lib(engine.S_ROOT)
+        meta = loc.meta[next(iter(loc.mov))]
+        assert shr.find((next(iter(loc.mov)), meta), shr.mov) is None

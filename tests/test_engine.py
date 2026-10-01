@@ -883,3 +883,27 @@ class TestNoTrashRetention:
         engine.purge_old()
 
         assert not stale.exists(), '超过 7 天的治理计划应被清理'
+
+
+def test_same_tmdb_different_title_year_never_cross_matches():
+    """治理身份必须是剧名+年份；错误/重复 TMDB 不能把不同作品合并。"""
+    _reset_libs()
+    _strm(engine.L_ROOT, '奇异博士 (2016) {tmdb-64165}', '奇异博士.1080p.strm')
+    _strm(engine.S_ROOT, '百分之十 (2015) {tmdb-64165}', '百分之十.1080p.strm')
+    acts = engine.build_plan()
+    assert not [a for a in acts if a.kind in ('loc', 'shr')]
+
+
+def test_governance_action_exposes_match_evidence():
+    """治理详情必须能看到匹配依据、本地/分享路径及 TMDB 辅助信息。"""
+    _reset_libs()
+    _strm(engine.L_ROOT, '百分之十 (2015) {tmdb-64165}', '百分之十.1080p.strm')
+    _strm(engine.S_ROOT, '百分之十 (2015) {tmdb-64165}', '百分之十.2160p.strm')
+    acts = [a for a in engine.build_plan() if a.kind in ('loc', 'shr')]
+    assert acts
+    m = acts[0].meta
+    assert m['match_basis'] == '剧名 + 年份'
+    assert '百分之十' in m['match_basis_detail']
+    assert any('百分之十 (2015)' in x for x in m['local_paths'])
+    assert any('百分之十 (2015)' in x for x in m['share_paths'])
+    assert m['tmdb'] == ['64165']

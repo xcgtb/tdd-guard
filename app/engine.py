@@ -13,14 +13,14 @@ from dataclasses import dataclass, field
 try:
     from .core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
-        title_key, analyze_season_episodes,
+        title_key, governance_title_key, analyze_season_episodes,
         parse_emby_library, quality_label, RE_SXXEXX,
     )
     from . import config as _cfg
 except ImportError:
     from core import (
         esc, parse_season_dir, get_ep, get_score, best_score,
-        title_key, analyze_season_episodes,
+        title_key, governance_title_key, analyze_season_episodes,
         parse_emby_library, quality_label, RE_SXXEXX,
     )
     import config as _cfg
@@ -511,6 +511,7 @@ class Lib:
         self.tv = defaultdict(lambda: defaultdict(list))
         self.meta = {}
         self.by_base = defaultdict(set)
+        self.tmdb_refs = defaultdict(set)
         self.strm_count = 0
         if not root.exists(): return
         for dirpath, _dirs, names in os.walk(str(root)):
@@ -520,9 +521,12 @@ class Lib:
             d = Path(dirpath)
             pname = d.name
             folder = d.parent.name if parse_season_dir(pname) is not None else pname
-            key, disp, base, year = title_key(folder)
+            key, disp, base, year = governance_title_key(folder)
             self.meta[key] = (disp, base, year)
             self.by_base[base].add(key)
+            tm = re.search(r'(?i)tmdb(?:id)?[=\-: ]*(\d+)', folder or '')
+            if tm:
+                self.tmdb_refs[tm.group(1)].add(key)
             for n in strms:
                 self.strm_count += 1
                 f = d / n
@@ -537,7 +541,10 @@ class Lib:
     def find(self, meta, container):
         key, (_, base, year) = meta
         if key in container: return key
-        cands = [k for k in self.by_base.get(base, ()) if k in container and (year is None or self.meta[k][2] in (None, year))]
+        # 治理身份是「剧名 + 年份」。年份已知时绝不允许跨年模糊配对；
+        # 年份未知时也只允许与同样未知年份的目录配对。
+        cands = [k for k in self.by_base.get(base, ())
+                 if k in container and self.meta[k][2] == year]
         return cands[0] if len(cands) == 1 else None
 
 
@@ -1405,6 +1412,59 @@ class Act:
         return self.action_id or f'{self.kind}|{self.text}'
 
 
+def _media_title_folder(path):
+    """从 STRM 路径取得实际媒体标题目录。Season/S00 目录向上一级。"""
+    try:
+        p = Path(path)
+        if parse_season_dir(p.parent.name) is not None:
+            return p.parent.parent.name
+        return p.parent.name
+    except Exception:
+        return ''
+
+
+def _tmdb_ids_from_files(files):
+    ids = []
+    for f in files or []:
+        folder = _media_title_folder(f)
+        m = re.search(r'(?i)tmdb(?:id)?[=\-: ]*(\d+)', folder or '')
+        if m and m.group(1) not in ids:
+            ids.append(m.group(1))
+    return ids
+
+
+def _governance_evidence(title, year, share_files=None, local_files=None):
+    """为治理项保留可审计的匹配证据。
+
+    治理匹配的唯一业务依据是「规范化剧名 + 年份」；TMDB 只作为诊断信息。
+    如果两边目录写入了不同 TMDB，仍然允许同名同年匹配；如果同一个 TMDB
+    同时出现在不同标题/年份，调用方应把它视为元数据冲突，而不是同片依据。
+    """
+    share_files = list(share_files or [])
+    local_files = list(local_files or [])
+    sp = sorted({str(Path(f)) for f in share_files})
+    lp = sorted({str(Path(f)) for f in local_files})
+    st = sorted(set(_tmdb_ids_from_files(share_files)))
+    lt = sorted(set(_tmdb_ids_from_files(local_files)))
+    return {
+        'match_basis': '剧名 + 年份',
+        'match_basis_detail': f'规范化剧名「{title}」 + 年份「{year or "未知"}」',
+        'share_paths': sp[:20],
+        'local_paths': lp[:20],
+        'share_tmdb': st,
+        'local_tmdb': lt,
+        'tmdb': sorted(set(st) | set(lt)),
+        'tmdb_consistent': (not st or not lt or bool(set(st) & set(lt))),
+    }
+
+
+def _attach_governance_evidence(meta, title, year, share_files=None, local_files=None):
+    m = dict(meta or {})
+    ev = _governance_evidence(title, year, share_files, local_files)
+    m.update(ev)
+    return m
+
+
 def _act_to_dict(a: Act) -> dict:
     return {
         'text': a.text, 'detail': a.detail,
@@ -1522,6 +1582,31 @@ class _QuietGate:
                     self.skipped += 1
                     return True
         return False
+
+
+def _identity_conflicts(S, L):
+    """找出同一个 TMDB ID 被不同「剧名+年份」目录使用的情况。
+
+    这是元数据诊断，不参与自动删除：TMDB 可能被整理器误写，程序不能仅凭
+    一个冲突 ID 猜哪一边应该删。用户可在治理详情里看到双方路径后人工处理。
+    """
+    by_tmdb = defaultdict(list)
+    for lib_name, lib in (('local', L), ('share', S)):
+        for tid, keys in lib.tmdb_refs.items():
+            for key in keys:
+                disp, base, year = lib.meta.get(key, ('', '', None))
+                by_tmdb[tid].append({'lib': lib_name, 'title': disp, 'base': base,
+                                     'year': year, 'key': key})
+    out = []
+    for tid, rows in sorted(by_tmdb.items()):
+        identities = {(r['base'].casefold(), r.get('year') or '') for r in rows}
+        if len(identities) <= 1:
+            continue
+        # 同一身份在双库出现不算冲突；只有一个 TMDB 对应多个不同身份才报告。
+        out.append({'tmdb': tid, 'count': len(rows), 'identities': [
+            {'title': r['title'], 'year': r.get('year'), 'lib': r['lib']} for r in rows
+        ]})
+    return out
 
 
 def _build_plan_with_libs():
@@ -1674,6 +1759,39 @@ def _build_plan_with_libs():
     # ── 库内多版本去重：同片/同集存在多份 strm 时，只留画质最优的一份 ──
     _dedupe_lib_versions(acts, L, S, gate, kws)
     _QUIET_LAST['n'] = gate.skipped
+    # 为每一条治理动作补齐「为什么匹配到」的证据，供 Web 详情/审计使用。
+    # 这里不改变决策结果，只增加可追溯信息。
+    for a in acts:
+        if a.kind not in ('loc', 'shr', 'keep', 'exempt'):
+            continue
+        title = a.meta.get('title') or ''
+        year = a.meta.get('year')
+        sf, lf = [], []
+        # 当前动作的文件只代表待处理一侧；根据治理标题重新从两库取同身份目录。
+        # 这一步仅查内存 Lib，不会再次遍历磁盘。
+        for key, mm in S.meta.items():
+            if mm[0] == title or mm[1] == re.sub(r'\s*\(\d{4}\)$', '', title).strip():
+                if key in S.mov:
+                    sf.extend(S.mov.get(key, []))
+                if key in S.tv:
+                    sf.extend(f for sm in S.tv[key].values() for f in sm)
+        for key, mm in L.meta.items():
+            if mm[0] == title or mm[1] == re.sub(r'\s*\(\d{4}\)$', '', title).strip():
+                if key in L.mov:
+                    lf.extend(L.mov.get(key, []))
+                if key in L.tv:
+                    lf.extend(f for sm in L.tv[key].values() for f in sm)
+        if not year:
+            # meta 中没有年份时，从任一实际标题目录补充。
+            for f in (sf + lf + list(a.files)):
+                folder = _media_title_folder(f)
+                y = re.search(r'(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)', folder or '')
+                if y:
+                    year = y.group(1); break
+        a.meta = _attach_governance_evidence(a.meta, title, year, sf or ([f for f in a.files] if a.kind == 'shr' else []), lf or ([f for f in a.files] if a.kind == 'loc' else []))
+        a.meta['identity_source'] = 'filesystem:title+year'
+        a.meta['tmdb_role'] = '辅助元数据，不参与跨标题匹配'
+
     if gate.skipped:
         log.info('入库未满 %d 分钟，静默跳过 %d 个标题（不进入本次治理队列）', gate.minutes, gate.skipped)
     log.info('治理计划生成完成：%d 项，总耗时 %.1fs', len(acts), time.time() - t_start)
@@ -1956,6 +2074,7 @@ def save_plan(acts):
             'reason_label': a.meta.get('reason_label', ''),
             'title': a.meta.get('title', ''),
             'season': a.meta.get('season'),
+            'meta': a.meta,
             'files': [str(f) for f in a.files],
         })
     stats = {
@@ -2058,6 +2177,7 @@ def load_latest_scan():
 
 def action_inter_check(args):
     acts, S_lib, L_lib = _build_plan_with_libs()
+    identity_conflicts = _identity_conflicts(S_lib, L_lib)
 
     # 扫描完成后顺便刷新 STRM 计数缓存。
     # 计数直接取自 build_plan 刚遍历出来的 Lib（同一次遍历，数据与计划严格一致），
@@ -2102,6 +2222,8 @@ def action_inter_check(args):
         'reason_counts': dict(reason_counts),
         'strm_counts': {'local': L_lib.strm_count, 'share': S_lib.strm_count,
                         'total': L_lib.strm_count + S_lib.strm_count},
+        'identity_conflicts': identity_conflicts,
+        'identity_conflict_count': len(identity_conflicts),
     }
     save_latest_scan(pid, result)
     return result
@@ -2674,9 +2796,9 @@ def _alive_dir_map(paths):
 def _build_emby_library_overview():
     """构建统一媒体身份的片库快照。
 
-    关键口径：同一 TMDB TV/电影即使在本地+分享各有一条 Emby 条目，也只算
-    一个媒体身份；剧集的季/集按 ``(season, episode)`` union，避免双库互补时
-    简单相加造成虚高。没有 TMDB ID 时才退回 Emby item id。
+    关键口径：双库事实身份优先由「剧名 + 年份」确定，TMDB 只作元数据。
+    这样即使 Emby 某条目误写了 TMDB ID，也不会把另一部作品错误合并；
+    同一身份的季/集按 ``(season, episode)`` union。
     """
     out = {'series': [], 'movies': []}
     lib_of = EMBY_PATHS.lib_of

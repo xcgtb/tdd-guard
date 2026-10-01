@@ -96,6 +96,19 @@ class TestTitleKey:
         k2, *_ = core.title_key('重名剧 (2020) {tmdb-2}')
         assert k1 != k2
 
+    def test_governance_key_ignores_wrong_tmdb_and_uses_title_year(self):
+        k1, d1, b1, y1 = core.governance_title_key('奇异博士 (2016) {tmdb-999999}')
+        k2, d2, b2, y2 = core.governance_title_key('奇异博士 (2016) {tmdb-1}')
+        assert k1 == k2
+        assert (d1, b1, y1) == (d2, b2, y2)
+
+    def test_governance_key_separates_title_or_year(self):
+        k1, *_ = core.governance_title_key('奇异博士 (2016) {tmdb-1}')
+        k2, *_ = core.governance_title_key('百分之十 (2015) {tmdb-1}')
+        k3, *_ = core.governance_title_key('奇异博士 (2022) {tmdb-1}')
+        assert k1 != k2
+        assert k1 != k3
+
 
 # ═══════════════════ get_score / best_score ═══════════════════
 class TestScore:
