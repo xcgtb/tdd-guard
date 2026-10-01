@@ -22,6 +22,7 @@ os.environ['TMDB_KEY'] = ''
 os.environ['TG_BOT_TOKEN'] = ''
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
+sys.path.insert(0, str(Path(__file__).parent))  # 让 import test_subscriptions 在 pytest 下可用
 import engine  # noqa: E402
 import test_subscriptions as ts  # noqa: E402  复用订阅测试的假环境
 
