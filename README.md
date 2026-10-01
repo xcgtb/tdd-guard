@@ -149,11 +149,12 @@ cd /vol1/1000/docker/ttd-guard
 
 ### 2. 创建 `docker-compose.yml`
 
-无需下载源码、无需自己 build，直接从 GHCR 拉预构建镜像。**只需要改三处**：
+无需下载源码、无需自己 build，直接从 GHCR 拉预构建镜像。**必改三处**（另有一处可选的代理，见下方说明）：
 
 - `WEB_PASSWORD` → 改成你自己的强密码（**不设密码容器会拒绝启动**）
 - `/你的本地影视库`、`/你的分享影视库` → 改成宿主机上的实际路径（**只改冒号左边**）
 - 不用 CloudDrive2 联动就删掉 `/media/cloud` 那行，保持 `ENABLE_CD2_WATCHDOG: "0"`
+- （可选）**没有透明网关**、TMDB / Telegram 连不上时，取消 `HTTP_PROXY` 那三行的注释；网络已有透明网关就不用管
 
 ```yaml
 services:
@@ -167,6 +168,12 @@ services:
       WEB_USER: admin
       WEB_PASSWORD: 请修改成自己的强密码   # ← 必改
       ENABLE_CD2_WATCHDOG: "0"           # ← 使用 CloudDrive2 联动时改 "1"
+      # ── 代理（可选，默认不启用）──────────────────────────────
+      # 已有透明网关 / 旁路由、能直接访问 TMDB 和 Telegram：保持注释，什么都不用做
+      # 没有透明网关、TMDB / Telegram 连不上：取消下面三行注释，改成你自己的代理地址
+      # HTTP_PROXY: http://192.168.1.100:7890
+      # HTTPS_PROXY: http://192.168.1.100:7890
+      # NO_PROXY: localhost,127.0.0.1,192.168.1.100   # ← 必填：Emby 等内网地址要直连
     volumes:
       - ./data:/data                                    # 配置与日志
       - /你的本地影视库:/media/local:rw                  # ← 必改
@@ -178,6 +185,8 @@ services:
 > **安全提示：** `WEB_PASSWORD` 不要使用示例密码。真实密码只保存在你自己的 NAS `docker-compose.yml` / `.env` 中，**不要提交到 GitHub**。
 >
 > 冒号**右边**的容器内路径（`/data`、`/media/local`、`/media/share`、`/media/cloud`）是固定的，**不要修改**。
+>
+> **关于代理：** 示例里的 `192.168.1.100` 只是占位，请换成你自己的代理地址和 NAS / Emby 的内网 IP。`NO_PROXY` 不能省：Emby 走代理会失败，且不支持写网段（如 `192.168.0.0/16`），要把需要直连的地址逐个列出。代理只用于访问 TMDB、Telegram 等外网；Emby、CloudDrive2 都是内网直连。代理跑在 NAS 本机时可写 `127.0.0.1`（`network_mode: host`）。
 
 ### 3. 启动并访问
 
@@ -271,6 +280,9 @@ TTD Guard 靠 Emby 返回的文件路径判断一部片属于本地库还是分�
 
 **8321 端口被占用了？**
 容器默认监听 8321（`network_mode: host`）。可在 `docker-compose.yml` 中覆盖 `command` 修改 uvicorn 端口，并同步设置 `PORT` 环境变量（供容器健康检查使用）。
+
+**TMDB / Telegram 连不上怎么办？**
+网络里已有透明网关（旁路由 / 软路由透明代理）时，容器会直接走它，不需要额外配置。没有透明网关时，在 `docker-compose.yml` 的 `environment` 里启用 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（见「快速开始」示例），然后 `docker compose up -d` 重建容器。`NO_PROXY` 里务必包含 Emby 所在地址。TMDB 也可以改用可访问的 API 反代：设置环境变量 `TMDB_BASE`。
 
 **治理计划保留多久？**
 每次扫描的计划保留 **7 天**，供事后审计。审计日志为 JSONL 格式，单文件超过 5MB 自动轮转，保留 3 份历史备份。

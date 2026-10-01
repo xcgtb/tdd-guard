@@ -3593,6 +3593,20 @@ function showEmbyDetailById(id){
   openModal(html);
   hydratePosters($('modalBody'));
   loadLibBreakdown(s.id, ti);
+  selfHealSeries(s.id);
+}
+
+/* 弹窗打开后按需自愈：实时集数与缓存不一致（比如刚补了集）→ 服务端修补缓存，卡片和表头立刻更正 */
+async function selfHealSeries(seriesId){
+  window.__embyHealAt = window.__embyHealAt || {};
+  if (Date.now() - (window.__embyHealAt[seriesId] || 0) < 15000) return;
+  window.__embyHealAt[seriesId] = Date.now();
+  try {
+    var r = await api('/api/emby/series/' + seriesId + '/refresh', { method: 'POST', body: '{}' });
+    if (r.status !== 'success' || !r.changed || !r.entry) return;
+    applySeriesDeleteResult(seriesId, { series_removed: false, entry: r.entry });
+    if ($('libBreakdown')) showEmbyDetailById(seriesId);   // 弹窗还开着：用新数据重画表头
+  } catch(e) { /* 自愈失败不影响查看 */ }
 }
 
 async function deleteSeriesFromLib(seriesId, target, seriesName){

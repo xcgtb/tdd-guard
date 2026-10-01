@@ -1115,6 +1115,16 @@ def api_emby_series_delete(series_id: str, body: dict = None):
         return {'status': 'error', 'message': str(e)}
 
 
+@app.post('/api/emby/series/{series_id}/refresh', dependencies=[Depends(auth)])
+def api_emby_series_refresh(series_id: str):
+    """打开弹窗时按需自愈：实时集数与缓存不一致才修补缓存并返回新条目。"""
+    try:
+        r = engine.refresh_series_if_changed(series_id)
+        return {'status': 'success', 'changed': r['changed'], 'entry': r['entry']}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
 @app.post('/api/emby/series/{series_id}/resync', dependencies=[Depends(auth)])
 def api_emby_series_resync(series_id: str):
     """不删任何文件：以磁盘真实文件为准，重算/移除片库映射缓存里的这部剧，并通知 Emby 刷新。
@@ -1155,4 +1165,4 @@ def api_movie_delete(body: dict = None):
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=8321)
+    uvicorn.run(app, host='0.0.0.0', port=8321)
