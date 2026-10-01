@@ -52,8 +52,14 @@ def parse_season_dir(name: str) -> Optional[int]:
         return 0
     return None
 
-def get_ep(name: str, parent_name: str = '') -> Optional[Tuple[int, int]]:
-    """从文件名+父目录推断 (季, 集)"""
+def get_ep(name: str, parent_name: str = '', allow_bare_ep: bool = True) -> Optional[Tuple[int, int]]:
+    """从文件名+父目录推断 (季, 集)。
+
+    ``allow_bare_ep`` 只允许在明确的剧集上下文中打开。
+    裸 ``EP04`` / ``Episode 4`` 本身并不足以证明文件是电视剧；电影
+    （例如 ``Star Wars Ep 4``）不应因此被错误归入 S01E04。
+    SxxExx、季目录和 Specials 仍是强证据。
+    """
     sd = parse_season_dir(parent_name) if parent_name else None
     m = RE_SXXEXX.search(name)
     if m:
@@ -64,7 +70,9 @@ def get_ep(name: str, parent_name: str = '') -> Optional[Tuple[int, int]]:
         return 0, (ep if ep is not None else 1)
     if sd is not None:
         return (sd, ep) if ep is not None else None
-    return (1, ep) if ep is not None else None
+    if allow_bare_ep and ep is not None:
+        return 1, ep
+    return None
 
 @lru_cache(maxsize=16384)
 def title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:

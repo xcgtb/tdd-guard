@@ -1208,11 +1208,16 @@ window.addEventListener('unhandledrejection', function(e){
         <div class="panel">
           <div class="row-between"><h3 data-icon="alert">待处理</h3><span class="dash-note" id="dash-plan-note">—</span></div>
           <div class="todo-grid">
-            <div class="todo loc" onclick="switchTab('governance')"><span class="k" data-icon="x">待删本地</span><b id="dash-loc">-</b></div>
-            <div class="todo shr" onclick="switchTab('governance')"><span class="k" data-icon="refresh">待淘汰分享</span><b id="dash-shr">-</b></div>
-            <div class="todo keep" onclick="switchTab('governance')"><span class="k" data-icon="check">受保护</span><b id="dash-keep">-</b></div>
-            <div class="todo exm" onclick="switchTab('governance')"><span class="k" data-icon="shield">白名单豁免</span><b id="dash-exm">-</b></div>
+            <div class="todo loc" onclick="switchTab('governance')"><span class="k" data-icon="x">待删本地</span><b id="dash-loc">-</b><small id="dash-loc-files">—</small></div>
+            <div class="todo shr" onclick="switchTab('governance')"><span class="k" data-icon="refresh">待淘汰分享</span><b id="dash-shr">-</b><small id="dash-shr-files">—</small></div>
+            <div class="todo keep" onclick="switchTab('governance')"><span class="k" data-icon="check">受保护</span><b id="dash-keep">-</b><small id="dash-keep-files">—</small></div>
+            <div class="todo exm" onclick="switchTab('governance')"><span class="k" data-icon="shield">白名单豁免</span><b id="dash-exm">-</b><small id="dash-exm-files">—</small></div>
           </div>
+        </div>
+
+        <div class="panel" id="dash-gov-reasons-panel">
+          <div class="row-between"><h3 data-icon="scale">治理决策</h3><span class="dash-note" id="dash-gov-reason-note">—</span></div>
+          <div class="gov-reason-grid" id="dash-gov-reasons"><div class="list-empty">尚无治理扫描</div></div>
         </div>
 
         <div class="dash-cols">
@@ -1358,6 +1363,10 @@ window.addEventListener('unhandledrejection', function(e){
             扫描对双库全量对比，生成待清理清单。执行清理会按清单删除本地 STRM（含 115 云端源）和分享 STRM。
           </p>
           <div id="govBanner" style="display:none;font-size:12px;margin-top:8px"></div>
+          <div id="govTruth" class="panel" style="margin-top:12px;padding:12px;background:rgba(255,255,255,.025);display:none">
+            <div class="row-between" style="margin-bottom:8px"><b>治理事实快照</b><span id="govTruthStatus" style="font-size:11px;color:#9ca3af">—</span></div>
+            <div class="gov-reason-grid" id="govTruthGrid"></div>
+          </div>
         </div>
         <div class="cards" id="govStats" style="display:none">
           <div class="card clickable" onclick="setGovFilter('keep')">
@@ -1579,8 +1588,8 @@ window.addEventListener('unhandledrejection', function(e){
             </div>
           </div>
           <p style="font-size:12px;color:#6b7280;line-height:1.7">
-            扫描两库中更名洗版后残留的目录：治理清理 STRM 时留下的字幕/元数据目录（目录内已无任何 STRM）。
-            只列出最顶层目录，删除会连同内部子目录（Season 等）一并清理。<b>删除需勾选确认。</b>
+            只显示本程序删除 STRM 后、附属文件删除失败形成的<b>已确认残留</b>。普通只剩 NFO/字幕/图片的历史目录、空目录不会被猜测为残留。
+            删除前会再次校验目录状态；发现未知文件或新的 STRM 会自动阻止删除。<b>删除需勾选确认。</b>
           </p>
         </div>
         <div class="panel" id="orphanDirsPanel" style="display:none">
@@ -1601,7 +1610,7 @@ window.addEventListener('unhandledrejection', function(e){
       <section class="tab" id="tab-history">
         <div class="panel">
           <div class="row-between">
-            <h3 data-icon="list">执行记录</h3>
+            <div><h3 data-icon="list">执行记录</h3><div id="recordsConsistency" style="font-size:11px;color:#6b7280;margin-top:4px">口径检查中…</div></div>
             <div style="display:flex;gap:8px;align-items:center">
               <input type="number" id="recordN" value="50" style="width:70px;padding:6px 10px">
               <button class="btn gray" onclick="loadRecords()" data-icon="refresh">刷新</button>
@@ -2120,6 +2129,35 @@ function tickGovBanner(){
                Math.ceil(leftMs / 60000) + ' 分钟有效，过期需重新扫描');
 }
 setInterval(tickGovBanner, 30000);
+function fmtGovTs(ts){
+  if (!ts) return '—';
+  try { return new Date(ts * 1000).toLocaleString(); } catch(e){ return '—'; }
+}
+function renderGovTruth(d){
+  var box=$('govTruth'), grid=$('govTruthGrid'), status=$('govTruthStatus');
+  if (!box || !grid) return;
+  box.style.display='';
+  var c=d.consistency||{}, ing=c.ingest||{}, lib=c.library||{}, scan=d.scan||{}, r=scan.result||{}, strm=r.strm_counts||{};
+  var rules=(c.rule_sig||'').slice(0,16)||'—';
+  status.textContent='规则 '+rules+' · 扫描 '+(scan.ts?fmtGovTs(scan.ts):'尚无');
+  var rows=[
+    ['扫描状态', scan.usable ? '可执行' : (scan.found ? (scan.plan_state==='done'?'已执行':'需重新扫描') : '尚无扫描')],
+    ['待处理', String(r.total_clean_cnt||0)+' 项 / '+String((r.del_local_files||0)+(r.del_share_files||0))+' 文件'],
+    ['保护 / 豁免', String((r.protected_items||[]).length)+' / '+String(r.exempted_count||0)],
+    ['静默跳过', String(r.quiet_skipped||0)+' 项'],
+    ['STRM', '本地 '+String(strm.local||0)+' · 分享 '+String(strm.share||0)+' · 合计 '+String(strm.total||0)],
+    ['片库快照', lib.ts ? fmtGovTs(lib.ts) : '暂无'],
+    ['24H 入库快照', ing.ts ? fmtGovTs(ing.ts) : '暂无'],
+    ['规则指纹', rules],
+    ['扫描规则', (scan.rule_aligned === false ? '⚠️ 已变化，请重新扫描' : '✅ 与当前规则一致')]
+  ];
+  grid.innerHTML=rows.map(function(x){return '<div class="meta-row"><span class="k">'+esc(x[0])+'</span><span class="v">'+esc(x[1])+'</span></div>';}).join('');
+}
+async function loadGovTruth(){
+  try { var d=await api('/api/governance/summary'); if(d.status==='success'){ renderGovTruth(d); return d; } } catch(e){}
+  return null;
+}
+
 async function loadLatestGov(){
   try {
     var r = await api('/api/governance/latest');
@@ -2150,6 +2188,7 @@ async function loadLatestGov(){
     $('gov-exempt').textContent = (govData.exemptTotal != null ? govData.exemptTotal : govData.exempt.length);
     renderGovList();
     saveGovStateToSession();
+    loadGovTruth();
     if (currentPlan) tickGovBanner();
     else setGovBanner('扫描于 ' + fmtGovAgo(r.age_sec) + ' · 无待清理项');
     return true;
@@ -2384,7 +2423,7 @@ function switchTab(id){
   try { sessionStorage.setItem('lastTab', id); } catch(e){}
 
   if (id === 'dashboard')  loadDashboard();
-  if (id === 'governance') { if (!currentPlan) restoreGovStateFromSession(); loadLatestGov(); }
+  if (id === 'governance') { if (!currentPlan) restoreGovStateFromSession(); loadLatestGov(); loadGovTruth(); }
   if (id === 'explore')    loadExplore();
   if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); loadGovAuto(); }
   if (id === 'mapping')    ensureEmbyLoaded();
@@ -2498,48 +2537,69 @@ function dashOpenSeries(name){
 }
 async function loadDashEmby(){
   var src = null;
-  if (embyLoaded) src = { series: embyData.series, movies: embyData.movies, stats: embyData.stats };
-  else {
+  try {
+    var r = await api('/api/library/health');
+    if (r && r.status === 'success') {
+      src = { series: r.series || [], movies: r.movies || [], stats: r.stats || {}, episodes: r.episodes || 0, top_missing: r.top_missing || [] };
+    }
+  } catch(e){}
+  if (!src && embyLoaded) src = { series: embyData.series, movies: embyData.movies, stats: embyData.stats };
+  if (!src) {
     try {
-      var r = await api('/api/emby/library?force=0&with_tmdb=1&cache_only=1');
-      if (r && r.status === 'success') await mdLoad();
-      if (r && r.status === 'success') src = { series: r.series || [], movies: r.movies || [], stats: md_sync(r.series || [], r.stats || {}) };
+      var r2 = await api('/api/emby/library?force=0&with_tmdb=1&cache_only=1');
+      if (r2 && r2.status === 'success') src = { series: r2.series || [], movies: r2.movies || [], stats: md_sync(r2.series || [], r2.stats || {}) };
     } catch(e){}
   }
   if (!src) return;
-  var eps = 0;
-  src.series.forEach(function(s){ eps += (s.total_episodes || 0); });
-  var top = src.series.filter(function(s){ return (s.tmdb_info || {}).match_status === 'missing'; })
+  var top = src.top_missing || src.series.filter(function(s){ return (s.tmdb_info || {}).match_status === 'missing'; })
     .sort(function(a, b){ return Math.abs((b.tmdb_info || {}).diff || 0) - Math.abs((a.tmdb_info || {}).diff || 0); })
     .slice(0, 6).map(function(s){
       var ti = s.tmdb_info || {};
       return { name: s.name, year: s.year, diff: Math.abs(ti.diff || 0), tot: ti.tmdb_total || 0, have: s.have_eps != null ? s.have_eps : (s.total_episodes || 0) };
     });
   var st = src.stats || {};
-  var sum = { series: st.total_series || src.series.length, movies: st.total_movies || src.movies.length, eps: eps,
-              st: { aligned: st.aligned, missing: st.missing, extra: st.extra, ongoing: st.ongoing, unmatched: (st.unmatched || 0) + (st.no_tmdb || 0) }, top: top };
+  var sum = { series: st.total_series || src.series.length, movies: st.total_movies || src.movies.length, eps: src.episodes != null ? src.episodes : src.series.reduce(function(n,s){ return n + (s.have_eps || s.total_episodes || 0); },0),
+              st: { aligned: st.aligned || 0, missing: st.missing || 0, extra: st.extra || 0, ongoing: st.ongoing || 0, unmatched: (st.unmatched || 0) + (st.no_tmdb || 0) }, top: top };
   renderDashEmby(sum);
   try { localStorage.setItem('dashEmbyCache', JSON.stringify(sum)); } catch(e){}
 }
-async function loadDashPlan(){
+
+function renderDashPlanFromDashboard(d){
   try {
-    var r = await api('/api/governance/latest');
-    if (r.status === 'success' && r.found && r.usable) {
-      var res = r.result || {};
-      $('dash-loc').textContent  = (res.del_local_items || []).length;
-      $('dash-shr').textContent  = (res.del_share_items || []).length;
-      $('dash-keep').textContent = (res.protected_items || []).length;
-      $('dash-exm').textContent  = res.exempted_count != null ? res.exempted_count : (res.exempted_items || []).length;
-      $('dash-plan-note').textContent = '扫描于 ' + fmtGovAgo(r.age_sec);
+    var x = d && d.lastScan;
+    if (x) {
+      $('dash-loc').textContent = (x.local || 0).toLocaleString();
+      $('dash-shr').textContent = (x.share || 0).toLocaleString();
+      $('dash-keep').textContent = (x.protected || 0).toLocaleString();
+      $('dash-exm').textContent = (x.exempted || 0).toLocaleString();
+      $('dash-loc-files').textContent = (x.local_files || 0).toLocaleString() + ' 个 STRM';
+      $('dash-shr-files').textContent = (x.share_files || 0).toLocaleString() + ' 个 STRM';
+      $('dash-keep-files').textContent = '保护项';
+      $('dash-exm-files').textContent = (x.quiet_skipped || 0).toLocaleString() + ' 项静默';
+      $('dash-plan-note').textContent = '扫描于 ' + fmtGovAgo(x.age_sec || 0);
+      var rc = x.reason_counts || {};
+      var labels = {
+        share_better:'分享画质更优', local_better:'本地画质更优', share_wins:'分享择优', local_wins:'本地择优',
+        special_share_better:'特别篇分享更优', special_local_better:'特别篇本地更优', special_delete_local:'特别篇清理·本地', special_delete_share:'特别篇清理·分享',
+        dup_version_local:'本地多版本', dup_version_share:'分享多版本', incomplete_delete_local:'本地残次品', incomplete_delete_share:'分享残次品',
+        multi_full_share:'整剧零和·分享替代', multi_protect_partial_share:'多季保护·淘汰分享', whitelist:'白名单豁免', protected:'受保护', exempt:'白名单豁免', unknown:'其他'
+      };
+      var rows = Object.keys(rc).filter(function(k){ return rc[k] > 0; }).sort(function(a,b){ return rc[b]-rc[a]; }).slice(0,8);
+      var totalDecisions = Object.keys(rc).reduce(function(n,k){ return n + (+rc[k] || 0); }, 0);
+      $('dash-gov-reason-note').textContent = rows.length ? ('共 ' + totalDecisions + ' 项决策') : '—';
+      $('dash-gov-reasons').innerHTML = rows.length ? rows.map(function(k){
+        return '<div class="gov-reason"><span>' + esc(labels[k] || k) + '</span><b>' + (+rc[k] || 0).toLocaleString() + '</b></div>';
+      }).join('') : '<div class="list-empty">本次扫描没有治理动作</div>';
     } else {
-      ['dash-loc', 'dash-shr', 'dash-keep', 'dash-exm'].forEach(function(id){ $(id).textContent = '—'; });
-      $('dash-plan-note').textContent = '暂无有效清单，先「立即扫描双库」';
+      ['dash-loc','dash-shr','dash-keep','dash-exm'].forEach(function(id){ $(id).textContent = '—'; });
+      ['dash-loc-files','dash-shr-files','dash-keep-files','dash-exm-files'].forEach(function(id){ $(id).textContent = '—'; });
+      $('dash-plan-note').textContent = '暂无治理扫描';
+      $('dash-gov-reasons').innerHTML = '<div class="list-empty">尚无治理扫描</div>';
     }
   } catch(e){}
 }
-
 async function loadDashboard(){
-  loadDashEmby(); loadDashPlan();
+  loadDashEmby();
   /* 策略快照数据量极小，与 dashboard 并行加载——
      /api/dashboard 要统计全库 STRM（大库较慢），串行会拖得策略快照一直"加载中" */
   var pStrategy = api('/api/strategy').catch(function(e){ console.warn('strategy 失败', e); return null; });
@@ -2561,6 +2621,7 @@ async function loadDashboard(){
   var d = await pDash;
   if (d) {
     renderDashboard(d);
+    renderDashPlanFromDashboard(d);
     saveDashboardCache(d);
   }
 }
@@ -2643,6 +2704,7 @@ async function scanLibrary(){
     $('gov-exempt').textContent = (govData.exemptTotal != null ? govData.exemptTotal : govData.exempt.length);
     renderGovList();
     saveGovStateToSession();
+    loadGovTruth();
     toast('扫描完成：待处理 ' + (r.total_clean_cnt || 0) + ' 项', 'success');
   } catch(e){ toast(e.message, 'error', 4000); }
   finally {
@@ -4002,7 +4064,7 @@ function recCard(rec){
   });
   var ts = String(rec.ts || ''), time = ts.length >= 19 ? ts.slice(11, 19) : ts;
   var sum = recSummary(title);
-  var h = '<div class="rc rc-' + recTone(cat) + '"><div class="rc-top"><span class="rc-tag">' + esc(cat || '记录') + '</span><span class="rc-time">' + esc(time) + '</span></div>';
+  var h = '<div class="rc rc-' + recTone(cat) + '"><div class="rc-top"><span class="rc-tag">' + esc(cat || '记录') + '</span><span class="rc-time">' + esc(time) + (rec.rule_sig ? ' · 规则 ' + esc(rec.rule_sig) : '') + '</span></div>';
   if (sum) {
     h += '<div class="rc-sum">' + (sum.lead ? '<span class="rc-lead">' + esc(sum.lead) + '</span>' : '');
     sum.chips.forEach(function(c){ h += '<span class="rc-chip' + (c.v !== '0' ? ' on' : '') + '">' + esc(c.k) + ' <b>' + esc(c.v) + '</b></span>'; });
@@ -4030,6 +4092,10 @@ async function loadRecords(){
   $('recordsList').innerHTML = '<div class="list-empty">加载中...</div>';
   try {
     var r = await api('/api/records?n=' + n);
+    var c = r.consistency || {};
+    if ($('recordsConsistency')) {
+      $('recordsConsistency').textContent = c.rule_sig ? ('当前规则 ' + c.rule_sig + ' · 每条记录保留生成时规则指纹') : '统一规则快照暂不可用';
+    }
     var list = r.records || [];
     if (!list.length) { $('recordsList').innerHTML = '<div class="list-empty">暂无记录</div>'; return; }
     var html = '', lastDay = '';
@@ -4414,6 +4480,7 @@ var PLAN_STATE = {
   executing: { label: '执行中',   color: '#2563eb', bg: 'rgba(37,99,235,.13)' },
   done:      { label: '已完成',   color: '#16a34a', bg: 'rgba(22,163,74,.13)' },
   failed:    { label: '执行失败', color: '#dc2626', bg: 'rgba(220,38,38,.13)' },
+  stale:     { label: '规则已变更', color: '#7c3aed', bg: 'rgba(124,58,237,.13)' },
   expired:   { label: '已过期',   color: '#6b7280', bg: 'rgba(107,114,128,.15)' }
 };
 var PLAN_KIND = { loc: '删本地', shr: '淘汰分享', keep: '受保护', exempt: '白名单豁免' };
@@ -4578,7 +4645,9 @@ function renderOrphanDirs(dirs){
     return '<label class="list-item ' + libCls + '" style="display:flex;align-items:center;gap:10px;cursor:pointer">'
       + '<input type="checkbox" class="orphan-dir-cb" data-i="' + i + '" style="flex:none">'
       + '<div style="flex:1;min-width:0"><div class="t">' + esc(d.path.split('/').pop()) + '</div>'
-      + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(d.lib) + '</span>' + esc(kindLabel[d.kind] || d.kind) + '　' + d.file_count + ' 文件 ' + sz + '　' + esc(d.path) + '</div></div>'
+      + '<div class="d"><span style="background:var(--surface-hover);padding:1px 6px;border-radius:4px;margin-right:6px">' + esc(d.lib) + '</span>' + esc(kindLabel[d.kind] || d.kind) + '　' + d.file_count + ' 个残留文件 ' + sz + '</div>'
+      + '<div style="font-size:11px;color:var(--warn);margin-top:3px">⚠️ ' + esc(d.reason_label || '已确认残留') + (d.strm_path ? ' · 来源 STRM：' + esc(d.strm_path) : '') + '</div>'
+      + '<div style="font-size:11px;color:var(--text-dim);margin-top:2px">' + esc(d.path) + '</div></div>'
       + '</label>';
   }).join('');
 }
@@ -4590,7 +4659,7 @@ async function cleanOrphanDirs(){
   if (!cbs.length) { toast('请先勾选要删除的目录', 'error'); return; }
   var paths = [];
   cbs.forEach(function(cb){ paths.push(_orphanDirs[parseInt(cb.dataset.i)].path); });
-  if (!confirm('确定删除 ' + paths.length + ' 个孤儿目录吗？此操作不可恢复！')) return;
+  if (!confirm('确定删除 ' + paths.length + ' 个已确认洗版残留目录吗？此操作不可恢复！')) return;
   $('cleanOrphanDirsBtn').disabled = true;
   try {
     var r = await api('/api/orphans/clean', { method: 'POST', body: JSON.stringify({ paths: paths, dry_run: false }) });
@@ -4890,6 +4959,7 @@ html body #exploreLoadMore { display: none !important; }
 .todo:hover{transform:translateY(-2px)}
 .todo .k{font-size:12px;display:flex;align-items:center;gap:5px;color:var(--text-mid)}
 .todo b{font-size:32px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.todo small{font-size:11px;color:var(--text-dim);line-height:1.2}.gov-reason-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.gov-reason{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-hover);display:flex;justify-content:space-between;gap:10px;font-size:12px}.gov-reason b{font-variant-numeric:tabular-nums;color:var(--brand)}
 .todo.loc{background:var(--err-soft);border-color:var(--err-border)}.todo.loc b{color:var(--err)}
 .todo.shr{background:var(--info-soft);border-color:var(--info-border)}.todo.shr b{color:var(--info)}
 .todo.keep{background:var(--ok-soft);border-color:var(--ok-border)}.todo.keep b{color:var(--ok)}
@@ -4931,7 +5001,7 @@ html body #exploreLoadMore { display: none !important; }
 .map-bar .map-search{flex:1;min-width:140px;margin:0!important}
 #embyList{margin-bottom:0}
 .inf-foot{text-align:center;padding:20px 0 30px;font-size:12px;color:var(--text-dim);cursor:pointer}
-@media(max-width:900px){.dash-hero{grid-template-columns:1fr;gap:20px;padding:20px}.dh-big{font-size:38px}.dash-cols{grid-template-columns:1fr}.dash-strip,.todo-grid{grid-template-columns:repeat(2,1fr)}.ds:nth-child(3){border-left:none}.ds:nth-child(n+3){border-top:1px solid var(--border)}}
+@media(max-width:900px){.dash-hero{grid-template-columns:1fr;gap:20px;padding:20px}.dh-big{font-size:38px}.dash-cols{grid-template-columns:1fr}.dash-strip,.todo-grid,.gov-reason-grid{grid-template-columns:repeat(2,1fr)}.ds:nth-child(3){border-left:none}.ds:nth-child(n+3){border-top:1px solid var(--border)}}
 @media(prefers-reduced-motion:reduce){.dh-split i,.cb .tr i,.todo{transition:none}}
 </style>
 

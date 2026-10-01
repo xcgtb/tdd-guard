@@ -472,6 +472,36 @@ class TestPlanLifecycle:
         assert 'action_id' in first
         assert 'media_key' in first
 
+    def test_save_plan_records_rule_signature(self, monkeypatch):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '规则指纹剧 (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.S_ROOT, '规则指纹剧 (2020)/Season 01', 'E01.1080p.strm')
+        monkeypatch.setattr(engine._cfg, 'load_config', lambda: {'strategy_exempt_keywords': ''})
+        monkeypatch.setattr(engine._cfg, 'get_strategy', lambda: {'decision': 'quality_first'})
+        acts = engine.build_plan()
+        pid = engine.save_plan(acts)
+        data = engine.load_plan(pid)
+        assert len(data.get('rule_sig', '')) == 16
+
+    def test_plan_rejected_when_rules_changed(self, monkeypatch):
+        _reset_libs()
+        _patch_strategy({'exempt_keywords': []})
+        _strm(engine.L_ROOT, '规则变化剧 (2020)/Season 01', 'E01.1080p.strm')
+        _strm(engine.S_ROOT, '规则变化剧 (2020)/Season 01', 'E01.1080p.strm')
+        state = {'decision': 'quality_first'}
+        monkeypatch.setattr(engine._cfg, 'load_config', lambda: {'strategy_exempt_keywords': state['decision']})
+        monkeypatch.setattr(engine._cfg, 'get_strategy', lambda: {'decision': state['decision']})
+        pid = engine.save_plan(engine.build_plan())
+        state['decision'] = 'keep_local'
+
+        class A: pass
+        a = A(); a.plan = pid; a.dry_run = False
+        res = engine.action_inter_clean(a)
+        assert res.get('status') == 'error'
+        assert res.get('code') == 'plan_rule_changed'
+        assert engine.load_plan(pid).get('state') == 'stale'
+
     def test_load_plan_rejects_old_schema(self):
         engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
         old_pf = engine.STATE_DIR / 'plan_deadbeef.json'

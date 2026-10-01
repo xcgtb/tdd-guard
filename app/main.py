@@ -263,6 +263,23 @@ def _current_task_dict():
     return cur.to_dict(with_logs=False) if cur else None
 
 
+@app.get('/api/consistency', dependencies=[Depends(auth)])
+def api_consistency(force: int = 0):
+    try:
+        return {'status': 'success', 'snapshot': engine.daily_consistency_snapshot(force_refresh=bool(force))}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+@app.get('/api/library/health', dependencies=[Depends(auth)])
+def library_health():
+    """统一片库健康快照：只读缓存，过期后台刷新，页面请求不触发全量扫描。"""
+    try:
+        snap = engine.unified_health(max_age=1800)
+        return {'status': 'success', **snap}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
 @app.get('/api/dashboard', dependencies=[Depends(auth)])
 def dashboard():
     try:
@@ -288,15 +305,29 @@ def dashboard():
         ingest_ts = ingest_cache.get('ts', 0) if ingest_cache else 0
         ingest_stats = (ingest_cache or {}).get('stats', {})
 
+        # 治理总览的扫描时间必须来自统一的 gov_latest.json。
+        # plan_*.json 只有在存在待处理项时才会生成，0 项扫描也必须能成为“最近一次扫描”。
         last_scan = None
         try:
-            plan_files = sorted(engine.STATE_DIR.glob('plan_*.json'),
-                                key=lambda p: p.stat().st_mtime, reverse=True)
-            if plan_files:
-                data = json.loads(plan_files[0].read_text(encoding='utf-8'))
-                last_scan = {'time': time.strftime('%m-%d %H:%M', time.localtime(data.get('ts', 0))),
-                             'total': len(data.get('keys', []))}
-        except Exception: pass
+            gov = engine.load_latest_scan() or {}
+            gr = gov.get('result') or {}
+            gts = float(gov.get('ts') or gr.get('scan_ts') or 0)
+            if gts:
+                last_scan = {
+                    'time': time.strftime('%m-%d %H:%M', time.localtime(gts)),
+                    'ts': gts, 'age_sec': max(0, int(time.time() - gts)),
+                    'plan_id': gov.get('plan_id'),
+                    'total': gr.get('total_clean_cnt', 0),
+                    'local': gr.get('del_local_cnt', 0), 'share': gr.get('del_share_cnt', 0),
+                    'local_files': gr.get('del_local_files', 0), 'share_files': gr.get('del_share_files', 0),
+                    'protected': gr.get('protected_items', []).__len__() if isinstance(gr.get('protected_items'), list) else 0,
+                    'exempted': gr.get('exempted_count', 0),
+                    'quiet_skipped': gr.get('quiet_skipped', 0),
+                    'reason_counts': gr.get('reason_counts') or {},
+                }
+        except Exception:
+            pass
+        health = engine.unified_health(max_age=1800)
         bs = bot.status()
         return {'version': app.version,
                 'localCount': f'{l_count:,}', 'shareCount': f'{s_count:,}',
@@ -318,6 +349,13 @@ def dashboard():
                            'movies': ingest_stats.get('movies', 0),
                            'series': ingest_stats.get('series', 0),
                            'episodes': ingest_stats.get('episodes', 0)},
+                'libraryHealth': {
+                    'ts': health.get('ts', 0),
+                    'stats': health.get('stats') or {},
+                    'episodes': health.get('episodes', 0),
+                    'top_missing': health.get('top_missing') or [],
+                    'age_sec': int(time.time() - (health.get('ts') or 0)) if health.get('ts') else None,
+                },
                 'lastScan': last_scan}
     except Exception as e:
         return {'localCount': '0', 'shareCount': '0',
@@ -434,7 +472,15 @@ def api_search(q: str):
 
 @app.get('/api/records', dependencies=[Depends(auth)])
 def api_records(n: int = 50):
-    return {'status': 'success', 'records': logger.read_recent(limit=n)}
+    try:
+        snap = engine.daily_consistency_snapshot(False)
+        return {'status': 'success', 'records': logger.read_recent(limit=n),
+                'consistency': {'rule_sig': snap.get('rule_sig'),
+                                'library_ts': (snap.get('library') or {}).get('ts', 0),
+                                'ingest_ts': (snap.get('ingest') or {}).get('ts', 0),
+                                'governance_ts': (snap.get('governance') or {}).get('ts', 0)}}
+    except Exception:
+        return {'status': 'success', 'records': logger.read_recent(limit=n), 'consistency': {}}
 
 @app.get('/api/logs', dependencies=[Depends(auth)])
 def api_logs(n: int = 35):
@@ -753,6 +799,37 @@ def api_gov_latest():
 
 
 # ═══════════════════ 双库治理：定时巡检设置 ═══════════════════
+@app.get('/api/governance/summary', dependencies=[Depends(auth)])
+def api_governance_summary():
+    """双库治理单一事实入口：扫描事实 + 片库快照 + 入库事实 + 当前规则指纹。
+    页面不再分别拼接多个接口后自行判断口径。"""
+    try:
+        latest = engine.load_latest_scan() or {}
+        result = latest.get('result') if isinstance(latest.get('result'), dict) else {}
+        consistency = engine.daily_consistency_snapshot(force_refresh=False)
+        ts = float(latest.get('ts') or 0)
+        age = max(0, time.time() - ts) if ts else None
+        ttl = engine.PLAN_TTL
+        pid = latest.get('plan_id') or result.get('plan_id')
+        plan = engine.load_plan(pid) if pid else None
+        state = (plan or {}).get('state') if plan else ('missing' if pid else 'none')
+        current_rule_sig = str((consistency or {}).get('rule_sig') or '')
+        scan_rule_sig = str(latest.get('rule_sig') or result.get('rule_sig') or '')
+        rule_aligned = (not scan_rule_sig or not current_rule_sig or scan_rule_sig == current_rule_sig)
+        if plan and plan.get('rule_sig') and current_rule_sig:
+            rule_aligned = rule_aligned and plan.get('rule_sig') == current_rule_sig
+        usable = bool(latest) and bool(ts) and age <= ttl and (state in ('pending', 'none')) and rule_aligned
+        return {'status':'success', 'schema_version':2,
+                'scan': {'found': bool(latest), 'ts': ts, 'age_sec': int(age or 0),
+                         'plan_id': pid or '', 'plan_state': state, 'usable': usable,
+                         'ttl_sec': int(ttl), 'remaining_sec': max(0, int(ttl-(age or 0))) if ts else 0,
+                         'rule_sig': scan_rule_sig, 'current_rule_sig': current_rule_sig,
+                         'rule_aligned': rule_aligned,
+                         'result': result},
+                'consistency': consistency}
+    except Exception as e:
+        return {'status':'error','message':str(e)}
+
 @app.get('/api/governance/auto', dependencies=[Depends(auth)])
 def api_get_gov_auto():
     return {'status': 'success', 'settings': scheduler.gov_auto_view()}
@@ -1157,4 +1234,4 @@ def api_movie_delete(body: dict = None):
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=8321)
+    uvicorn.run(app, host='0.0.0.0', port=8321)

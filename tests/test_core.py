@@ -61,6 +61,10 @@ class TestGetEp:
     def test_no_season_dir_defaults_to_season_1(self):
         assert core.get_ep('EP03.mkv', '') == (1, 3)
 
+    def test_bare_ep_can_be_disabled_for_movie_context(self):
+        assert core.get_ep('Star Wars Ep 4.1080p.mkv', '', allow_bare_ep=False) is None
+        assert core.get_ep('Star Wars Ep 4.1080p.mkv', 'Season 1', allow_bare_ep=False) == (1, 4)
+
     def test_season_dir_but_no_episode_number(self):
         assert core.get_ep('剧名.mkv', 'Season 2') is None
 

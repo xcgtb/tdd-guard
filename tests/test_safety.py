@@ -35,6 +35,8 @@ def _reset():
             shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
     engine._invalidate_lib_cache()
+    if engine.WASH_RESIDUAL_FILE.exists():
+        engine.WASH_RESIDUAL_FILE.unlink()
     engine._strategy = lambda: {
         'decision': 'quality_first', 'multi_season_protect': 'compare',
         'tie_keep_local': False, 'exempt_keywords': [], 'special_action': 'compare',
@@ -118,6 +120,25 @@ class TestSidecar:
         assert not engine._is_sidecar_of('A - S01E1', 'A - S01E10')
         assert not engine._is_sidecar_of('A - S01E1', 'A - S01E12.zh')
 
+    def test_sidecar_delete_failure_is_recorded_as_confirmed_residual(self, monkeypatch):
+        _reset()
+        d = '电影/华语电影/删除失败 (2020)'
+        strm = _touch(engine.S_ROOT, f'{d}/删除失败.1080p.strm')
+        side = _touch(engine.S_ROOT, f'{d}/删除失败.1080p.nfo')
+        real_unlink = Path.unlink
+
+        def fake_unlink(self, *args, **kwargs):
+            if self == side:
+                raise OSError('permission denied')
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'unlink', fake_unlink)
+        r = engine.safe_delete_files([strm], engine.S_ROOT, None, dry_run=False)
+        assert r['strm_removed'] == 1
+        assert not strm.exists() and side.exists()
+        got = engine.scan_orphan_dirs()
+        assert len(got) == 1 and got[0]['sidecar_path'] == str(side)
+
     def test_deleting_e1_keeps_e10_sidecars(self):
         _reset()
         d = '剧集/国产剧集/边界剧 (2020)/Season 01'
@@ -131,6 +152,17 @@ class TestSidecar:
         assert r['strm_removed'] == 1
         left = sorted(p.name for p in (engine.S_ROOT / d).iterdir())
         assert left == ['边界剧 - S01E10.nfo', '边界剧 - S01E10.strm', '边界剧 - S01E10.zh.srt']
+
+
+class TestMediaContextParsing:
+    def test_movie_ep4_is_not_tv_but_flat_tv_ep_is(self):
+        _reset()
+        movie = _touch(engine.L_ROOT, '电影/外语电影/星球大战 Ep 4 {tmdb-501}/Star Wars Ep 4.1080p.strm')
+        tv = _touch(engine.L_ROOT, '剧集/欧美剧集/某剧 {tmdb-502}/某剧.EP04.1080p.strm')
+        lib = engine.Lib(engine.L_ROOT)
+        assert movie in lib.mov['tmdb:501']
+        assert not lib.tv['tmdb:501']
+        assert tv in lib.tv['tmdb:502'][1]
 
 
 class TestMovieByTmdb:
@@ -152,9 +184,28 @@ class TestMovieByTmdb:
 
 
 class TestOrphanCleanLock:
-    def test_real_clean_is_busy_while_lock_held(self):
+    def test_metadata_only_is_not_assumed_to_be_wash_residual(self):
         _reset()
-        d = _touch(engine.L_ROOT, '电影/华语电影/残留 (2020)/残留.nfo').parent
+        d = _touch(engine.L_ROOT, '电影/华语电影/历史元数据 (2020)/历史元数据.nfo').parent
+        assert engine.scan_orphan_dirs() == []
+        assert engine.clean_orphan_dirs([str(d)], dry_run=True)['count'] == 0
+        assert d.exists()
+
+    def test_confirmed_residual_is_cleanable_and_lock_protected(self):
+        _reset()
+        d = engine.L_ROOT / '电影/华语电影/确认残留 (2020)'
+        strm = _touch(engine.L_ROOT, '电影/华语电影/确认残留 (2020)/确认残留.1080p.strm')
+        side = _touch(engine.L_ROOT, '电影/华语电影/确认残留 (2020)/确认残留.1080p.nfo')
+        # 模拟 STRM 已删除、sidecar 删除失败后的真实 journal。
+        strm.unlink()
+        engine._record_wash_residuals([{'id': 'test-residual', 'lib': 'local',
+                                        'strm_path': str(strm), 'sidecar_path': str(side),
+                                        'sidecar_name': side.name,
+                                        'reason': 'sidecar_delete_failed',
+                                        'error': 'permission denied',
+                                        'created_at': '2026-10-01 20:00:00'}])
+        got = engine.scan_orphan_dirs()
+        assert len(got) == 1 and got[0]['file_count'] == 1
         engine.DATA_DIR.mkdir(parents=True, exist_ok=True)
         holder = open(engine.LOCK_FILE, 'w')
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -168,6 +219,25 @@ class TestOrphanCleanLock:
             holder.close()
         res = engine.clean_orphan_dirs([str(d)], dry_run=False)
         assert res['count'] == 1 and not d.exists()
+        assert engine.scan_orphan_dirs() == []
+
+    def test_unknown_file_blocks_confirmed_residual_directory_delete(self):
+        _reset()
+        d = engine.L_ROOT / '电影/华语电影/带未知文件 (2020)'
+        strm = _touch(engine.L_ROOT, '电影/华语电影/带未知文件 (2020)/带未知文件.strm')
+        side = _touch(engine.L_ROOT, '电影/华语电影/带未知文件 (2020)/带未知文件.nfo')
+        _touch(engine.L_ROOT, '电影/华语电影/带未知文件 (2020)/readme.log')
+        strm.unlink()
+        engine._record_wash_residuals([{'id': 'test-residual-2', 'lib': 'local',
+                                        'strm_path': str(strm), 'sidecar_path': str(side),
+                                        'sidecar_name': side.name, 'reason': 'sidecar_delete_failed',
+                                        'error': 'permission denied', 'created_at': '2026-10-01 20:00:00'}])
+        got = engine.scan_orphan_dirs()
+        assert len(got) == 1
+        res = engine.clean_orphan_dirs([str(d)], dry_run=False)
+        assert res['count'] == 0
+        assert d.exists()
+        assert any('未知文件' in e for e in res['errors'])
 
 
 class TestReviewFollowups:

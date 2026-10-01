@@ -49,6 +49,8 @@ REPORT_DIR = DATA_DIR / 'reports'
 SUB_STATE_FILE = STATE_DIR / 'subscriptions_state.json'
 EMBY_LIB_CACHE_FILE = STATE_DIR / 'emby_library_with_tmdb.json'
 INGEST_CACHE_FILE = STATE_DIR / 'ingest_cache.json'
+WASH_RESIDUAL_FILE = STATE_DIR / 'wash_residuals.json'
+LIBRARY_SNAPSHOT_FILE = STATE_DIR / 'library_snapshot.json'
 
 VIDEO_EXTS = ['.mkv', '.mp4', '.ts', '.mov', '.iso', '.m2ts']
 
@@ -195,7 +197,19 @@ def _exempt_keywords():
     return _strategy()['exempt_keywords']
 
 def _ep(p: Path):
-    return get_ep(p.name, p.parent.name)
+    parent = p.parent
+    allow = parse_season_dir(parent.name) is not None
+    if not allow:
+        # 从当前路径向上找本工具的媒体根；只有位于含“剧”的分类目录下才允许
+        # 裸 EP/Episode。找不到根时宁可保守返回 None。
+        for root in (L_ROOT, S_ROOT):
+            try:
+                parent.relative_to(root)
+                allow = _under_tv_category(parent, root)
+                break
+            except (ValueError, OSError):
+                continue
+    return get_ep(p.name, parent.name, allow_bare_ep=allow)
 
 def _best(files):
     return best_score(f.name for f in files)
@@ -486,7 +500,7 @@ def parse_dt(s):
 
 def write_audit_log(category, title, details=None):
     try:
-        logger.write(category, title, details)
+        logger.write(category, title, details, rule_sig=_current_rule_snapshot()['sig'])
     except Exception as e:
         log.warning('审计日志写入失败: %s', e)
 
@@ -512,7 +526,11 @@ class Lib:
             for n in strms:
                 self.strm_count += 1
                 f = d / n
-                ep = get_ep(n, pname)
+                # 裸 EP/Episode 只在明确的剧集上下文中启用；电影目录中的
+                # `Star Wars Ep 4` 不得被误判成 S01E04。季目录天然是强上下文，
+                # 扁平剧集则由剧集分类路径提供上下文。
+                allow_bare_ep = (parse_season_dir(pname) is not None or _under_tv_category(d, root))
+                ep = get_ep(n, pname, allow_bare_ep=allow_bare_ep)
                 if ep: self.tv[key][ep[0]].append(f)
                 else: self.mov[key].append(f)
 
@@ -552,6 +570,7 @@ def _invalidate_lib_cache():
 
 
 _ep_cache = {'ts': 0, 'data': None}
+_WASH_RESIDUAL_LOCK = threading.Lock()
 _ep_lock = threading.Lock()
 
 def _fetch_all_episodes(force=False):
@@ -759,30 +778,73 @@ def _is_sidecar_of(stem, other_stem):
     return other_stem.startswith(stem) and other_stem[len(stem)] in _SIDECAR_SEPS
 
 
+def _load_wash_residuals():
+    try:
+        raw = json.loads(WASH_RESIDUAL_FILE.read_text(encoding='utf-8'))
+        items = raw.get('items') if isinstance(raw, dict) else raw
+        return items if isinstance(items, list) else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _save_wash_residuals(items):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = WASH_RESIDUAL_FILE.with_suffix('.tmp')
+    tmp.write_text(json.dumps({'version': 1, 'items': items}, ensure_ascii=False, indent=2), encoding='utf-8')
+    tmp.replace(WASH_RESIDUAL_FILE)
+
+
+def _record_wash_residuals(records):
+    if not records:
+        return
+    with _WASH_RESIDUAL_LOCK:
+        items = _load_wash_residuals()
+        seen = {(str(x.get('strm_path')), str(x.get('sidecar_path'))) for x in items}
+        for r in records:
+            key = (str(r.get('strm_path')), str(r.get('sidecar_path')))
+            if key not in seen:
+                items.append(r)
+                seen.add(key)
+        # 保留最近 5000 条，避免长期运行的状态文件无限增长。
+        _save_wash_residuals(items[-5000:])
+
+
 def _remove_strm(f):
-    """彻底删除 STRM，并粉碎同目录下同 stem 的附属文件。
+    """删除 STRM，并删除归属于它的 sidecar。
 
-    附属文件（-mediainfo.json / .nfo / .srt / .ass / .jpg 等）一律彻底删除，
-    只匹配与 STRM 同 stem 的文件，避免误删同目录下其他集的字幕。
-
-    ⚠️ STRM 一经删除不可恢复：本工具不保留任何副本、不提供回收站。
+    返回 ``{'sidecars_removed': n, 'sidecars_failed': [...]} ``。
+    关键点：sidecar 删除失败不再静默吞掉；STRM 本体删除成功后会写入
+    wash_residuals.json，后续「洗版残留」只认这份删除血缘，不再把任意
+    metadata-only 目录猜成残留。
     """
     stem = f.stem
     siblings = [x for x in f.parent.iterdir() if x.is_file()]
     strm_stems = [x.stem for x in siblings if x.suffix.lower() == '.strm']
+    failed = []
+    removed = 0
     for sibling in siblings:
         if sibling.name == f.name or sibling.suffix.lower() == '.strm':
             continue
-        # 附属文件与 STRM 同 stem（或以其加分隔符为前缀），如 A.S01E01-mediainfo.json、A.S01E01.zh.srt。
-        # 同目录多版本（Movie.strm / Movie - 2160p.strm）时，附属文件归「最长匹配」的那条 STRM，
-        # 删 Movie.strm 不能把保留版本 Movie - 2160p 的 nfo / mediainfo 一起删掉
         owners = [x for x in strm_stems if _is_sidecar_of(x, sibling.stem)]
         if owners and max(owners, key=len) == stem:
             try:
                 sibling.unlink()
-            except OSError:
-                pass
+                removed += 1
+            except OSError as e:
+                failed.append((sibling, str(e)))
+    # STRM 本体必须成功删除；失败则不写“已删除后的残留”记录。
     f.unlink()
+    if failed:
+        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        lib = 'local' if _inside(f, L_ROOT) else ('share' if _inside(f, S_ROOT) else 'unknown')
+        _record_wash_residuals([
+            {'id': hashlib.sha1(f'{f}|{s}|{now}'.encode('utf-8')).hexdigest()[:16],
+             'lib': lib, 'strm_path': str(f), 'sidecar_path': str(s),
+             'sidecar_name': s.name, 'reason': 'sidecar_delete_failed',
+             'error': err, 'created_at': now}
+            for s, err in failed
+        ])
+    return {'sidecars_removed': removed, 'sidecars_failed': [str(s) for s, _ in failed]}
 
 
 def _classify_dir(path, base_root):
@@ -811,6 +873,26 @@ def _classify_dir(path, base_root):
     if parent_name in _CATEGORY_NAMES:
         return 'movie'
     return 'unknown'
+
+
+def _has_confirmed_residual_in_dir(d):
+    """删除目录前检查本程序登记的 sidecar 残留。
+
+    这是 1.6.4 的关键安全闸：sidecar 删除失败后，即使同目录的其它 STRM 已经
+    删除，也绝不能让 _prune_up 用 rmtree 把“待人工确认”的残留顺手带走。
+    """
+    try:
+        d = d.resolve()
+    except OSError:
+        return False
+    for r in _load_wash_residuals():
+        cp = Path(str(r.get('sidecar_path') or ''))
+        try:
+            if cp.resolve().parent == d and cp.is_file() and not Path(str(r.get('strm_path') or '')).exists():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _dir_cleanable(d):
@@ -850,6 +932,9 @@ def _prune_up(d, base_root, cloud_root):
         if not cur.exists():
             cur = cur.parent
             continue
+        if _has_confirmed_residual_in_dir(cur):
+            log.info('目录跳过清理 [%s]: 存在已确认洗版残留，等待残留页处理: %s', kind, cur)
+            return
         ok, reason = _dir_cleanable(cur)
         if not ok:
             log.info('目录跳过清理 [%s]: %s (原因: %s)', kind, cur, reason)
@@ -894,7 +979,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
     """
     st = {'strm_removed': 0, 'cloud_removed': 0,
           'cloud_missing': 0, 'cloud_ambiguous': 0, 'cloud_fallback': 0,
-          'errors': []}
+          'sidecars_removed': 0, 'sidecar_residuals': [], 'errors': []}
     parents = set()
     for f in files:
         if f.suffix.lower() != '.strm' or not _inside(f, base_root):
@@ -939,7 +1024,12 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
             continue  # 云端没删成功 -> STRM 保留
 
         try:
-            _remove_strm(f); st['strm_removed'] += 1
+            rr = _remove_strm(f)
+            st['strm_removed'] += 1
+            st['sidecars_removed'] += rr.get('sidecars_removed', 0)
+            st['sidecar_residuals'].extend(rr.get('sidecars_failed', []))
+            if rr.get('sidecars_failed'):
+                st['errors'].append(f'{f.name}: {len(rr["sidecars_failed"])} 个附属文件删除失败，已登记洗版残留')
             parents.add(f.parent)
         except OSError as e:
             st['errors'].append(f'{f.name}: {e}')
@@ -1067,82 +1157,97 @@ def scan_orphans(max_depth=5, diag=None):
     return orphans
 
 
-def scan_orphan_dirs(max_depth=5):
-    """扫描两库中的「洗版残留」：更名洗版后，治理删除 STRM 时残留的
-    字幕/元数据所在目录（目录内已无任何 .strm）。
+def _confirmed_wash_residuals(max_depth=5):
+    """返回有删除血缘的洗版残留。
 
-    去重规则：只报告最顶层的无 STRM 媒体目录——若剧名目录与其下 Season
-    都无 STRM，只报告剧名目录一条，不再重复列出内部 Season（删除顶层
-    目录即连同内部一并清理）。
-
-    实现：单次 os.walk（快）；扫描深度内逐层标记「含 STRM 的目录及其祖先」，
-    未被标记的媒体目录即候选；超过深度的未扫描子树保守视为可能含 STRM，
-    不报告（宁可漏报不误删）。
-    返回 [{'lib': 'local'|'share', 'path': str, 'kind': str, 'file_count': int, 'size': int}]
+    这里故意不再根据“metadata-only 目录”推断残留。只有本程序成功删除过
+    某条 STRM、但该 STRM 的 sidecar 删除失败，并且当前 sidecar 仍然存在、
+    原 STRM 已不存在时，才进入“已确认洗版残留”。
     """
     max_depth = _clamp_depth(max_depth)
-    out = []
-    for root, lib_name in ((L_ROOT, 'local'), (S_ROOT, 'share')):
-        if not root.exists():
+    raw = _load_wash_residuals()
+    if not raw:
+        return []
+    out, valid = [], []
+    now = time.time()
+    for r in raw:
+        sp = Path(str(r.get('strm_path') or ''))
+        cp = Path(str(r.get('sidecar_path') or ''))
+        if not sp or not cp:
             continue
-        root_parts = len(root.parts)
-        marked = set()   # 自身或其（扫描深度内）后代含 .strm 的目录
-        visited = {}     # str(dir) -> kind（仅媒体目录）
+        base = L_ROOT if _inside(cp, L_ROOT) else (S_ROOT if _inside(cp, S_ROOT) else None)
+        if base is None or not _inside(sp, base) or not _inside(cp, base):
+            continue
+        try:
+            rel_depth = len(cp.relative_to(base).parts) - 1
+        except (ValueError, OSError):
+            continue
+        # 历史记录如果已经超出当前扫描深度，保守不展示；记录仍保留，调大深度即可看到。
+        if rel_depth > max_depth:
+            valid.append(r)
+            continue
+        if sp.exists():
+            # STRM 被重新入库，旧残留记录失效。
+            continue
+        if not cp.is_file():
+            continue
+        # sidecar 必须仍在原 STRM 所在目录；删除逻辑本身只处理同目录 sidecar。
+        if cp.parent != sp.parent:
+            continue
+        rr = dict(r)
+        rr.update({'path': str(cp.parent), 'sidecar_path': str(cp),
+                   'file_count': 1, 'size': cp.stat().st_size if cp.exists() else 0,
+                   'kind': 'movie'})
+        # 根据目录结构重新分类；剧集 Season/Series root 优先。
+        kind = _classify_dir(cp.parent, base)
+        if kind not in ('movie', 'series_root', 'season'):
+            continue
+        rr['kind'] = kind
+        rr['reason_label'] = '已确认：STRM 已删除但附属文件删除失败'
+        rr['age_seconds'] = max(0, int(now - _parse_residual_ts(r.get('created_at')))) if _parse_residual_ts(r.get('created_at')) else None
+        out.append(rr)
+        valid.append(r)
+    # 清掉已经消失/重新入库的旧记录；保留深度之外的记录。
+    if len(valid) != len(raw):
+        try:
+            with _WASH_RESIDUAL_LOCK:
+                _save_wash_residuals(valid[-5000:])
+        except OSError:
+            pass
+    # 同一目录只展示一次，避免一个目录多个失败 sidecar 重复出现。
+    grouped = {}
+    for r in out:
+        key = (r['lib'], r['path'])
+        g = grouped.setdefault(key, dict(r))
+        g['residual_files'] = sorted(set((g.get('residual_files') or []) + [r['sidecar_path']]))
+        g['file_count'] = len(g['residual_files'])
+        g['size'] = sum(Path(x).stat().st_size for x in g['residual_files'] if Path(x).is_file())
+    return sorted(grouped.values(), key=lambda x: (x['lib'], x['path']))
 
-        def _mark(d):
-            x = d
-            while True:
-                marked.add(str(x))
-                if x == root:
-                    break
-                x = x.parent
 
-        for dp, dns, fns in os.walk(root, topdown=True):
-            d = Path(dp)
-            cur_depth = len(d.parts) - root_parts
-            if any(f.lower().endswith('.strm') for f in fns):
-                _mark(d)
-            if cur_depth >= max_depth:
-                # 本层文件已检查；子目录不可见时保守标记（可能藏有 strm）
-                if dns:
-                    _mark(d)
-                    pruned = len(dns)
-                    log.info('孤儿目录扫描：深度 %d 处 %d 个子目录未扫描（保守跳过）', cur_depth, pruned)
-                dns[:] = []
-                continue
-            kind = _classify_dir(d, root)
-            if kind in ('movie', 'series_root', 'season'):
-                visited[str(d)] = kind
-        # 候选：未被标记的媒体目录；父目录也是候选的跳过（顶层已覆盖）
-        candidates = {p for p, k in visited.items() if p not in marked}
-        for p in sorted(candidates):
-            if str(Path(p).parent) in candidates:
-                continue
-            d = Path(p)
-            file_count = 0
-            total_size = 0
-            try:
-                for f in d.rglob('*'):
-                    if f.is_file():
-                        file_count += 1
-                        try:
-                            total_size += f.stat().st_size
-                        except OSError:
-                            pass
-            except OSError:
-                continue
-            out.append({'lib': lib_name, 'path': p, 'kind': visited[p],
-                        'file_count': file_count, 'size': total_size})
-    out.sort(key=lambda x: (x['lib'], x['path']))
-    return out
+def _parse_residual_ts(s):
+    try:
+        return datetime.datetime.strptime(str(s), '%Y-%m-%d %H:%M:%S').timestamp()
+    except (ValueError, TypeError, OSError):
+        return 0
+
+
+def scan_orphan_dirs(max_depth=5):
+    """扫描“已确认洗版残留”。
+
+    1.6.4 起不再把任意 metadata-only / 空目录猜成残留。残留必须来自本程序
+    的删除血缘：STRM 已成功删除，但其 sidecar 删除失败并写入 journal。
+    返回 [{'lib','path','kind','file_count','size','residual_files',
+    'reason_label','strm_path',...}]。
+    """
+    return _confirmed_wash_residuals(max_depth=max_depth)
 
 
 def clean_orphan_dirs(paths, dry_run=True):
-    """删除指定的孤儿目录（仅允许 movie / series_root / season 层，且目录内无 .strm）。
+    """删除已确认的洗版残留目录/文件。
 
-    paths: 目录路径列表。dry_run=True 时只返回将删除的数量。
-    校验：目录必须在 L_ROOT 或 S_ROOT 内、归类为媒体专属目录、内部无 .strm。
-    真删时与双库清理共用跨入口文件锁，避免和正在执行的清理同时改同一批目录。
+    1.6.4 不允许仅凭“目录无 STRM”删除；路径必须仍存在于 residual journal，
+    且 journal 中记录的 sidecar 仍存在、原 STRM 仍不存在。删除后刷新 journal。
     """
     if dry_run:
         return _clean_orphan_dirs(paths, True)
@@ -1154,43 +1259,56 @@ def clean_orphan_dirs(paths, dry_run=True):
 
 
 def _clean_orphan_dirs(paths, dry_run):
-    removed = []
-    errors = []
-    for p in paths:
-        d = Path(p)
-        # 归属库
-        base = None
-        if _inside(d, L_ROOT):
-            base = L_ROOT
-        elif _inside(d, S_ROOT):
-            base = S_ROOT
-        else:
-            errors.append(f'{p}: 不在任何库内，跳过')
+    requested = {str(Path(p)) for p in (paths or [])}
+    current = _confirmed_wash_residuals(max_depth=10)
+    by_dir = defaultdict(list)
+    for r in current:
+        by_dir[str(Path(r['path']))].append(r)
+    removed, errors = [], []
+    if not requested:
+        return {'status': 'success', 'dry_run': dry_run, 'removed': [], 'count': 0, 'errors': []}
+    for p in sorted(requested):
+        rs = by_dir.get(p)
+        if not rs:
+            errors.append(f'{p}: 不在已确认洗版残留清单，跳过')
             continue
+        d = Path(p)
+        # 真正删除前再次确认：目录内不能重新出现 STRM/视频；不能出现 journal 未登记的未知文件。
+        base = L_ROOT if _inside(d, L_ROOT) else (S_ROOT if _inside(d, S_ROOT) else None)
+        if base is None:
+            errors.append(f'{p}: 不在媒体库内，跳过'); continue
         kind = _classify_dir(d, base)
         if kind not in ('movie', 'series_root', 'season'):
-            errors.append(f'{p}: 不是媒体专属目录({kind})，跳过')
-            continue
-        # 双重确认目录内无 strm
-        if any(f.is_file() and f.suffix.lower() == '.strm' for f in d.rglob('*')):
-            errors.append(f'{p}: 目录内仍有 strm，跳过')
-            continue
+            errors.append(f'{p}: 不是媒体专属目录({kind})，跳过'); continue
+        ok, reason = _dir_cleanable(d)
+        if not ok:
+            errors.append(f'{p}: {reason}，跳过'); continue
+        # 目录里如果有未登记的 metadata，说明它并非单纯失败 sidecar；也不自动整目录删。
+        registered = {str(Path(r['sidecar_path'])) for r in rs}
+        actual_files = {str(f) for f in d.rglob('*') if f.is_file()}
+        if actual_files - registered:
+            errors.append(f'{p}: 存在未登记文件，跳过，避免误删'); continue
         if dry_run:
-            removed.append(str(d))
-            continue
+            removed.append(str(d)); continue
         try:
             shutil.rmtree(d, ignore_errors=False)
             removed.append(str(d))
         except OSError as e:
             errors.append(f'{p}: {e}')
     if not dry_run and removed:
+        with _WASH_RESIDUAL_LOCK:
+            raw = _load_wash_residuals()
+            kept = [r for r in raw if str(Path(r.get('sidecar_path') or '').parent) not in set(removed)]
+            try:
+                _save_wash_residuals(kept[-5000:])
+            except OSError as e:
+                errors.append(f'残留日志更新失败: {e}')
         write_audit_log('洗版残留清理',
-                        f'清理洗版残留目录 {len(removed)} 个',
-                        [f'删除 {len(removed)} 个残留目录'] + removed[:50]
+                        f'清理已确认洗版残留目录 {len(removed)} 个',
+                        [f'删除 {len(removed)} 个已确认残留目录'] + removed[:50]
                         + (['错误: ' + e for e in errors[:3]] if errors else []))
     return {'status': 'success', 'dry_run': dry_run,
             'removed': removed, 'count': len(removed), 'errors': errors}
-
 
 def action_scan_orphans(args):
     depth = _clamp_depth(getattr(args, "max_depth", 5))
@@ -1805,6 +1923,20 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
                               'share_seasons': len(s_proper)}))
 
 
+def _current_rule_snapshot():
+    """返回当前治理相关规则及稳定指纹。所有扫描/计划/执行记录共用这一口径。"""
+    cfg = _cfg.load_config()
+    strategy = _cfg.get_strategy()
+    rule_keys = ('strategy_decision','strategy_multi_season_protect','strategy_tie_keep_local',
+                 'strategy_exempt_keywords','strategy_special_action','ingest_quiet_minutes',
+                 'ingest_interval_min','ingest_enabled')
+    rules = {k: cfg.get(k, '') for k in rule_keys}
+    rules['strategy'] = strategy
+    raw = json.dumps(rules, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    sig = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
+    return {'sig': sig, 'rules': rules}
+
+
 def save_plan(acts):
     todo = [a for a in acts if a.kind not in ('keep', 'exempt') and a.action_id]
     if not todo:
@@ -1832,10 +1964,12 @@ def save_plan(acts):
         'keep': sum(1 for a in acts if a.kind == 'keep'),
         'exempt': sum(1 for a in acts if a.kind == 'exempt'),
     }
+    rule_snapshot = _current_rule_snapshot()
     payload = {
         'schema_version': 2,
         'id': pid,
         'ts': ts,
+        'rule_sig': rule_snapshot['sig'],
         'state': 'pending',
         'stats': stats,
         'actions': actions_payload,
@@ -1894,12 +2028,22 @@ GOV_LATEST_FILE = STATE_DIR / 'gov_latest.json'
 
 
 def save_latest_scan(plan_id, result):
-    """把最近一次扫描的完整结果落盘，Web 治理页据此载入 Bot/定时巡检生成的清单。"""
+    """保存最近一次治理扫描的统一快照。
+
+    ``gov_latest.json`` 是治理总览的事实来源；即使本次 0 待处理也必须更新，
+    这样“上次扫描”不会错误地停留在旧 plan。
+    """
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.time()
+        meta = dict(result or {})
+        meta['scan_ts'] = ts
+        meta['scan_id'] = plan_id
+        rule_sig = _current_rule_snapshot()['sig']
+        meta['rule_sig'] = rule_sig
         tmp = GOV_LATEST_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'ts': time.time(), 'plan_id': plan_id, 'result': result},
-                                  ensure_ascii=False), encoding='utf-8')
+        tmp.write_text(json.dumps({'schema_version': 2, 'ts': ts, 'plan_id': plan_id,
+                                   'rule_sig': rule_sig, 'result': meta}, ensure_ascii=False), encoding='utf-8')
         tmp.replace(GOV_LATEST_FILE)
     except OSError as ex:
         log.warning('保存最近扫描结果失败: %s', ex)
@@ -1937,16 +2081,27 @@ def action_inter_check(args):
     if (loc or shr) and not getattr(args, 'silent', False):
         notify_telegram(fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
                                       len(_group_exempt_acts(exempted))))
+    def _file_count(items):
+        return sum(len(a.files) for a in items)
+    reason_counts = defaultdict(int)
+    for a in acts:
+        reason = a.meta.get('reason') or ('protected' if a.kind == 'keep' else 'exempt' if a.kind == 'exempt' else 'unknown')
+        reason_counts[reason] += 1
     result = {
         'status': 'success', 'plan_id': pid,
         'total_clean_cnt': len(loc) + len(shr),
         'del_local_cnt': len(loc), 'del_share_cnt': len(shr),
+        'del_local_files': _file_count(loc), 'del_share_files': _file_count(shr),
+        'protected_files': _file_count(keep), 'exempted_files': _file_count(exempted),
         'del_local_items': [_act_to_dict(a) for a in loc],
         'del_share_items': [_act_to_dict(a) for a in shr],
         'protected_items': [_act_to_dict(a) for a in keep],
         'exempted_items':  _group_exempt_acts(exempted),
         'exempted_count':  len(exempted),
         'quiet_skipped':   _QUIET_LAST['n'],
+        'reason_counts': dict(reason_counts),
+        'strm_counts': {'local': L_lib.strm_count, 'share': S_lib.strm_count,
+                        'total': L_lib.strm_count + S_lib.strm_count},
     }
     save_latest_scan(pid, result)
     return result
@@ -1994,7 +2149,17 @@ def _run_inter_clean(args):
             return {'status': 'error', 'code': 'plan_not_found',
                     'message': '清理计划不存在/已损坏（可能是旧格式），请重新诊断'}
         st = plan.get('state')
-        if st in ('done', 'failed'):
+        current_rule_sig = _current_rule_snapshot()['sig']
+        plan_rule_sig = str(plan.get('rule_sig') or '')
+        if plan_rule_sig and plan_rule_sig != current_rule_sig:
+            if not args.dry_run:
+                save_plan_state(args.plan, 'stale', {
+                    'stale_at': time.time(),
+                    'stale_reason': f'规则指纹变化: {plan_rule_sig} → {current_rule_sig}',
+                })
+            return {'status': 'error', 'code': 'plan_rule_changed',
+                    'message': '清理计划生成后规则已变化，请重新扫描生成新计划'}
+        if st in ('done', 'failed', 'stale'):
             return {'status': 'error', 'code': 'plan_used',
                     'message': '清理计划已执行过（state=%s），不能重复执行' % st}
         if st == 'expired':
@@ -2164,13 +2329,34 @@ class Tmdb:
 
 
 _emby_index_cache = {'ts': 0, 'data': None}
+_EMBY_INDEX_CACHE_FILE = STATE_DIR / 'emby_index_cache.json'
+_emby_index_refresh_lock = threading.Lock()
 
 
-def emby_library_index(force=False):
-    if not force and _emby_index_cache['data'] and time.time() - _emby_index_cache['ts'] < 300:
-        return _emby_index_cache['data']
+def _load_emby_index_disk():
+    try:
+        raw = json.loads(_EMBY_INDEX_CACHE_FILE.read_text(encoding='utf-8'))
+        data = raw.get('data')
+        if isinstance(data, dict): return {'ts': float(raw.get('ts', 0)), 'data': data}
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _save_emby_index_disk(data):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _EMBY_INDEX_CACHE_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'ts': time.time(), 'data': data}, ensure_ascii=False), encoding='utf-8')
+        tmp.replace(_EMBY_INDEX_CACHE_FILE)
+    except (OSError, TypeError) as e:
+        log.warning('Emby 探索索引缓存写入失败: %s', e)
+
+
+def _build_emby_library_index():
     out = {}
     for item_type in ('Movie', 'Series'):
+        media_key = 'tv' if item_type == 'Series' else 'movie'
         try:
             data = emby_request('/Items', {
                 'Recursive': 'true', 'IncludeItemTypes': item_type,
@@ -2180,16 +2366,55 @@ def emby_library_index(force=False):
             for it in data.get('Items', []):
                 tmdb_id = str((it.get('ProviderIds') or {}).get('Tmdb') or '')
                 if not tmdb_id: continue
-                out[tmdb_id] = {
-                    'id': it.get('Id'), 'name': it.get('Name'), 'type': it.get('Type'),
-                    'path': it.get('Path', '') or '', 'year': it.get('ProductionYear'),
-                    'rating': it.get('CommunityRating'),
-                    'has_image': 'Primary' in (it.get('ImageTags') or {}),
-                }
+                key = f'{media_key}:{tmdb_id}'
+                path = it.get('Path', '') or ''
+                lib = emby_lib_of(path)
+                row = out.setdefault(key, {
+                    'id': it.get('Id'), 'ids': [], 'name': it.get('Name'), 'type': it.get('Type'),
+                    'path': path, 'paths': [], 'year': it.get('ProductionYear'),
+                    'rating': it.get('CommunityRating'), 'has_image': False, 'libs': set(),
+                })
+                if it.get('Id') and it.get('Id') not in row['ids']: row['ids'].append(it.get('Id'))
+                if path and path not in row['paths']: row['paths'].append(path)
+                if lib: row['libs'].add(lib)
+                row['has_image'] = row['has_image'] or ('Primary' in (it.get('ImageTags') or {}))
+                if not row.get('path') and path: row['path'] = path
         except Exception as e:
             log.warning('Emby 索引拉取失败 (%s): %s', item_type, e)
-    _emby_index_cache['ts'] = time.time()
-    _emby_index_cache['data'] = out
+    for row in out.values():
+        row['libs'] = sorted(row['libs'])
+        row['in_local'] = 'local' in row['libs']
+        row['in_share'] = 'share' in row['libs']
+    return out
+
+
+def _emby_index_bg_refresh():
+    if not _emby_index_refresh_lock.acquire(blocking=False): return
+    try:
+        out = _build_emby_library_index()
+        _emby_index_cache.update({'ts': time.time(), 'data': out})
+        _save_emby_index_disk(out)
+    except Exception as e:
+        log.warning('Emby 探索索引后台刷新失败: %s', e)
+    finally:
+        _emby_index_refresh_lock.release()
+
+
+def emby_library_index(force=False):
+    """探索页身份索引：内存 5 分钟 → 磁盘立即返回+后台刷新 → 首次同步构建。"""
+    if not force:
+        if _emby_index_cache['data'] and time.time() - _emby_index_cache['ts'] < 300:
+            return _emby_index_cache['data']
+        disk = _load_emby_index_disk()
+        if disk:
+            _emby_index_cache.update(disk)
+            if time.time() - disk['ts'] >= 300:
+                threading.Thread(target=_emby_index_bg_refresh, daemon=True,
+                                 name='emby-index-refresh').start()
+            return _emby_index_cache['data']
+    out = _build_emby_library_index()
+    _emby_index_cache.update({'ts': time.time(), 'data': out})
+    _save_emby_index_disk(out)
     return out
 
 
@@ -2276,21 +2501,20 @@ def action_explore(args):
         return {'status': 'error', 'message': str(e)}
 
     emby_index = emby_library_index()
-    # 分库集数映射：tmdb_id -> {local_eps, share_eps, have_eps}，仅 tv 用
-    eps_map = {}
+    # 探索页只读统一 TMDB 对照缓存，不为每张海报重新请求 /tv/{id}。
+    eps_map = {}; tmdb_map = {}
     if media == 'tv':
         try:
-            ov = emby_library_overview()
-            for sr in ov.get('series', []):
-                tid = sr.get('tmdb_id')
-                if tid:
-                    eps_map[tid] = {
-                        'local_eps': sr.get('local_eps', 0),
-                        'share_eps': sr.get('share_eps', 0),
-                        'have_eps': sr.get('have_eps', 0),
-                    }
+            snap = load_library_snapshot(max_age=1800) or build_library_health_snapshot()
+            for sr in snap.get('series', []):
+                tid = str(sr.get('tmdb_id') or '')
+                if not tid: continue
+                eps_map[tid] = {'local_eps': int(sr.get('local_eps', 0) or 0),
+                                 'share_eps': int(sr.get('share_eps', 0) or 0),
+                                 'have_eps': int(sr.get('have_eps', 0) or 0)}
+                tmdb_map[tid] = dict(sr.get('tmdb_info') or {})
         except Exception as e:
-            log.warning('探索页分库集数缓存构建失败: %s', e)
+            log.warning('探索页统一快照读取失败: %s', e)
 
     cards = []
     for item in (res.get('results') or [])[:40]:
@@ -2300,11 +2524,10 @@ def action_explore(args):
         year_str = date_str[:4] if date_str else ''
         rating = item.get('vote_average') or 0
         poster = item.get('poster_path')
-        emby_hit = emby_index.get(tmdb_id)
+        emby_hit = emby_index.get(('tv' if media == 'tv' else 'movie') + ':' + tmdb_id)
         in_emby = emby_hit is not None
-        hit_lib = emby_lib_of(emby_hit.get('path') or '') if in_emby else ''
-        in_local = hit_lib == 'local'
-        in_share = hit_lib == 'share'
+        in_local = bool(emby_hit and emby_hit.get('in_local'))
+        in_share = bool(emby_hit and emby_hit.get('in_share'))
         if poster: poster_url = f'{TMDB_IMG}{poster}'
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
@@ -2313,16 +2536,8 @@ def action_explore(args):
         eps = None
         if media == 'tv' and in_emby:
             e = eps_map.get(tmdb_id) or {'local_eps': 0, 'share_eps': 0, 'have_eps': 0}
-            tmdb_total = 0
-            try:
-                info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
-                tmdb_total = sum(
-                    (s.get('episode_count') or 0)
-                    for s in (info or {}).get('seasons', [])
-                    if (s.get('season_number') or 0) > 0
-                )
-            except (TmdbError, Exception):
-                tmdb_total = 0
+            tmdb_info_cached = tmdb_map.get(tmdb_id) or {}
+            tmdb_total = int(tmdb_info_cached.get('tmdb_total') or 0)
             eps = {
                 'local': e['local_eps'], 'share': e['share_eps'],
                 'have': e['have_eps'], 'total': tmdb_total,
@@ -2457,8 +2672,14 @@ def _alive_dir_map(paths):
 
 
 def _build_emby_library_overview():
+    """构建统一媒体身份的片库快照。
+
+    关键口径：同一 TMDB TV/电影即使在本地+分享各有一条 Emby 条目，也只算
+    一个媒体身份；剧集的季/集按 ``(season, episode)`` union，避免双库互补时
+    简单相加造成虚高。没有 TMDB ID 时才退回 Emby item id。
+    """
     out = {'series': [], 'movies': []}
-    lib_of = EMBY_PATHS.lib_of  # 热循环里要分类 ~10 万个分集路径，先绑定到局部
+    lib_of = EMBY_PATHS.lib_of
     series_data = emby_request('/Items', {
         'Recursive': 'true', 'IncludeItemTypes': 'Series',
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
@@ -2471,39 +2692,65 @@ def _build_emby_library_overview():
         p = (path or '').replace('\\', '/')
         return alive.get(p.rsplit('/', 1)[0] if '/' in p else '', True)
 
+    # 先把真实分集按 Emby SeriesId 收好，再按 TMDB 身份聚合。
     eps_by_series = defaultdict(list)
     for ep in episodes_all:
         sid = ep.get('SeriesId')
-        if sid and _ep_alive(ep.get('Path')):   # 目录已空的残留分集不算入库
+        if sid and _ep_alive(ep.get('Path')):
             eps_by_series[sid].append(ep)
 
+    groups = {}
     for s in series_data.get('Items', []):
-        sid = s.get('Id'); path = s.get('Path', '') or ''; s_lib = lib_of(path)
-        # Emby 有时会残留"空壳"剧集条目（元数据存在，但没有任何实际分集文件，
-        # 常见于删除后 Emby 尚未彻底清理，或媒体库正在扫描中）。这类条目不该
-        # 出现在片库映射对照里，否则用户会看到"Emby 没有数据"却仍被列出的剧。
-        if not eps_by_series.get(sid):
-            continue
-        season_map = {}
-        # 分库集号：local_eps / share_eps 各自去重，union_eps 合并去重
-        local_eps_set = set()
-        share_eps_set = set()
-        for ep in eps_by_series.get(sid, []):
+        sid = s.get('Id')
+        if not sid or not eps_by_series.get(sid):
+            continue  # 空壳 Series 不进入片库映射
+        tmdb_id = str((s.get('ProviderIds') or {}).get('Tmdb') or '')
+        key = f'tv:{tmdb_id}' if tmdb_id else f'id:{sid}'
+        g = groups.setdefault(key, {
+            'id': sid, 'series_ids': [], 'name': s.get('Name'),
+            'year': s.get('ProductionYear'), 'rating': s.get('CommunityRating'),
+            'tmdb_id': tmdb_id or None, 'genres': list(s.get('Genres') or []),
+            'paths': [], 'libs': set(), 'has_image': False,
+            'episodes': set(), 'local_eps': set(), 'share_eps': set(),
+        })
+        if sid not in g['series_ids']:
+            g['series_ids'].append(sid)
+        path = s.get('Path', '') or ''
+        if path and path not in g['paths']:
+            g['paths'].append(path)
+        lib = lib_of(path)
+        if lib:
+            g['libs'].add(lib)
+        g['has_image'] = g['has_image'] or ('Primary' in (s.get('ImageTags') or {}))
+        if not g.get('name') and s.get('Name'):
+            g['name'] = s.get('Name')
+        if not g.get('year') and s.get('ProductionYear'):
+            g['year'] = s.get('ProductionYear')
+        for ep in eps_by_series[sid]:
             sn = ep.get('ParentIndexNumber'); en = ep.get('IndexNumber')
-            if sn is None or en is None: continue
-            season_map.setdefault(sn, set()).add(en)
+            if sn is None or en is None:
+                continue
+            try:
+                pair = (int(sn), int(en))
+            except (TypeError, ValueError):
+                continue
+            if pair[0] < 0 or pair[1] <= 0:
+                continue
+            g['episodes'].add(pair)
             ep_lib = lib_of(ep.get('Path', '') or '')
-            if ep_lib == 'local':
-                local_eps_set.add((sn, en))
-            elif ep_lib == 'share':
-                share_eps_set.add((sn, en))
-        if not season_map:
-            continue
+            if ep_lib == 'local': g['local_eps'].add(pair)
+            elif ep_lib == 'share': g['share_eps'].add(pair)
+
+    for g in groups.values():
+        season_map = defaultdict(set)
+        for sn, en in g['episodes']:
+            season_map[sn].add(en)
         seasons = []
         total_missing = 0
-        for sn in sorted(season_map.keys()):
+        for sn in sorted(season_map):
             eps_set = sorted(season_map[sn])
-            if not eps_set: continue
+            if not eps_set:
+                continue
             lo, hi = eps_set[0], eps_set[-1]
             pre = list(range(1, lo)) if lo > 1 else []
             mid = sorted(set(range(lo, hi + 1)) - set(eps_set))
@@ -2511,19 +2758,18 @@ def _build_emby_library_overview():
             total_missing += len(miss)
             seasons.append({'season': sn, 'episodes': len(eps_set), 'max_ep': hi,
                             'missing': miss, 'complete': not miss})
+        if not seasons:
+            continue
+        libs = g['libs']
         out['series'].append({
-            'id': sid, 'name': s.get('Name'),
-            'year': s.get('ProductionYear'), 'rating': s.get('CommunityRating'),
-            'tmdb_id': (s.get('ProviderIds') or {}).get('Tmdb'),
-            'genres': s.get('Genres', []),
-            'in_local': s_lib == 'local', 'in_share': s_lib == 'share', 'path': path,
-            'has_image': 'Primary' in (s.get('ImageTags') or {}),
-            'seasons': seasons, 'total_seasons': len(seasons),
-            'total_episodes': sum(x['episodes'] for x in seasons),
-            'local_eps': len(local_eps_set),
-            'share_eps': len(share_eps_set),
-            'have_eps': len(local_eps_set | share_eps_set),
-            'missing_eps': total_missing,
+            'id': g['id'], 'series_ids': g['series_ids'], 'name': g['name'],
+            'year': g['year'], 'rating': g['rating'], 'tmdb_id': g['tmdb_id'],
+            'genres': g['genres'], 'in_local': 'local' in libs, 'in_share': 'share' in libs,
+            'path': g['paths'][0] if g['paths'] else '', 'paths': g['paths'],
+            'has_image': g['has_image'], 'seasons': seasons,
+            'total_seasons': len(seasons), 'total_episodes': len(g['episodes']),
+            'local_eps': len(g['local_eps']), 'share_eps': len(g['share_eps']),
+            'have_eps': len(g['episodes']), 'missing_eps': total_missing,
             'complete': total_missing == 0 and len(seasons) > 0,
         })
 
@@ -2534,23 +2780,40 @@ def _build_emby_library_overview():
     }) or {}
     movie_items = movie_data.get('Items', [])
     m_alive = _alive_dir_map(m.get('Path') for m in movie_items)
+    movie_groups = {}
     for m in movie_items:
-        path = m.get('Path', '') or ''; m_lib = lib_of(path)
+        path = m.get('Path', '') or ''
         _pp = path.replace('\\', '/')
         if not m_alive.get(_pp.rsplit('/', 1)[0] if '/' in _pp else '', True):
-            continue   # 电影目录已空：Emby 残留条目
-        out['movies'].append({
-            'id': m.get('Id'), 'name': m.get('Name'),
+            continue
+        tmdb_id = str((m.get('ProviderIds') or {}).get('Tmdb') or '')
+        key = f'movie:{tmdb_id}' if tmdb_id else f'id:{m.get("Id")}'
+        g = movie_groups.setdefault(key, {
+            'id': m.get('Id'), 'ids': [], 'name': m.get('Name'),
             'year': m.get('ProductionYear'), 'rating': m.get('CommunityRating'),
-            'tmdb_id': (m.get('ProviderIds') or {}).get('Tmdb'),
-            'genres': m.get('Genres', []),
-            'in_local': m_lib == 'local', 'in_share': m_lib == 'share',
-            'path': path, 'has_image': 'Primary' in (m.get('ImageTags') or {}),
+            'tmdb_id': tmdb_id or None, 'genres': list(m.get('Genres') or []),
+            'paths': [], 'libs': set(), 'has_image': False,
+        })
+        if m.get('Id') and m.get('Id') not in g['ids']:
+            g['ids'].append(m.get('Id'))
+        if path and path not in g['paths']:
+            g['paths'].append(path)
+        lib = lib_of(path)
+        if lib: g['libs'].add(lib)
+        g['has_image'] = g['has_image'] or ('Primary' in (m.get('ImageTags') or {}))
+    for g in movie_groups.values():
+        libs = g['libs']
+        out['movies'].append({
+            'id': g['id'], 'ids': g['ids'], 'name': g['name'], 'year': g['year'],
+            'rating': g['rating'], 'tmdb_id': g['tmdb_id'], 'genres': g['genres'],
+            'in_local': 'local' in libs, 'in_share': 'share' in libs,
+            'path': g['paths'][0] if g['paths'] else '', 'paths': g['paths'],
+            'has_image': g['has_image'],
         })
     return out
 
-
 def classify_series_by_tmdb(local_seasons, tmdb_info):
+    """按 TMDB 已播集数对照片库，避免连载未播集造成假缺集。"""
     local_map = {s['season']: s['episodes'] for s in local_seasons if s['season'] > 0}
     local_total = sum(local_map.values())
     if not tmdb_info:
@@ -2559,16 +2822,27 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
                 'seasons': [{'season': sn, 'local': local_map[sn], 'tmdb': None, 'diff': None, 'status': 'unknown'} for sn in sorted(local_map)]}
     tmdb_status = tmdb_info.get('status', '') or ''
     tmdb_map = {}
-    for s in (tmdb_info.get('seasons') or []):
-        sn = s.get('season_number')
+    season_rows = tmdb_info.get('seasons') or []
+    for ss in season_rows:
+        sn = ss.get('season_number')
         if sn is None or sn <= 0:
             continue
-        # 只统计「有实际集数」的季；episode_count=0 的占位季（未播/预留）不计入，
-        # 否则会导致 tmdb_total 虚高、season_diff 冒出本地根本没有的空季，误报缺集。
-        ec = s.get('episode_count', 0) or 0
+        ec = int(ss.get('episode_count', 0) or 0)
         if ec <= 0:
             continue
-        tmdb_map[sn] = ec
+        tmdb_map[int(sn)] = ec
+    # 对于正在播出的最后一季，只统计 last_episode_to_air 之前已经播出的集；
+    # 更后的季直接忽略。没有该字段时保留旧口径。
+    last = tmdb_info.get('last_episode_to_air') or {}
+    try:
+        last_s = int(last.get('season_number') or 0)
+        last_e = int(last.get('episode_number') or 0)
+    except (TypeError, ValueError):
+        last_s = last_e = 0
+    if last_s > 0 and last_e > 0:
+        tmdb_map = {sn: (last_e if sn == last_s else ec)
+                    for sn, ec in tmdb_map.items()
+                    if sn < last_s or sn == last_s}
     tmdb_total = sum(tmdb_map.values())
     season_diff = []
     for sn in sorted(set(local_map.keys()) | set(tmdb_map.keys())):
@@ -2603,7 +2877,115 @@ def read_manual_done() -> dict:
         return {}
 
 
-def gap_report(max_age=6 * 3600):
+def _apply_manual_done_to_series(series):
+    """统一应用手动完结标记，并返回不修改原对象的健康统计。"""
+    done = read_manual_done()
+    rows = []
+    for src in series or []:
+        s = dict(src)
+        ti = dict(s.get('tmdb_info') or {})
+        ids = [str(x) for x in (s.get('series_ids') or [s.get('id')]) if x]
+        if any(x in done for x in ids) and ti.get('match_status') in ('missing', 'ongoing'):
+            ti['match_status'] = 'aligned'
+            ti['manual_done'] = True
+        s['tmdb_info'] = ti
+        s['_md'] = bool(ti.get('manual_done'))
+        rows.append(s)
+    return rows
+
+
+def build_library_health_snapshot(max_age=1800):
+    """统一媒体健康快照：所有页面/晨报/治理总览使用同一份 TMDB 对照缓存。
+    只读缓存，不在页面请求线程里触发全量 Emby/TMDB 扫描；缓存过期由后台任务刷新。"""
+    data = read_emby_lib_cache(max_age=None) or {}
+    if not data.get('series') and not data.get('movies'):
+        data = emby_library_overview(force=False) or {}
+    series = _apply_manual_done_to_series(data.get('series') or [])
+    movies = data.get('movies') or []
+    stats = {'total_series': len(series), 'total_movies': len(movies),
+             'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0,
+             'unmatched': 0, 'no_tmdb': 0, 'manual_done': 0}
+    top = []
+    for s in series:
+        st = (s.get('tmdb_info') or {}).get('match_status', 'unmatched')
+        if st in stats: stats[st] += 1
+        if s.get('_md'): stats['manual_done'] += 1
+        if st == 'missing':
+            ti = s.get('tmdb_info') or {}
+            top.append({'name': s.get('name'), 'year': s.get('year'),
+                        'diff': abs(int(ti.get('diff') or 0)),
+                        'tot': int(ti.get('tmdb_total') or 0),
+                        'have': int(s.get('have_eps') or s.get('total_episodes') or 0)})
+    top.sort(key=lambda x: x['diff'], reverse=True)
+    eps = sum(int(s.get('have_eps') or s.get('total_episodes') or 0) for s in series)
+    snapshot = {'schema_version': 1, 'ts': data.get('ts') or 0,
+                'series': series, 'movies': movies, 'stats': stats,
+                'episodes': eps, 'top_missing': top[:10],
+                'source': 'emby_tmdb_cache'}
+    return snapshot
+
+
+def save_library_snapshot(snapshot):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = LIBRARY_SNAPSHOT_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding='utf-8')
+        tmp.replace(LIBRARY_SNAPSHOT_FILE)
+    except (OSError, TypeError) as e:
+        log.warning('统一片库快照写入失败: %s', e)
+
+
+def load_library_snapshot(max_age=None, background_refresh=True):
+    try:
+        data = json.loads(LIBRARY_SNAPSHOT_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if max_age is not None and time.time() - float(data.get('ts') or 0) > max_age:
+        if background_refresh:
+            threading.Thread(target=refresh_library_snapshot_background, daemon=True, name='library-snapshot-refresh').start()
+        return data
+    return data
+
+
+def refresh_library_snapshot_background():
+    """从已存在的 TMDB 对照缓存生成轻量快照；不触发网络扫描。"""
+    try:
+        snap = build_library_health_snapshot()
+        if snap.get('series') or snap.get('movies'):
+            save_library_snapshot(snap)
+    except Exception as e:
+        log.warning('统一片库快照刷新失败: %s', e)
+
+
+def unified_health(max_age=1800):
+    """统一健康数据入口。优先磁盘快照；过期只返回旧快照并后台刷新，保证 Web 秒开。"""
+    snap = load_library_snapshot(max_age=max_age)
+    if snap:
+        return snap
+    snap = build_library_health_snapshot()
+    if snap.get('series') or snap.get('movies'):
+        save_library_snapshot(snap)
+    return snap
+
+
+def daily_consistency_snapshot(force_refresh: bool = False) -> dict:
+    """轻量统一事实快照：晨报、总览、执行记录口径使用同一批缓存与规则指纹。"""
+    ingest = refresh_ingest_cache(hours=24) if force_refresh else (read_ingest_cache() or {})
+    health = unified_health(max_age=1800) or {}
+    gov = load_latest_scan() or {}
+    rule_snapshot = _current_rule_snapshot()
+    return {
+        'schema_version': 2, 'ts': time.time(), 'rule_sig': rule_snapshot['sig'],
+        'ingest': {'ts': ingest.get('ts', 0), 'ok': ingest.get('ok', True), 'stats': ingest.get('stats', {}),
+                   'warning': ingest.get('stale_error') or ('' if ingest.get('ok', True) else ingest.get('error', ''))},
+        'library': {'ts': health.get('ts', 0), 'stats': health.get('stats', {}), 'episode_total': health.get('episode_total', 0),
+                    'top_missing': (health.get('top_missing') or [])[:10]},
+        'governance': {'ts': gov.get('ts', 0), 'scan_id': gov.get('plan_id', ''), 'result': gov.get('result') or {}},
+        'rules': rule_snapshot['rules'],
+    }
+
+
+def gap_report(max_age=30 * 60):
     """缺集检测的统一口径：与网页「片库映射 → 缺集」一致，按 TMDB 对照判断。
     优先读网页同一份对照缓存；缓存过期/不存在时现场对照一次。
     返回 {'missing': [...], 'stats': {...}, 'from_cache': bool, 'cache_ts': float}"""
@@ -2619,7 +3001,8 @@ def gap_report(max_age=6 * 3600):
             data['ts'] = time.time()
         except Exception:
             pass
-    series = data.get('series') or []
+    series = _apply_manual_done_to_series(data.get('series') or [])
+    save_library_snapshot(build_library_health_snapshot(max_age=max_age))
     stats = {'total': len(series), 'aligned': 0, 'missing': 0, 'extra': 0,
              'ongoing': 0, 'unmatched': 0}
     missing = []
@@ -2627,7 +3010,8 @@ def gap_report(max_age=6 * 3600):
     for s_ in series:
         st = (s_.get('tmdb_info') or {}).get('match_status', 'unmatched')
         if st == 'no_tmdb': st = 'unmatched'
-        if done and str(s_.get('id')) in done and st in ('missing', 'ongoing'):
+        ids = [str(x) for x in (s_.get('series_ids') or [s_.get('id')]) if x]
+        if any(x in done for x in ids) and st in ('missing', 'ongoing'):
             st = 'aligned'
         if st in stats: stats[st] += 1
         if st == 'missing': missing.append(s_)
@@ -2671,16 +3055,34 @@ def action_emby_library(args):
                 log.warning('TMDB 查询异常 %s: %s', tmdb_id, e); info = None; tmdb_errors += 1
             s['tmdb_info'] = classify_series_by_tmdb(s.get('seasons', []), info)
         t.save()
+    # 手动完结统一应用到后端快照，避免治理总览/晨报与片库映射各算一套。
+    done = read_manual_done()
+    for s in series:
+        ti = s.get('tmdb_info') or {}
+        ids = [str(x) for x in (s.get('series_ids') or [s.get('id')]) if x]
+        if any(x in done for x in ids) and ti.get('match_status') in ('missing', 'ongoing'):
+            ti = dict(ti)
+            ti['match_status'] = 'aligned'
+            ti['diff'] = 0
+            s['tmdb_info'] = ti
+            s['_md'] = True
     stats = {'total_series': len(series), 'total_movies': len(movies),
              'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0, 'unmatched': 0, 'no_tmdb': 0,
              'complete_series': 0, 'incomplete_series': 0}
     for s in series:
         st = (s.get('tmdb_info') or {}).get('match_status', 'unmatched')
         if st in stats: stats[st] += 1
-        if s.get('complete'): stats['complete_series'] += 1
+        if s.get('complete') or st == 'aligned': stats['complete_series'] += 1
         else: stats['incomplete_series'] += 1
-    return {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
-            'tmdb_errors': tmdb_errors, 'emby_host': EMBY_HOST}
+    result = {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
+              'tmdb_errors': tmdb_errors, 'emby_host': EMBY_HOST}
+    if with_tmdb:
+        try:
+            save_emby_lib_cache(result)
+            save_library_snapshot(build_library_health_snapshot())
+        except Exception as e:
+            log.warning('保存统一片库对照缓存失败: %s', e)
+    return result
 
 
 # ═══════════════════ 入库监控（缓存层） ═══════════════════
@@ -2710,7 +3112,7 @@ def _fetch_ingest(hours=24):
 
     base = {'Recursive': 'true', 'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'MinDateCreated': min_date}
     try:
-        for m in _paged_items(dict(base, IncludeItemTypes='Movie', Fields='DateCreated,Path,Genres')):
+        for m in _paged_items(dict(base, IncludeItemTypes='Movie', Fields='DateCreated,Path,Genres,ProviderIds,ProductionYear,Name')):
             dt = parse_dt(m.get('DateCreated'))
             if not dt or dt < cutoff: continue
             movies_raw.append(m)
@@ -2722,7 +3124,7 @@ def _fetch_ingest(hours=24):
         errors.append('电影: %s' % e)
 
     try:
-        for e in _paged_items(dict(base, IncludeItemTypes='Episode', Fields='DateCreated,Path,SeriesName,Genres')):
+        for e in _paged_items(dict(base, IncludeItemTypes='Episode', Fields='DateCreated,Path,SeriesName,Genres,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,ProductionYear,Name')):
             dt = parse_dt(e.get('DateCreated'))
             if not dt or dt < cutoff: continue
             episodes_raw.append(e)
@@ -2731,10 +3133,37 @@ def _fetch_ingest(hours=24):
         log.warning('入库剧集拉取失败: %s', e)
         errors.append('剧集: %s' % e)
 
-    total_mov = sum(len(v) for c in mov_tree.values() for v in c.values())
-    total_series = sum(len(s) for c in tv_tree.values() for s in c.values())
-    total_eps = sum(n for c in tv_tree.values() for s in c.values() for n in s.values())
+    # 统计口径：按媒体身份去重。双库同一 TMDB 电影只算 1 部；剧集按
+    # 规范化剧名+年份识别跨库同一剧，再按 (season, episode) union。
+    def _ingest_series_key(e):
+        name = _normalize_title(str(e.get('SeriesName') or e.get('Name') or '')).casefold()
+        year = str(e.get('ProductionYear') or '')
+        # Episode 的 ProviderIds 常常是 episode 自身 ID，不能拿它当 Series ID。
+        return f"name:{name}|year:{year}" if name else f"sid:{e.get('SeriesId') or ''}"
 
+    movie_ids, movie_fallback = set(), set()
+    series_ids, episode_ids = set(), set()
+    for m in movies_raw:
+        tid = str((m.get('ProviderIds') or {}).get('Tmdb') or '')
+        if tid: movie_ids.add(tid)
+        else: movie_fallback.add((_normalize_title(str(m.get('Name') or '')).casefold(), str(m.get('ProductionYear') or '')))
+    for e in episodes_raw:
+        sid = _ingest_series_key(e)
+        if sid: series_ids.add(sid)
+        try:
+            pair = (int(e.get('ParentIndexNumber')), int(e.get('IndexNumber')))
+        except (TypeError, ValueError):
+            pair = None
+        if pair and pair[0] >= 0 and pair[1] > 0 and sid:
+            episode_ids.add((sid, pair))
+        elif sid:
+            # 旧版/测试数据没有季集字段时，退回资源路径去重，避免把统计变成 0。
+            episode_ids.add((sid, 'item:' + str(e.get('Path') or e.get('Id') or e.get('Name') or '')))
+    total_mov = len(movie_ids) + len(movie_fallback)
+    total_series = len(series_ids)
+    total_eps = len(episode_ids)
+
+    # 保留原始分类树供详情展示，但 stats 使用身份去重后的数字。
     return {
         'ts': time.time(),
         'hours': hours,
@@ -2975,68 +3404,101 @@ def _save_sub_state(state: dict):
 
 
 def _emby_series_latest_ep(series_tmdb_id: str):
-    """查 Emby 里某剧（按 tmdb_id）的已有集与最新集。
-    最新集 = 已有集里 (季, 集) 最大的一集，不按 DateCreated——洗版 / 重新入库的旧集
-    DateCreated 最新，按它取会让「最新集」倒退，下次刷新又把旧集当新集播报。
-    同一集常在本地 + 分享两库各有一份，按 (季, 集) 去重。"""
+    """查 Emby 里某剧（按 tmdb_id）的所有副本并 union 分集。
+
+    同一剧可能同时存在本地/分享两个 Series 条目；旧版 Limit=1 会随机只取一边，
+    导致追更把另一边已有的集误报为缺集。1.6.3 对所有匹配 Series 聚合 (季,集)。
+    """
     if not series_tmdb_id: return None
+    items = []
     try:
         data = emby_request('/Items', {
             'Recursive': 'true', 'IncludeItemTypes': 'Series',
-            'Fields': 'ProviderIds,Name', 'Limit': 1,
+            'Fields': 'ProviderIds,Name,Path', 'Limit': 50000,
             'AnyProviderIdEquals': f'Tmdb.{series_tmdb_id}',
         }) or {}
+        items = data.get('Items') or []
     except Exception:
-        data = {}
-    items = data.get('Items') or []
+        items = []
     if not items:
         try:
             data = emby_request('/Items', {
                 'Recursive': 'true', 'IncludeItemTypes': 'Series',
-                'Fields': 'ProviderIds,Name', 'Limit': 50000,
+                'Fields': 'ProviderIds,Name,Path', 'Limit': 50000,
             }) or {}
-            for it in data.get('Items') or []:
-                tid = str((it.get('ProviderIds') or {}).get('Tmdb') or '')
-                if tid == str(series_tmdb_id):
-                    items = [it]; break
+            items = [it for it in (data.get('Items') or [])
+                     if str((it.get('ProviderIds') or {}).get('Tmdb') or '') == str(series_tmdb_id)]
         except Exception:
             return None
     if not items: return None
-    series = items[0]
-    sid = series.get('Id')
-    sname = series.get('Name')
-    try:
-        eps = emby_request('/Items', {
-            'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-            'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated',
-            'Limit': 50000,  # 长寿剧双库各一份时 5000 会被截断，误报缺集
-        }) or {}
-    except Exception:
-        return None
-    # 收集去重后的 (季, 集)；S00 特别篇、无集号的条目不计
-    have = set()
-    created = {}
-    for ep in eps.get('Items') or []:
+    have = set(); created = {}; series_ids = []
+    names = []
+    for series in items:
+        sid = series.get('Id')
+        if not sid: continue
+        series_ids.append(sid)
+        if series.get('Name') and series.get('Name') not in names:
+            names.append(series.get('Name'))
         try:
-            sn = int(ep.get('ParentIndexNumber') or 0)
-            en = int(ep.get('IndexNumber') or 0)
-            en_end = int(ep.get('IndexNumberEnd') or en)
-        except (TypeError, ValueError):
+            eps = emby_request('/Items', {
+                'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
+                'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated,Path',
+                'Limit': 50000,
+            }) or {}
+        except Exception:
             continue
-        if sn <= 0 or en <= 0: continue
-        # 合集文件（E01-E02）按区间逐集计入，避免被当成缺集
-        for e in range(en, max(en, en_end) + 1):
-            have.add((sn, e))
-        created[(sn, en)] = max(created.get((sn, en), ''), ep.get('DateCreated') or '')
+        for ep in eps.get('Items') or []:
+            try:
+                sn = int(ep.get('ParentIndexNumber') or 0)
+                en = int(ep.get('IndexNumber') or 0)
+                en_end = int(ep.get('IndexNumberEnd') or en)
+            except (TypeError, ValueError):
+                continue
+            if sn <= 0 or en <= 0: continue
+            for e in range(en, max(en, en_end) + 1):
+                have.add((sn, e))
+            created[(sn, en)] = max(created.get((sn, en), ''), ep.get('DateCreated') or '')
     if not have: return None
     sn, en = max(have)
     return {
-        'series_id': sid, 'series_name': sname,
-        'season': sn,
-        'episode': en,
+        'series_id': series_ids[0] if series_ids else None,
+        'series_ids': series_ids,
+        'series_name': names[0] if names else '',
+        'season': sn, 'episode': en,
         'date_created': created.get((sn, en), ''),
-        'episodes': have,   # {(季, 集)}，缺集判定逐集对照用
+        'episodes': have,
     }
+
+
+def _tmdb_aired_set_from_info(info):
+    """从已取得的 TMDB /tv/{id} 原始响应计算已播 (季,集)，不重复请求 TMDB。"""
+    if not info:
+        return set()
+    aired_seasons = {}
+    for ss in (info.get('seasons') or []):
+        sn = ss.get('season_number')
+        if sn is None or sn <= 0:
+            continue
+        try:
+            aired_seasons[int(sn)] = int(ss.get('episode_count', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    last = info.get('last_episode_to_air') or {}
+    try:
+        last_s = int(last.get('season_number') or 0)
+        last_e = int(last.get('episode_number') or 0)
+    except (TypeError, ValueError):
+        last_s = last_e = 0
+    aired = set()
+    for sn, ec in aired_seasons.items():
+        if last_s > 0 and last_e > 0:
+            if sn < last_s: n = ec
+            elif sn == last_s: n = last_e
+            else: continue
+        else:
+            n = ec
+        aired.update((sn, e) for e in range(1, n + 1))
+    return aired
 
 
 def _tmdb_series_info(tmdb_id):
@@ -3058,23 +3520,11 @@ def _tmdb_series_info(tmdb_id):
                 'air_date': s.get('air_date') or '',
             }
         last = info.get('last_episode_to_air') or {}
-        try:
-            last_s = int(last.get('season_number') or 0)
-            last_e = int(last.get('episode_number') or 0)
-        except (TypeError, ValueError):
-            last_s = last_e = 0
-        aired = set()
-        for sn, v in aired_seasons.items():
-            if last_s > 0 and last_e > 0:
-                if sn < last_s: n = v['episode_count']
-                elif sn == last_s: n = last_e
-                else: continue          # 尚未开播的新季
-            else:
-                n = v['episode_count']  # 无 last_episode_to_air：旧口径
-            aired.update((sn, e) for e in range(1, n + 1))
+        aired = _tmdb_aired_set_from_info(info)
         return {
             'name': info.get('name'),
             'status': info.get('status', ''),
+            'last_episode_to_air': last,
             'seasons': aired_seasons,
             'total_episodes': len(aired),   # 已播集数（不含未播集 / S00）
             'aired': aired,                 # {(季, 集)}
@@ -3193,12 +3643,12 @@ MORNING_GAP_TOP = 50   # 晨报里最多列出多少部缺集剧（按缺得最�
 def build_morning_report(items: list, force_refresh: bool = False) -> str:
     now = datetime.datetime.now()
     lines = [tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_WEEK[now.weekday()]}')]
+    snap = daily_consistency_snapshot(force_refresh=force_refresh)
+    lines.append(f"🧭 <i>统一快照 · 规则 {html.escape(str(snap.get('rule_sig') or ''))}</i>")
 
     if 'stats' in items:
         try:
-            # 晨报使用强制刷新（或读缓存）
-            s_res = action_stats(argparse.Namespace(kw='force' if force_refresh else ''))
-            st = s_res.get('stats') or {}
+            st = (snap.get('ingest') or {}).get('stats') or {}
             lines += ['', '📊 <b>近 24 小时入库</b>',
                       f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
                       f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
@@ -3493,6 +3943,7 @@ def _refresh_tmdb_scan():
         res = {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
                'tmdb_errors': tmdb_errors, 'with_tmdb': True, 'emby_host': EMBY_HOST}
         save_emby_lib_cache(res)
+        save_library_snapshot(build_library_health_snapshot())
         cfg = _cfg.load_config()
         cfg['tmdb_scan_last_ts'] = str(time.time())
         _cfg.save_config(cfg)

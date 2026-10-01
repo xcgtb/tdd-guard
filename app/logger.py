@@ -20,13 +20,15 @@ def _ensure_dir():
     RECORDS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def write(category: str, title: str, details=None):
+def write(category: str, title: str, details=None, rule_sig=None):
     """追加一条记录（纯追加，不重写整个文件）"""
     rec = {
+        'schema_version': 2,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'category': str(category),
         'title': str(title),
         'details': [str(d) for d in (details or [])],
+        'rule_sig': str(rule_sig or ''),
     }
     line = json.dumps(rec, ensure_ascii=False) + '\n'
     with _LOCK:

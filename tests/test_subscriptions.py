@@ -58,13 +58,14 @@ class _Env:
 
     def __init__(self):
         self.episodes = []
+        self.series_items = [{'Id': 'S1', 'Name': '测试剧', 'ProviderIds': {'Tmdb': TMDB_ID}}]
         self.tmdb = None
         self.ep_calls = []
 
     def _emby(self, path, params=None, method='GET', timeout=15):
         params = params or {}
         if params.get('IncludeItemTypes') == 'Series':
-            return {'Items': [{'Id': 'S1', 'Name': '测试剧', 'ProviderIds': {'Tmdb': TMDB_ID}}]}
+            return {'Items': list(self.series_items)}
         if params.get('IncludeItemTypes') == 'Episode':
             self.ep_calls.append(dict(params))
             return {'Items': list(self.episodes)}
@@ -193,6 +194,32 @@ class TestMissingEpisodes:
             p = env.ep_calls[0]
             assert p['ParentId'] == 'S1' and int(p['Limit']) >= 5000
             assert 'SortBy' not in p
+
+    def test_local_and_share_series_are_unioned(self):
+        with _Env() as env:
+            env.series_items = [
+                {'Id': 'LOCAL', 'Name': '测试剧', 'ProviderIds': {'Tmdb': TMDB_ID}, 'Path': '/local/测试剧'},
+                {'Id': 'SHARE', 'Name': '测试剧', 'ProviderIds': {'Tmdb': TMDB_ID}, 'Path': '/share/测试剧'},
+            ]
+            # Fake Emby endpoint uses the same episode set for both Series IDs only if we
+            # explicitly vary it below.
+            def fake_emby(path, params=None, method='GET', timeout=15):
+                params = params or {}
+                if params.get('IncludeItemTypes') == 'Series':
+                    return {'Items': list(env.series_items)}
+                if params.get('IncludeItemTypes') == 'Episode':
+                    sid = params.get('ParentId')
+                    return {'Items': _full({1: 5}) if sid == 'LOCAL' else _full({1: 6})}
+                return {}
+            old = engine.emby_request
+            engine.emby_request = fake_emby
+            try:
+                env.tmdb = _tmdb_info({1: 6}, last=(1, 6), status='Ended')
+                u = env.run()
+                assert u is None
+                assert env.state()['latest_ep'] == 'S01E06'
+            finally:
+                engine.emby_request = old
 
 
 class TestNewEpisode:
