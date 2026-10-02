@@ -471,7 +471,8 @@ def _build_plan_with_libs():
                                   'title': disp, 'keywords': hit_kws}))
             continue
 
-        if _share_wins(_best(s_files), _best(l_files)):
+        s_best, l_best = _best(s_files), _best(l_files)
+        if _share_wins(get_score(s_best), get_score(l_best), s_best, l_best):
             acts.append(Act('loc', f'🎬 《{disp}》 (分享画质达标，穿透删本地腾网盘)',
                             f'├─ 🎬 《{disp}》: 分享画质达标 ➔ CD2联动删除115网盘旧源', l_files,
                             meta={'reason': 'share_better', 'reason_label': '分享画质达标', 'title': disp}))
@@ -532,9 +533,9 @@ def _build_plan_with_libs():
                                       'title': disp, 'season': 0}))
         elif special_action != 'ignore' and s00_files and l00_files:
             # 画质对比档（一边没有时不做处理）
-            s_q, l_q = _best(s00_files), _best(l00_files)
+            s_best, l_best = _best(s00_files), _best(l00_files)
             tag = f'《{disp}》S00'
-            if _share_wins(s_q, l_q):
+            if _share_wins(get_score(s_best), get_score(l_best), s_best, l_best):
                 acts.append(Act('loc', f'🎬 {tag} (特别篇画质对比 → 删本地)',
                                 f'├─ 🎬 {tag}: 分享画质达标 ➔ CD2联动删除115网盘旧源',
                                 l00_files,
@@ -1019,7 +1020,7 @@ def action_inter_check(args):
     write_audit_log('库间查重巡检',
                     f'扫描完成：待清理本地 {len(loc)} 项, 待清理分享 {len(shr)} 项, 保护 {len(keep)} 项, 豁免 {len(exempted)} 项')
     if (loc or shr) and not getattr(args, 'silent', False):
-        notify_telegram(fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
+        _eng().notify_telegram(_eng().fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
                                       len(_group_exempt_acts(exempted))))
     def _file_count(items):
         return sum(len(a.files) for a in items)
@@ -1112,7 +1113,7 @@ def _run_inter_clean(args):
             save_plan_state(args.plan, 'executing')
 
         _eng()._invalidate_lib_cache()  # 二次校验必须基于最新磁盘状态，不能复用 30 秒内的 _eng().Lib 快照
-        current = build_plan()
+        current = _eng().build_plan()
         current_by_id = {a.action_id: a for a in current
                          if a.kind not in ('keep', 'exempt') and a.action_id}
         old_actions = {act.get('action_id', ''): act
@@ -1140,7 +1141,7 @@ def _run_inter_clean(args):
             todo.append(dataclasses.replace(cur, files=files))
         skipped = len(old_actions) - len(todo)
     else:
-        todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt')]
+        todo = [a for a in _eng().build_plan() if a.kind not in ('keep', 'exempt')]
         skipped = 0
 
     n_loc = n_sh = 0
@@ -1185,11 +1186,11 @@ def _run_inter_clean(args):
                         detail + [f'⚠️ {w}' for w in warns])
         # Bot 端发起的清理会传 notify=False：由 Bot 自己编辑确认消息，避免重复弹两条
         if (n_loc or n_sh) and getattr(args, 'notify', True):
-            notify_telegram('\n'.join([
-                tg_title('🗑️', '清理完成', tg_stamp()), '',
-                tg_row('💾', '释放本地', n_loc),
-                tg_row('📤', '淘汰分享', n_sh),
-                tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
+            _eng().notify_telegram('\n'.join([
+                _eng().tg_title('🗑️', '清理完成', _eng().tg_stamp()), '',
+                _eng().tg_row('💾', '释放本地', n_loc),
+                _eng().tg_row('📤', '淘汰分享', n_sh),
+                _eng().tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
         if args.plan:
             save_plan_state(args.plan, 'done', {
                 'executed_at': time.time(),

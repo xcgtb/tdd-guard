@@ -136,7 +136,7 @@ def _build_emby_library_index():
                 if not tmdb_id: continue
                 key = f'{media_key}:{tmdb_id}'
                 path = it.get('Path', '') or ''
-                lib = emby_lib_of(path)
+                lib = _eng().emby_lib_of(path)
                 row = out.setdefault(key, {
                     'id': it.get('Id'), 'ids': [], 'name': it.get('Name'), 'type': it.get('Type'),
                     'path': path, 'paths': [], 'year': it.get('ProductionYear'),
@@ -192,7 +192,7 @@ def action_explore(args):
     query = (getattr(args, 'q', '') or '').strip()
     genre = (getattr(args, 'genre', '') or '').strip()
 
-    t = Tmdb()
+    t = _eng().Tmdb()
     if not t.key:
         return {'status': 'error', 'message': '未配置 TMDB_KEY'}
 
@@ -467,7 +467,7 @@ def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
                 continue
             if sn <= 0 or en <= 0:
                 continue
-            lib = emby_lib_of(ep.get('Path') or '')
+            lib = _eng().emby_lib_of(ep.get('Path') or '')
             if not lib:
                 continue  # 不在两个库根内：不算入库（与片库映射口径一致）
             for e in range(en, max(en, en_end) + 1):
@@ -521,7 +521,7 @@ def _tmdb_series_info(tmdb_id):
     连载季 episode_count 含未播集，直接求和会让在更的剧永远「缺集」。
     缺 last_episode_to_air 时退回旧口径（各季 episode_count 全部计入）。"""
     try:
-        t = Tmdb()
+        t = _eng().Tmdb()
         info = t.get(f'/tv/{tmdb_id}', ttl=_eng().TMDB_INFO_TTL)
         t.save()
         if not info: return None

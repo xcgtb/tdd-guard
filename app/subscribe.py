@@ -339,7 +339,7 @@ def check_subscriptions(send_notify=True) -> dict:
     # 保证下一轮算出同一批 new_eps 继续重试 —— 既不丢通知也不重复刷屏。
     sent_ok = True
     if send_notify and updates:
-        lines = [tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
+        lines = [_eng().tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
         for u in updates:
             lines.append('')
             lines.append(f"📺 <b>《{html.escape(str(u['name'] or ''))}》</b>")
@@ -349,7 +349,7 @@ def check_subscriptions(send_notify=True) -> dict:
                 lines.append(f"　🆕 新增入库 <b>{_fmt_ep_ranges(_keys_to_eps(u['new_eps']))}</b>")
             if u['newly_missing']:
                 lines.append(f"　⚠️ 缺集 <b>{_fmt_ep_ranges(_keys_to_eps(u['newly_missing']))}</b>")
-        sent_ok = notify_telegram('\n'.join(lines))
+        sent_ok = _eng().notify_telegram('\n'.join(lines))
         if not sent_ok:
             log.warning('追更订阅推送失败，本轮不记账，下次继续重试')
 

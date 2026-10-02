@@ -222,7 +222,7 @@ def _recent(item_type, fields, limit, cutoff):
         yield it
 
 def _src(path):
-    lib = emby_lib_of(path)
+    lib = _eng().emby_lib_of(path)
     return '本地影视库' if lib == 'local' else ('分享影视库' if lib == 'share' else '其它库')
 
 def emby_path_to_container(emby_path):

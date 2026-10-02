@@ -36,10 +36,10 @@ try:
 except ImportError:
     from tg import tg_title, tg_row, tg_stamp, fmt_scan_text, split_telegram_html, notify_telegram  # noqa: F401
 try:
-    from .lib import (Lib, _get_lib, _invalidate_lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
+    from .lib import (Lib, _get_lib, _invalidate_lib_cache, _lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
                       _match_governance_key, _normalize_title, _find_dir_fuzzy, _under_tv_category)  # noqa: F401
 except ImportError:
-    from lib import (Lib, _get_lib, _invalidate_lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
+    from lib import (Lib, _get_lib, _invalidate_lib_cache, _lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
                      _match_governance_key, _normalize_title, _find_dir_fuzzy, _under_tv_category)  # noqa: F401
 try:
     from .emby import emby_request, container_to_emby_path, emby_path_to_container, notify_emby_deleted, notify_emby_refresh, parse_dt, _fetch_all_episodes, _alive_dir_map, _dir_has_media, _paged_items, _src, _recent  # noqa: F401

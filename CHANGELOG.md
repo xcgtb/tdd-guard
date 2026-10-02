@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.6
+
+### 拆分收尾：monkeypatch 穿透补丁（修复 v1.7.5 拆分遗留的 25 项测试失败）
+
+v1.7.5 的模块拆分约定「跨模块调用统一经 `_eng()` 惰性访问」在拆分/替换时留了四类缺口，本版一次性补齐（核验：240/240 测试全通过）：
+
+- **漏改的直连调用**：`emby.py _src()`、`tmdb.py`（实时集数/库索引/探索/订阅查询）、`subscribe.py`（追更通知）、`governance.py`（二次校验 `build_plan`）里仍残留裸引用 `emby_lib_of` / `Tmdb()` / `tg_title` / `notify_telegram` / `build_plan()`。其中 `emby_lib_of` 的 NameError 被 `_fetch_ingest` / `_emby_series_live_eps` 外层 `except` 吞掉，表现为入库统计与实时集数**静默归零**；`Tmdb()` 绕过测试桩打到真实 API（HTTP 401）导致订阅缺集全 0；`_run_inter_clean` 直连 `build_plan` 使执行异常不再向外抛（计划无法标记 failed）。
+- **机械替换损坏**：`morning.py` 两处 `ProviderIds.get('Tmdb')` 被误替换成 `get('_eng().Tmdb')`（`_eng()` 进了字符串字面量），片库快照的 TMDB 身份永远取不到，同 TMDB 双库剧集不再合并、`to_container` 兜底路径误触发。
+- **画质对比传参错误**：`governance.py` 两处 `_share_wins(_best(...), _best(...))` 把**文件名字符串**当画质分数比较（`'720p' >= '2160p'` 按字典序成立），本地 2160p vs 分享 720p 会误判「分享达标删本地」。改为传 `get_score()` 分数 + 文件名（文件名走 `_cmp_versions` 保留洗版覆盖策略维度）。
+- **门面缺再导出**：`engine._lib_cache` 未从 `lib.py` 再导出（`Lib` 30 秒缓存失效断言直接 AttributeError）。
+- **静态审计补漏（测试未覆盖、生产必炸）**：晨报发送（`morning.py`）、清理完成 Telegram 通知（`governance.py`）里的 `tg_title/tg_row/tg_stamp/fmt_scan_text/notify_telegram` 共 4 处裸引用，全部改经 `_eng()`。
+
 ## 1.7.5
 
 ### 追更与片库映射/影视探索：对齐上游 TgtoDrive 的磁盘目录名 tmdb

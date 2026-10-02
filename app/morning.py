@@ -131,7 +131,7 @@ def _build_emby_library_overview():
         sid = s.get('Id')
         if not sid or not eps_by_series.get(sid):
             continue  # 空壳 Series 不进入片库映射
-        tmdb_id = str((s.get('ProviderIds') or {}).get('_eng().Tmdb') or '')
+        tmdb_id = str((s.get('ProviderIds') or {}).get('Tmdb') or '')
         if not tmdb_id:
             _cp = _eng().emby_path_to_container(s.get('Path', '') or '')
             tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
@@ -229,7 +229,7 @@ def _build_emby_library_overview():
         _pp = path.replace('\\', '/')
         if not m_alive.get(_pp.rsplit('/', 1)[0] if '/' in _pp else '', True):
             continue
-        tmdb_id = str((m.get('ProviderIds') or {}).get('_eng().Tmdb') or '')
+        tmdb_id = str((m.get('ProviderIds') or {}).get('Tmdb') or '')
         if not tmdb_id:
             _cp = _eng().emby_path_to_container(m.get('Path', '') or '')
             tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
@@ -486,7 +486,7 @@ def action_emby_library(args):
 
 def build_morning_report(items: list, force_refresh: bool = False) -> str:
     now = datetime.datetime.now()
-    lines = [tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_eng()._WEEK[now.weekday()]}')]
+    lines = [_eng().tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_eng()._WEEK[now.weekday()]}')]
     snap = daily_consistency_snapshot(force_refresh=force_refresh)
     lines.append(f"🧭 <i>统一快照 · 规则 {html.escape(str(snap.get('rule_sig') or ''))}</i>")
 
@@ -575,7 +575,7 @@ def send_morning_report(items: list, force_refresh: bool = False) -> bool:
     force_refresh=True → 立即扫描（晨报时间前预扫/手动测试用）
     """
     text = build_morning_report(items, force_refresh=force_refresh)
-    ok = notify_telegram(text)
+    ok = _eng().notify_telegram(text)
     if ok:
         _cfg.mark_morning_report_sent(datetime.date.today().isoformat())
     return ok
