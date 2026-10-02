@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """发布前静态检查：拒绝把本地密钥、运行数据和构建缓存带进发布目录。"""
 from pathlib import Path
-import re, sys
+import os, re, sys
 
 ROOT = Path(__file__).resolve().parent.parent
 FORBIDDEN = {'.git', '.pytest_cache', '__pycache__', 'data', '.env'}
+# GitHub Actions 的 checkout 一定带 .git；CI 里不把它当违规（打包发布目录时仍然检查）
+if os.environ.get('GITHUB_ACTIONS') == 'true':
+    FORBIDDEN.discard('.git')
 BAD_EXT = {'.pyc', '.pyo'}
 
 # Compose 示例只能放在仓库根目录，不能放进 .github/workflows/，否则会被 GitHub 当成 Actions workflow。
@@ -22,6 +25,8 @@ for bad in BAD_WORKFLOW_FILES:
         errors.append(f'forbidden workflow file: {bad}')
 for p in ROOT.rglob('*'):
     rel = p.relative_to(ROOT)
+    if '.git' not in FORBIDDEN and rel.parts and rel.parts[0] == '.git':
+        continue
     if any(part in FORBIDDEN for part in rel.parts) or p.suffix in BAD_EXT:
         errors.append(f'forbidden: {rel}')
     if p.is_file() and p.name not in {'release_check.py'}:
