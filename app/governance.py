@@ -60,6 +60,15 @@ def _tie_share_wins():
     return not _eng()._strategy()['tie_keep_local']
 
 
+def _replace_ratio():
+    """剧集「分享达标率」阈值：Web 可调（0.5~1.0），缺失/非法回落 engine.SEASON_REPLACE_RATIO。"""
+    default = _eng().SEASON_REPLACE_RATIO
+    try:
+        v = float(_eng()._strategy().get('season_replace_ratio', default))
+    except (TypeError, ValueError):
+        return default
+    return v if 0.5 <= v <= 1.0 else default
+
 def _exempt_keywords():
     return _eng()._strategy()['exempt_keywords']
 
@@ -790,7 +799,7 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
     share_ratio = s_better / common if common else 0.0
 
     # 分享集数领先（含独有集）且达标率够高 → 删本地，留分享
-    if share_ratio >= _eng().SEASON_REPLACE_RATIO and s_total >= l_total:
+    if share_ratio >= _replace_ratio() and s_total >= l_total:
         acts.append(Act('loc', f'📺 {tag} (分享画质达标 {s_better}/{common} 集 → 删本地腾网盘)',
                         f'├─ 📺 {tag}: 分享达标率 {share_ratio:.0%} ({s_better}/{common}集) ➔ CD2联动删除115网盘旧源',
                         l_files,
@@ -849,7 +858,7 @@ def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
         if not cmp['l_complete'] or not cmp['s_complete']:
             all_pass = False
             break
-        if cmp['s_better'] / common < _eng().SEASON_REPLACE_RATIO:
+        if cmp['s_better'] / common < _replace_ratio():
             all_pass = False
             break
         if len(cmp['s_eps']) < len(cmp['l_eps']):

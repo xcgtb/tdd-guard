@@ -1615,6 +1615,15 @@ window.addEventListener('unhandledrejection', function(e){
             </div>
             <label class="switch"><input type="checkbox" id="strTieLocal" onchange="onTieLocalToggle(this)"><span class="slider"></span></label>
           </div>
+          <div style="margin-top:14px">
+            <div class="row-between">
+              <div class="lbl">剧集分享达标率阈值</div>
+              <div id="ratioVal" style="font-weight:600">90%</div>
+            </div>
+            <input type="range" id="strRatio" min="50" max="100" step="5" value="90" oninput="renderRatio()" onchange="onRatioChange()" style="width:100%;margin:8px 0 4px">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af"><span>50% 宽松</span><span>100% 严格（须全部达标）</span></div>
+            <div class="desc" id="ratioDesc" style="margin-top:6px"></div>
+          </div>
         </div>
 
         <!-- 画质对比规则 -->
@@ -2192,7 +2201,7 @@ function clearGovStateSession(){
 }
 var statsAutoLoaded = false;
 var revealed = {};
-var currentStrategy = { decision: 'quality_first', match_strategy: 'title_year', multi_season_protect: 'compare', tie_keep_local: false, exempt_keywords: [], special_action: 'compare' };
+var currentStrategy = { decision: 'quality_first', match_strategy: 'title_year', multi_season_protect: 'compare', tie_keep_local: false, season_replace_ratio: 0.9, exempt_keywords: [], special_action: 'compare' };
 var currentSubs = [];
 var currentGovItems = [];
 
@@ -2675,7 +2684,7 @@ async function loadDashboard(){
     var spLabel = { keep: '保留', ignore: '忽略', delete: '清理' }[s.special_action] || '保留';
     var mspLabel = { off: '关闭', compare: '开启', full: '全量豁免' }[s.multi_season_protect] || '开启';
     var ex = s.exempt_keywords || [];
-    var chips = [['决策', decisionLabel, 'ok'], ['多季保护', mspLabel, 'info'], ['特别篇', spLabel, 'brand'], ['平局', s.tie_keep_local ? '保留本地' : '保留分享', 'dim']];
+    var chips = [['决策', decisionLabel, 'ok'], ['多季保护', mspLabel, 'info'], ['特别篇', spLabel, 'brand'], ['平局', s.tie_keep_local ? '保留本地' : '保留分享', 'dim'], ['剧集达标率', Math.round((Number(s.season_replace_ratio) || 0.9) * 100) + '%', 'dim']];
     $('strategySnapshot').innerHTML = '<div class="chips">' + chips.map(function(c){ return '<span class="sch ' + c[2] + '"><em>' + c[0] + '</em>' + c[1] + '</span>'; }).join('') + '</div>'
       + (ex.length ? '<div class="sch-ex">白名单：' + ex.map(function(k){ return esc(k); }).join('、') + '</div>' : '');
     $('dash-exempt').textContent = ex.length + ' 条';
@@ -4328,6 +4337,9 @@ function applyStrategyUI(){
     el.classList.toggle('on', el.dataset.ms === (currentStrategy.match_strategy || 'title_year'));
   });
   $('strTieLocal').checked = !!currentStrategy.tie_keep_local;
+  var rt = Number(currentStrategy.season_replace_ratio);
+  $('strRatio').value = Math.round((isFinite(rt) && rt >= 0.5 && rt <= 1 ? rt : 0.9) * 100);
+  renderRatio();
   renderExempt();
 }
 function pickStrategy(v){
@@ -4377,6 +4389,7 @@ async function saveStrategy(){
       match_strategy: currentStrategy.match_strategy || 'title_year',
       multi_season_protect: currentStrategy.multi_season_protect || 'compare',
       tie_keep_local: $('strTieLocal').checked,
+      season_replace_ratio: Number($('strRatio').value) / 100,
       special_action: currentStrategy.special_action || 'compare',
       exempt_keywords: currentStrategy.exempt_keywords || [],
     };
@@ -4385,6 +4398,25 @@ async function saveStrategy(){
     applyStrategyUI();
     toast('策略已保存', 'success');
   } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+
+function renderRatio(){
+  var pct = Number($('strRatio').value);
+  $('ratioVal').textContent = pct + '%';
+  var need = Math.ceil(20 * pct / 100 - 1e-9);
+  $('ratioDesc').textContent = '逐集比画质：分享在两库共同集里「达标」的占比 ≥ ' + pct +
+    '%，且分享集数不少于本地，才删本地腾网盘，否则删分享（例：共同 20 集需 ' + need +
+    ' 集达标）。多季保护「开启」档要求每一季都达到；选了「保留本地 / 保留分享」时不使用此阈值。';
+}
+function onRatioChange(){
+  var pct = Number($('strRatio').value);
+  if (!confirm('确定将剧集分享达标率阈值设为 ' + pct + '%？\n\n保存后旧治理计划会失效，需重新扫描。')) {
+    var rt = Number(currentStrategy.season_replace_ratio);
+    $('strRatio').value = Math.round((isFinite(rt) && rt >= 0.5 && rt <= 1 ? rt : 0.9) * 100);
+    renderRatio();
+    return;
+  }
+  saveStrategy();
 }
 
 function onTieLocalToggle(cb){

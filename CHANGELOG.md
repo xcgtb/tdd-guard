@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.10
+
+### 剧集分享达标率阈值可视化 + CI 修复
+
+- **剧集分享达标率阈值可视化**：设置页「治理策略」新增滑块（50%~100%，步长 5%，默认 90%，原先写死在代码里），并实时显示「共同 20 集需 N 集达标」的换算；首页策略标签同步显示。阈值只用于「画质优先」下的剧集：单季（及多季保护「开启」档的每一季）分享达标占比 ≥ 阈值且集数不少于本地才删本地；平局按「平局保留本地」开关计入达标。接口 `POST /api/strategy` 新增 `season_replace_ratio`（0.5~1，越界 400），缺失/非法回落 0.9。
+- 新增 3 项测试（`TestCoverRulesInGovernance`）。
+- **CI 修复**：`scripts/release_check.py` 在 GitHub Actions（`GITHUB_ACTIONS=true`）里不再把 checkout 自带的 `.git` 当违规（此前每次 CI 的 Release check 都会失败，导致后面的 pytest 没跑到）；本地/打包检查仍然拦 `.git`。
+
 ## 1.7.9
 
 ### 剧集接入「保留本地 / 保留分享」决策模型

@@ -741,6 +741,14 @@ def api_set_strategy(body: dict = None):
         kwargs['multi_season_protect'] = mp
     if 'tie_keep_local' in body:
         kwargs['tie_keep_local'] = bool(body['tie_keep_local'])
+    if 'season_replace_ratio' in body:
+        try:
+            ratio = float(body['season_replace_ratio'])
+        except (TypeError, ValueError):
+            raise HTTPException(400, 'season_replace_ratio 必须是 0.5~1 之间的数字')
+        if not (0.5 <= ratio <= 1.0):
+            raise HTTPException(400, 'season_replace_ratio 必须在 0.5 ~ 1 之间')
+        kwargs['season_replace_ratio'] = ratio
     if 'exempt_keywords' in body:
         kwargs['exempt_keywords'] = body['exempt_keywords']
     if 'special_action' in body:

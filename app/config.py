@@ -32,6 +32,7 @@ DEFAULTS = {
     'match_strategy':                'title_year',  # title_year | tmdb_first —— 双库治理配对身份策略
     'strategy_multi_season_protect': 'compare',  # off | compare | full —— 多季合集保护档位（compare 即“开启”）
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
+    'strategy_season_ratio':         '0.9',     # 剧集分享达标率阈值（0.5~1.0）：共同集里分享达标的占比 ≥ 此值才删本地
     'strategy_cover': '',  # 画质对比规则（8 维）JSON；空 = 默认规则
     'strategy_exempt_keywords':      '',
     'strategy_special_action':       'compare', # compare | ignore | delete  —— 特别篇 S00 策略
@@ -155,6 +156,20 @@ def save_config(cfg: dict) -> dict:
 
 
 # ═══════════════════ 结构化访问 ═══════════════════
+SEASON_RATIO_MIN, SEASON_RATIO_MAX, SEASON_RATIO_DEFAULT = 0.5, 1.0, 0.9
+
+
+def normalize_season_ratio(v, default=SEASON_RATIO_DEFAULT) -> float:
+    """把任意输入规整成 0.5~1.0 之间的达标率（保留两位小数）；无法解析回落默认值。"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    if x != x:  # NaN
+        return default
+    return round(min(SEASON_RATIO_MAX, max(SEASON_RATIO_MIN, x)), 2)
+
+
 def get_strategy() -> dict:
     cfg = load_config()
     dec = cfg.get('strategy_decision', 'quality_first')
@@ -183,6 +198,7 @@ def get_strategy() -> dict:
         'match_strategy': ms,
         'multi_season_protect': mp,
         'tie_keep_local': cfg.get('strategy_tie_keep_local', '0') == '1',
+        'season_replace_ratio': normalize_season_ratio(cfg.get('strategy_season_ratio', SEASON_RATIO_DEFAULT)),
         'exempt_keywords': [x.strip() for x in (cfg.get('strategy_exempt_keywords') or '').split(',') if x.strip()],
         'special_action': sa,
     }
@@ -213,6 +229,8 @@ def update_strategy(**kwargs) -> dict:
         cfg['strategy_multi_season_protect'] = mp
     if 'tie_keep_local' in kwargs:
         cfg['strategy_tie_keep_local'] = '1' if kwargs['tie_keep_local'] else '0'
+    if 'season_replace_ratio' in kwargs:
+        cfg['strategy_season_ratio'] = str(normalize_season_ratio(kwargs['season_replace_ratio']))
     if 'exempt_keywords' in kwargs:
         kws = kwargs['exempt_keywords']
         cfg['strategy_exempt_keywords'] = ','.join(str(x).strip() for x in kws if str(x).strip()) if isinstance(kws, list) else str(kws)

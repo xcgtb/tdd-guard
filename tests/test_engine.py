@@ -1050,6 +1050,38 @@ class TestCoverRulesInGovernance:
         hits = _acts_for_title(engine.build_plan(), '画质不高于豁免')
         assert hits and all(a.kind == 'shr' and a.meta['reason'] == 'multi_full_protect' for a in hits)
 
+    def test_season_ratio_threshold_is_configurable(self):
+        """剧集达标率阈值可调：10 集里 5 集分享更优、5 集打平且「平局保留本地」→ 达标率 50%"""
+        def build(ratio):
+            _reset_libs()
+            _patch_strategy({'multi_season_protect': 'off', 'tie_keep_local': True,
+                             'season_replace_ratio': ratio})
+            for i in range(1, 11):
+                _strm(engine.L_ROOT, '阈值剧 (2020)/Season 01', f'E{i:02d}.1080p.strm')
+                _strm(engine.S_ROOT, '阈值剧 (2020)/Season 01',
+                      f'E{i:02d}.{"2160p" if i <= 5 else "1080p"}.strm')
+            return _acts_for_title(engine.build_plan(), '阈值剧')
+        hits = build(0.5)
+        assert len(hits) == 1 and hits[0].kind == 'loc'    # 50% ≥ 50% → 删本地
+        hits = build(0.9)
+        assert len(hits) == 1 and hits[0].kind == 'shr'    # 50% < 90% → 删分享
+
+    def test_season_ratio_invalid_falls_back_to_default(self):
+        """阈值缺失/非法/越界时回落默认 0.9，不会让治理异常或放宽删本地门槛"""
+        gov = sys.modules[engine.build_plan.__module__]  # 与 engine 同一份 governance（双导入模式下不会串到另一份）
+        for bad in (None, 'abc', 0.1, 1.5, float('nan')):
+            _patch_strategy({'season_replace_ratio': bad})
+            assert gov._replace_ratio() == engine.SEASON_REPLACE_RATIO
+        _patch_strategy({'season_replace_ratio': 0.75})
+        assert gov._replace_ratio() == 0.75
+
+    def test_season_ratio_config_clamped(self):
+        from app import config as cfgm
+        assert cfgm.normalize_season_ratio('0.8') == 0.8
+        assert cfgm.normalize_season_ratio(0.2) == 0.5
+        assert cfgm.normalize_season_ratio(9) == 1.0
+        assert cfgm.normalize_season_ratio('x') == 0.9
+
     def test_movie_act_carries_per_dimension_evidence(self):
         _reset_libs()
         _patch_strategy({})
