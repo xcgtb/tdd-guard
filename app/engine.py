@@ -2668,6 +2668,8 @@ def action_explore(args):
 
     emby_index = emby_library_index()
     # 探索页只读统一 TMDB 对照缓存，不为每张海报重新请求 /tv/{id}。
+    # 注意：这份快照只用来兜底「本地/分享分库集数」与「TMDB 总集数」，
+    # 剧集的实时集数由下面 _emby_series_live_eps 现查覆盖（见该函数注释）。
     eps_map = {}; tmdb_map = {}
     if media == 'tv':
         try:
@@ -2682,8 +2684,39 @@ def action_explore(args):
         except Exception as e:
             log.warning('探索页统一快照读取失败: %s', e)
 
+    page_items = (res.get('results') or [])[:40]
+
+    # ── 剧集实时集数：并发现查 Emby，覆盖快照里的陈旧 have_eps ──
+    # 快照有 30 分钟强制缓存，且刷新页面不会自愈；这里对每张「已入库」的剧集卡片
+    # 直接问 Emby「这部剧现在有哪些集」，逐集与本地/分享路径分库统计。
+    # 结果只覆盖集数，不改 in_emby / 海报：海报仍走索引缓存，避免多打一次请求。
+    live_eps = {}
+    if media == 'tv':
+        targets = []
+        for item in page_items:
+            tid = str(item.get('id', ''))
+            hit = emby_index.get('tv:' + tid)
+            if hit is not None:
+                targets.append((tid, hit.get('id')))
+        if targets:
+            def _one(target):
+                tid, eid = target
+                try:
+                    return tid, _emby_series_live_eps(tid, eid)
+                except Exception as e:
+                    log.warning('探索页实时集数失败 %s: %s', tid, e)
+                    return tid, None
+            # 单剧 1~2 次请求，8 并发足以在百毫秒级跑完 40 部；用共享池避免每次新建线程
+            try:
+                with ThreadPoolExecutor(max_workers=8) as _ex:
+                    for tid, res_live in _ex.map(_one, targets):
+                        if res_live and not res_live.get('empty'):
+                            live_eps[tid] = res_live
+            except Exception as e:
+                log.warning('探索页实时集数并发查询失败: %s', e)
+
     cards = []
-    for item in (res.get('results') or [])[:40]:
+    for item in page_items:
         tmdb_id = str(item.get('id', ''))
         title = item.get('title') or item.get('name') or ''
         date_str = item.get('release_date') or item.get('first_air_date') or ''
@@ -2698,12 +2731,18 @@ def action_explore(args):
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
 
-        # 入库进度（仅剧集）：分库集数 + TMDB 总集数
+        # 入库进度（仅剧集）：实时集数优先，拿不到才退回统一快照
         eps = None
+        eps_source = 'cache'
         if media == 'tv' and in_emby:
             e = eps_map.get(tmdb_id) or {'local_eps': 0, 'share_eps': 0, 'have_eps': 0}
             tmdb_info_cached = tmdb_map.get(tmdb_id) or {}
             tmdb_total = int(tmdb_info_cached.get('tmdb_total') or 0)
+            live = live_eps.get(tmdb_id)
+            if live:
+                e = {'local_eps': live['local_eps'], 'share_eps': live['share_eps'],
+                     'have_eps': live['have_eps']}
+                eps_source = 'live'
             eps = {
                 'local': e['local_eps'], 'share': e['share_eps'],
                 'have': e['have_eps'], 'total': tmdb_total,
@@ -2715,7 +2754,7 @@ def action_explore(args):
             'in_emby': in_emby, 'in_local': in_local, 'in_share': in_share,
             'emby_id': emby_hit['id'] if emby_hit else None,
             'type': 'tv' if media == 'tv' else 'movie',
-            'eps': eps,
+            'eps': eps, 'eps_source': eps_source if eps else None,
         })
 
     t.save()
@@ -3666,6 +3705,113 @@ def _emby_series_latest_ep(series_tmdb_id: str):
     }
 
 
+# ═══════════════ 探索页实时集数（绕过统一快照）═══════════════
+# 背景：探索页此前依赖 library_snapshot.json（30 分钟强制缓存），快照本身又建立在
+# emby_library_overview 的产物之上，而那个磁盘缓存只在「片库映射」全量对照时才写。
+# 三者新鲜度互不相同，导致刚入库的集在探索页迟迟不更新，且刷新页面永远不自愈。
+# 这里的实时查询只问「这一部剧现在有哪些集」，1 次 Series + 1~2 次 Episode，
+# 单剧毫秒级；配合并发 + 短 TTL 微缓存，既跟得上入库又能扛住连点刷新。
+_LIVE_EPS_TTL = 15
+_live_eps_cache = {}
+_live_eps_lock = threading.Lock()
+
+
+def _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id=None):
+    """按 TMDB ID 找 Emby Series 条目 ID 列表（实时，不读缓存）。
+
+    优先级与 _emby_series_latest_ep 一致：① AnyProviderIdEquals 精确查询；
+    ② 全量 Series 按 ProviderIds.Tmdb 过滤。两次都空时用 fallback_id 兜底
+    （调用方从探索索引拿到的 Emby 条目 id，避免 ProviderIds 缺失时查不到）。
+    """
+    ids = []
+    try:
+        data = emby_request('/Items', {
+            'Recursive': 'true', 'IncludeItemTypes': 'Series',
+            'Fields': 'ProviderIds,Name', 'Limit': 50000,
+            'AnyProviderIdEquals': f'Tmdb.{series_tmdb_id}',
+        }) or {}
+        ids = [it.get('Id') for it in (data.get('Items') or []) if it.get('Id')]
+    except Exception as e:
+        log.warning('实时集数：Series 精确查询失败 %s: %s', series_tmdb_id, e)
+    if not ids:
+        try:
+            data = emby_request('/Items', {
+                'Recursive': 'true', 'IncludeItemTypes': 'Series',
+                'Fields': 'ProviderIds,Name', 'Limit': 50000,
+            }) or {}
+            ids = [it.get('Id') for it in (data.get('Items') or [])
+                   if str((it.get('ProviderIds') or {}).get('Tmdb') or '') == str(series_tmdb_id)
+                   and it.get('Id')]
+        except Exception as e:
+            log.warning('实时集数：Series 全量过滤失败 %s: %s', series_tmdb_id, e)
+    if not ids and fallback_id:
+        ids = [fallback_id]
+    return ids
+
+
+def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
+    """实时查某剧在 Emby 的分集集合（不读任何快照）。
+
+    返回 {'episodes': set[(季,集)], 'local_eps': int, 'share_eps': int,
+          'have_eps': int, 'empty': bool}；完全查不到时返回 None。
+    ``empty=True`` 表示「查到了 Series 但集数为 0」——调用方应保留旧值而不是
+    用 0 覆盖（避免 Emby 短暂异常时把卡片打成「未入库」）。
+
+    只统计 ``emby_lib_of(path)`` 能识别的分集：与 _build_emby_library_overview
+    口径一致（只算落在本地/分享两个库根内的），顺带排除 CD2 已删源、Emby 还没
+    刷掉的幽灵条目。
+    """
+    if not series_tmdb_id:
+        return None
+    ck = str(series_tmdb_id)
+    if use_cache:
+        with _live_eps_lock:
+            hit = _live_eps_cache.get(ck)
+            if hit and time.time() - hit[0] < _LIVE_EPS_TTL:
+                return hit[1]
+
+    ids = _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id)
+    if not ids:
+        return None
+    have, local_eps, share_eps = set(), set(), set()
+    for sid in ids:
+        try:
+            data = emby_request('/Items', {
+                'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
+                'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,Path',
+                'Limit': 50000,
+            }) or {}
+        except Exception as e:
+            log.warning('实时集数：拉取分集失败 series=%s: %s', sid, e)
+            continue
+        for ep in (data.get('Items') or []):
+            try:
+                sn = int(ep.get('ParentIndexNumber') or 0)
+                en = int(ep.get('IndexNumber') or 0)
+                en_end = int(ep.get('IndexNumberEnd') or en)
+            except (TypeError, ValueError):
+                continue
+            if sn <= 0 or en <= 0:
+                continue
+            lib = emby_lib_of(ep.get('Path') or '')
+            if not lib:
+                continue  # 不在两个库根内：不算入库（与片库映射口径一致）
+            for e in range(en, max(en, en_end) + 1):
+                have.add((sn, e))
+                (local_eps if lib == 'local' else share_eps).add((sn, e))
+
+    out = {'episodes': have, 'local_eps': len(local_eps), 'share_eps': len(share_eps),
+           'have_eps': len(have), 'empty': not have}
+    if use_cache:
+        with _live_eps_lock:
+            _live_eps_cache[ck] = (time.time(), out)
+            # 轻量清理：只保留最近 2000 条，避免长跑进程内存无界增长
+            if len(_live_eps_cache) > 2000:
+                for k, _v in sorted(_live_eps_cache.items(), key=lambda kv: kv[1][0])[:500]:
+                    _live_eps_cache.pop(k, None)
+    return out
+
+
 def _tmdb_aired_set_from_info(info):
     """从已取得的 TMDB /tv/{id} 原始响应计算已播 (季,集)，不重复请求 TMDB。"""
     if not info:
@@ -3735,12 +3881,75 @@ def _ep_key_num(k):
     return (int(m.group(1)) * 10000 + int(m.group(2))) if m else 0
 
 
-def check_subscriptions(send_notify=True) -> dict:
+def _ep_key(sn, en):
+    """(1, 7) -> 'S01E07'"""
+    return f'S{int(sn):02d}E{int(en):02d}'
+
+
+def _parse_ep_key(k):
+    """'S01E07' -> (1, 7)；解析不了返回 None"""
+    m = re.match(r'S(\d+)E(\d+)', k or '')
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _eps_to_keys(eps):
+    """[(季,集)] -> {'S01E01', ...}"""
+    return {_ep_key(sn, en) for sn, en in (eps or []) if sn > 0 and en > 0}
+
+
+def _keys_to_eps(keys):
+    """{'S01E01', ...} -> {(季,集)}（忽略解析不出的字符串）"""
+    out = set()
+    for k in (keys or []):
+        p = _parse_ep_key(k)
+        if p:
+            out.add(p)
+    return out
+
+
+def _fmt_ep_ranges(eps):
+    """把集列表格式化成人类可读的区间串。
+
+    同一季内连续集号合并：[(1,16),(1,17),(1,18)] -> 'S01E16–E18'
+    单集保留完整写法：[(1,16)] -> 'S01E16'
+    跨季用 ', ' 连接：[(1,10),(2,1),(2,2)] -> 'S01E10, S02E01–E02'
+    集数较多时折叠尾部，避免 Telegram 消息被撑爆。
     """
-    改进版：
-      1. 拿 Emby 已有集 + 最大集号（新集判定）
-      2. 拿 TMDB 已播集，与 Emby 已有集逐集对照（缺集判定）
-      3. 双向提醒
+    items = sorted({(int(sn), int(en)) for sn, en in (eps or []) if sn > 0 and en > 0})
+    if not items:
+        return ''
+    parts = []
+    i, n = 0, len(items)
+    while i < n:
+        sn, lo = items[i]
+        hi = lo
+        j = i + 1
+        # 只在同季内合并连续集号；跨季一定断开（S01E10 后面不是 S01E11 的延续）
+        while j < n and items[j][0] == sn and items[j][1] == hi + 1:
+            hi = items[j][1]
+            j += 1
+        parts.append(_ep_key(sn, lo) if hi == lo else f'S{sn:02d}E{lo:02d}–E{hi:02d}')
+        i = j
+    if len(parts) > 6:
+        parts = parts[:6] + [f'…等 {n} 集']
+    return ', '.join(parts)
+
+
+def check_subscriptions(send_notify=True) -> dict:
+    """追更订阅检查（集合差集状态机）。
+
+    核心口径（修复「吞通知 / 重复通知 / 跳集不报警」）：
+
+    1. **集合差集**：每次检查取 Emby 实际存在的集 ``have``，与状态文件里
+       ``notified_episodes``（已成功通知过的集）求差 → ``new_eps``；与 TMDB 已播集
+       求差 → ``missing_eps``。不再只看「最大集号」，所以中间插入的集也能被发现。
+    2. **发送成功才记账**：``notify_telegram()`` 返回 True 后才把 ``new_eps`` 并入
+       ``notified_episodes``。发送失败则状态原样不动，下一轮自动重试 —— 既不丢通知
+       也不重复刷屏。
+    3. **跳集报警**：``newly_missing``（本次新出现的缺集）与 ``refilled``（本次补齐的
+       缺集）分别通知，提示精确到集号区间。
+    4. **免迁移**：首次遇到只有旧 ``latest_ep`` 的订阅时，把它当成「已通知过的最后一集」
+       向前播种，避免升级后把全库旧集刷一遍。
     """
     cfg = _cfg.load_config()
     if cfg.get('subscribe_enabled', '1') != '1':
@@ -3753,6 +3962,8 @@ def check_subscriptions(send_notify=True) -> dict:
     state = _load_sub_state()
     updates = []
     now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # 记录每个订阅本轮「发送成功后应写回」的状态，发送前不落盘
+    staged = {}
 
     for sub in subs:
         if not sub.get('enabled', True): continue
@@ -3763,73 +3974,120 @@ def check_subscriptions(send_notify=True) -> dict:
         latest = _emby_series_latest_ep(tmdb_id)
         tmdb_info = _tmdb_series_info(tmdb_id) if check_tmdb else None
 
-        # 无 Emby 数据且无 TMDB → 跳过
+        # 无 Emby 数据且无 TMDB → 跳过（保持旧行为）
         if not latest and not tmdb_info: continue
 
         prev = state.get(sid) or {}
-        prev_key = prev.get('latest_ep') or ''
-        prev_tmdb_total = prev.get('tmdb_total') or 0
+        have = (latest or {}).get('episodes') or set()
 
-        cur_key = ''
-        if latest:
-            cur_key = f"S{latest['season']:02d}E{latest['episode']:02d}"
-
-        new_ep_update = None
-        missing_update = None
-
-        # 新集判定：只认比上次更大的集号；latest_ep 只进不退（下架 / 删集不回退）
-        if prev_key and cur_key and cur_key != prev_key:
-            if _ep_key_num(cur_key) > _ep_key_num(prev_key):
-                new_ep_update = {'old': prev_key, 'new': cur_key}
+        # ── 免迁移播种 ──
+        # 老结构只有 latest_ep：把它当成「已通知过的最后一集」，该季 1..N 全部视为
+        # 已通知，避免升级后一次刷出几十条历史集。全新订阅则把当前已有的集全部播种，
+        # 首次检查保持安静（避免「刚加订阅就被刷屏」）。
+        prev_notified_raw = prev.get('notified_episodes')
+        if prev_notified_raw is None:
+            prev_latest = prev.get('latest_ep') or ''
+            seed = set()
+            lp = _parse_ep_key(prev_latest)
+            if lp:
+                if have:
+                    # 只播种 latest_ep 所属季；其它季由后续轮次自然发现
+                    seed |= {(sn, en) for (sn, en) in have if sn == lp[0] and en <= lp[1]}
+                else:
+                    # Emby 查不到分集时保守播种到 latest_ep（假设中间无断层）
+                    seed |= {(lp[0], e) for e in range(1, lp[1] + 1)}
             else:
-                cur_key = prev_key
+                seed = set(have)          # 全新订阅：当前已有的都算已知
+            notified = seed
+            migrated = True
+        else:
+            notified = _keys_to_eps(prev_notified_raw)
+            migrated = False
 
-        # 缺集判定：TMDB 已播集逐集对照 Emby 已有集，Emby 多出来的集不抵扣缺口
+        prev_missing = _keys_to_eps(prev.get('missing_episodes'))
+
+        new_eps = sorted(have - notified)                       # 真实新增
+        missing_eps = set()
         if tmdb_info and latest:
             aired = tmdb_info.get('aired') or set()
-            have = latest.get('episodes') or set()
-            lack = aired - have
-            if lack:
-                missing_update = {
-                    'tmdb_total': len(aired),
-                    # emby_total 取「已播范围内 Emby 有的集数」，保证 tmdb_total - emby_total == diff
-                    'emby_total': len(aired & have),
-                    'diff': len(lack),
-                }
+            # ── 缺集只认「从未入库过的集」──
+            # 若只算 aired - have，那么「曾经有、后来被删」的集会被误报成缺集
+            # （下架 / 洗版删旧时最容易遇到）。取 aired - (have | notified)：
+            # 已通知过的集视为「到过库」，即使当下不在也不算缺集。
+            missing_eps = aired - have - notified
+        newly_missing = sorted(missing_eps - prev_missing)      # 本次新出现的缺集
+        refilled = sorted(set(new_eps) & prev_missing)          # 本次被补齐的缺集
 
-        state[sid] = {
+        # 通知只由「状态相对上次的变化」驱动，不看绝对值
+        has_change = bool(new_eps or newly_missing or refilled)
+
+        # 新基线：notified_episodes 只在发送成功后才并入 new_eps，所以这里先按
+        # 「已通知集 + 本轮新增」算出候选值，发送失败时回退到旧 notified。
+        st = {
             'tmdb_id': tmdb_id,
             'name': (latest and latest.get('series_name')) or (tmdb_info and tmdb_info.get('name')) or sub.get('name'),
-            'latest_ep': cur_key or prev_key,
-            'tmdb_total': (tmdb_info or {}).get('total_episodes', 0),
+            'notified_episodes': sorted(_eps_to_keys(notified | set(new_eps))),
+            'missing_episodes': sorted(_eps_to_keys(missing_eps)),
+            'tmdb_total': (tmdb_info or {}).get('total_episodes', prev.get('tmdb_total') or 0),
             'tmdb_status': (tmdb_info or {}).get('status', ''),
             'updated_at': now_str,
         }
+        # notified_episodes 为空时保持旧 latest_ep，避免 Emby 短暂异常把展示清空
+        all_keys = st['notified_episodes']
+        st['latest_ep'] = max(all_keys, key=_ep_key_num) if all_keys else (prev.get('latest_ep') or '')
+        staged[sid] = st
 
-        if new_ep_update or missing_update:
+        if has_change:
             updates.append({
-                'name': state[sid]['name'],
+                'sid': sid,
+                'name': (latest and latest.get('series_name')) or (tmdb_info and tmdb_info.get('name')) or sub.get('name'),
                 'tmdb_id': tmdb_id,
                 'poster': sub.get('poster', ''),
-                'new_ep': new_ep_update,
-                'missing': missing_update,
+                'new_eps': sorted(_eps_to_keys(new_eps)),
+                'missing_eps': sorted(_eps_to_keys(missing_eps)),
+                'newly_missing': sorted(_eps_to_keys(newly_missing)),
+                'refilled': sorted(_eps_to_keys(refilled)),
             })
 
-    _save_sub_state(state)
-
+    # ── 发送成功才记账 ──
+    # send_notify=False（bot 手动查看 / 晨报 / 保存订阅后的即时检查）本身不发送消息，
+    # 等价于「已送达」，同样要记账，否则下一轮会把同一批集重复播报。
+    # 发送失败时：notified_episodes / missing_episodes 全部回退到本轮开始前的值，
+    # 保证下一轮算出同一批 new_eps 继续重试 —— 既不丢通知也不重复刷屏。
+    sent_ok = True
     if send_notify and updates:
         lines = [tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
         for u in updates:
             lines.append('')
             lines.append(f"📺 <b>《{html.escape(str(u['name'] or ''))}》</b>")
-            if u.get('new_ep'):
-                lines.append(f"　🆕 新集入库 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
-            if u.get('missing'):
-                m = u['missing']
-                lines.append(f"　⚠️ 缺 <b>{m['diff']}</b> 集（TMDB 已播 {m['tmdb_total']}）")
-        notify_telegram('\n'.join(lines))
+            if u['refilled']:
+                lines.append(f"　✅ 已补齐 <b>{_fmt_ep_ranges(_keys_to_eps(u['refilled']))}</b>")
+            if u['new_eps']:
+                lines.append(f"　🆕 新增入库 <b>{_fmt_ep_ranges(_keys_to_eps(u['new_eps']))}</b>")
+            if u['newly_missing']:
+                lines.append(f"　⚠️ 缺集 <b>{_fmt_ep_ranges(_keys_to_eps(u['newly_missing']))}</b>")
+        sent_ok = notify_telegram('\n'.join(lines))
+        if not sent_ok:
+            log.warning('追更订阅推送失败，本轮不记账，下次继续重试')
 
-    return {'updates': updates, 'total': len(subs)}
+    if not sent_ok:
+        for u in updates:
+            st = staged.get(u['sid'])
+            if not st:
+                continue
+            # 回退新增集：把本轮 new_eps 从 notified_episodes 里剔除
+            kept = _keys_to_eps(st['notified_episodes']) - _keys_to_eps(u['new_eps'])
+            st['notified_episodes'] = sorted(_eps_to_keys(kept))
+            st['latest_ep'] = (max(st['notified_episodes'], key=_ep_key_num)
+                               if st['notified_episodes'] else '')
+            # 缺集基线也不推进：下一轮重新判定 newly_missing
+            st['missing_episodes'] = sorted(
+                _eps_to_keys(_keys_to_eps(st['missing_episodes']) - _keys_to_eps(u['newly_missing'])))
+
+    state.update(staged)
+    _save_sub_state(state)
+
+    return {'updates': updates, 'total': len(subs), 'sent': bool(sent_ok) if send_notify and updates else None}
 
 
 # ═══════════════════ 晨报 ═══════════════════
@@ -3859,10 +4117,12 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
             if ups:
                 for u in ups[:10]:
                     name = html.escape(str(u.get('name') or ''))
-                    if u.get('new_ep'):
-                        lines.append(f"📺 《{name}》 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
-                    if u.get('missing'):
-                        lines.append(f"⚠️ 《{name}》缺 <b>{u['missing']['diff']}</b> 集")
+                    if u.get('refilled'):
+                        lines.append(f"✅ 《{name}》已补齐 <b>{_fmt_ep_ranges(_keys_to_eps(u['refilled']))}</b>")
+                    if u.get('new_eps'):
+                        lines.append(f"📺 《{name}》新增 <b>{_fmt_ep_ranges(_keys_to_eps(u['new_eps']))}</b>")
+                    if u.get('newly_missing'):
+                        lines.append(f"⚠️ 《{name}》缺集 <b>{_fmt_ep_ranges(_keys_to_eps(u['newly_missing']))}</b>")
                 if len(ups) > 10:
                     lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
             else:

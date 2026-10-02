@@ -2982,7 +2982,7 @@ function appendExploreCards(cards){
   var subSet = _subscribedTmdbIds();
   var html = cards.map(function(c){
     var st = exploreStatus(c);
-    var status = st.status, cls = st.cls;
+    var status = st.status, cls = st.cls, statusTip = st.tip || '';
     var typeLabel = c.type === 'tv' ? '剧集' : '电影';
     var posterHtml;
     if (!c.poster) {
@@ -3000,7 +3000,7 @@ function appendExploreCards(cards){
       + '<div class="poster-wrap">' + posterHtml
       + '<span class="badge-type">' + typeLabel + '</span>'
       + (c.rating ? '<span class="badge-rate">' + icon('star') + c.rating + '</span>' : '')
-      + '<span class="badge-status ' + cls + '">' + status + '</span>'
+      + '<span class="badge-status ' + cls + '"' + statusTip + '>' + status + '</span>'
       + '</div>'
       + '<div class="info">'
       + '<div class="t" title="' + esc(c.title) + '">' + esc(c.title) + '</div>'
@@ -3040,19 +3040,22 @@ function _subscribedTmdbIds(){
 function exploreStatus(c){
   // 剧集：带集数进度
   if (c.type === 'tv' && c.eps) {
+    // 实时查询失败时退回统一快照，加 * 标明集数可能滞后（避免让用户以为已经是最新）
+    var stale = c.eps_source === 'cache' ? '*' : '';
+    var staleTip = c.eps_source === 'cache' ? ' title="Emby 实时查询未成功，此处为缓存集数，可能滞后"' : '';
     if (!c.eps.have || c.eps.have <= 0) return { status: '未入库', cls: 'no' };
     if (c.eps.total > 0) {
       if (c.eps.have >= c.eps.total) {
         // 超集显示数字（如 已完整 45/40），刚好集齐只显示「已完整」
-        if (c.eps.have > c.eps.total) return { status: '已完整 ' + c.eps.have + '/' + c.eps.total, cls: 'ok' };
-        return { status: '已完整', cls: 'ok' };
+        if (c.eps.have > c.eps.total) return { status: '已完整 ' + c.eps.have + '/' + c.eps.total + stale, cls: 'ok', tip: staleTip };
+        return { status: '已完整' + stale, cls: 'ok', tip: staleTip };
       }
-      return { status: '连载中 · 已入库' + c.eps.have + '/' + c.eps.total + '集', cls: 'partial' };
+      return { status: '连载中 · 已入库' + c.eps.have + '/' + c.eps.total + '集' + stale, cls: 'partial', tip: staleTip };
     }
     // TMDB 无总集数：退化为分库显示
-    if (c.in_local && c.in_share) return { status: '本地 ' + (c.eps.local || 0) + ' / 分享 ' + (c.eps.share || 0), cls: 'local' };
-    if (c.in_local) return { status: '本地 ' + (c.eps.local || 0) + ' 集', cls: 'local' };
-    if (c.in_share) return { status: '分享 ' + (c.eps.share || 0) + ' 集', cls: 'share' };
+    if (c.in_local && c.in_share) return { status: '本地 ' + (c.eps.local || 0) + ' / 分享 ' + (c.eps.share || 0) + stale, cls: 'local', tip: staleTip };
+    if (c.in_local) return { status: '本地 ' + (c.eps.local || 0) + ' 集' + stale, cls: 'local', tip: staleTip };
+    if (c.in_share) return { status: '分享 ' + (c.eps.share || 0) + ' 集' + stale, cls: 'share', tip: staleTip };
     return { status: '未入库', cls: 'no' };
   }
   // 电影：单体文件，二元状态（参考图口径）
@@ -3066,7 +3069,7 @@ function renderExploreCards(cards){
   var subSet = _subscribedTmdbIds();
   grid.innerHTML = cards.map(function(c){
     var st = exploreStatus(c);
-    var status = st.status, cls = st.cls;
+    var status = st.status, cls = st.cls, statusTip = st.tip || '';
     var typeLabel = c.type === 'tv' ? '剧集' : '电影';
     /* poster 有两种来源：
        1) TMDB 图片 → 直接 <img src>
@@ -3087,7 +3090,7 @@ function renderExploreCards(cards){
       + '<div class="poster-wrap">' + posterHtml
       + '<span class="badge-type">' + typeLabel + '</span>'
       + (c.rating ? '<span class="badge-rate">' + icon('star') + c.rating + '</span>' : '')
-      + '<span class="badge-status ' + cls + '">' + status + '</span>'
+      + '<span class="badge-status ' + cls + '"' + statusTip + '>' + status + '</span>'
       + '</div>'
       + '<div class="info">'
       + '<div class="t" title="' + esc(c.title) + '">' + esc(c.title) + '</div>'
@@ -3631,6 +3634,8 @@ function showEmbyDetailById(id){
   if (ti.tmdb_total != null && ti.tmdb_total > 0) {
     var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
     html += '已入库 ' + have + '/' + ti.tmdb_total + ' 集';
+    // 弹窗数据来自「片库映射」的全量对照缓存，可能滞后于刚入库的集
+    html += ' <span style="color:#9ca3af">（对照缓存，刚入库的集可能未反映）</span>';
   } else if (s.in_local && s.in_share) {
     html += '本地 ' + (s.local_eps || 0) + ' / 分享 ' + (s.share_eps || 0) + ' 集';
   } else {

@@ -539,11 +539,12 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
                         for u in ups:
                             lines.append('')
                             lines.append(f"📺 <b>《{_esc(u['name'])}》</b>")
-                            if u.get('new_ep'):
-                                lines.append(f"　🆕 {u['new_ep']['old']} → <b>{u['new_ep']['new']}</b>")
-                            if u.get('missing'):
-                                m = u['missing']
-                                lines.append(f"　⚠️ 缺 <b>{m['diff']}</b> 集（TMDB 已播 {m['tmdb_total']}）")
+                            if u.get('refilled'):
+                                lines.append(f"　✅ 已补齐 <b>{engine._fmt_ep_ranges(engine._keys_to_eps(u['refilled']))}</b>")
+                            if u.get('new_eps'):
+                                lines.append(f"　🆕 新增入库 <b>{engine._fmt_ep_ranges(engine._keys_to_eps(u['new_eps']))}</b>")
+                            if u.get('newly_missing'):
+                                lines.append(f"　⚠️ 缺集 <b>{engine._fmt_ep_ranges(engine._keys_to_eps(u['newly_missing']))}</b>")
                         _send(token, chat_id, '\n'.join(lines))
                 except Exception as e:
                     _send(token, chat_id, f'❌ 检查失败: {e}')
