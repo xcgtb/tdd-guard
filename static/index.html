@@ -4172,9 +4172,29 @@ function renderIngest(r){
     Object.keys(tv[src] || {}).sort().forEach(function(cat){
       var shows = Object.keys(tv[src][cat]).map(function(n){ return [n, tv[src][cat][n]]; })
         .sort(function(a, b){ return b[1] - a[1]; });
+      var detail = (tree.tv_detail && tree.tv_detail[src] && tree.tv_detail[src][cat]) || {};
       tvHtml += group(src, cat, shows.length, '部',
         '<ul class="ing-list">' + shows.map(function(x){
-          return '<li><span class="n">《' + esc(x[0]) + '》</span><span class="b">+' + x[1] + '集</span></li>';
+          var info = detail[x[0]] || {};
+          var seasons = info.seasons || {};
+          var seasonParts = Object.keys(seasons).sort(function(a,b){
+            if (a === 'unknown') return 1; if (b === 'unknown') return -1; return Number(a)-Number(b);
+          }).map(function(sk){
+            var sd = seasons[sk] || {}, eps = (sd.episodes || []).slice().sort(function(a,b){ return a-b; });
+            var label = sk === 'unknown' ? '季未知' : ('S' + String(Number(sk)).padStart(2,'0'));
+            if (eps.length) {
+              var ranges = [], st = eps[0], pv = eps[0];
+              for (var i=1; i<=eps.length; i++) {
+                if (eps[i] === pv + 1) { pv = eps[i]; continue; }
+                ranges.push(st === pv ? 'E' + String(st).padStart(2,'0') : 'E' + String(st).padStart(2,'0') + '–E' + String(pv).padStart(2,'0'));
+                if (i < eps.length) st = pv = eps[i];
+              }
+              return label + ' ' + ranges.join('、');
+            }
+            return label + ' +' + (sd.count || 0) + '集';
+          }).join(' · ');
+          var suffix = seasonParts ? ' <span class="b">+' + x[1] + '集</span><span class="ing-season">' + esc(seasonParts) + '</span>' : ' <span class="b">+' + x[1] + '集</span>';
+          return '<li><span class="n">《' + esc(x[0]) + '》</span>' + suffix + '</li>';
         }).join('') + '</ul>');
     });
     Object.keys(mov[src] || {}).sort().forEach(function(cat){
@@ -4947,7 +4967,7 @@ html body #exploreLoadMore { display: none !important; }
 .ing-list{list-style:none;margin:0;padding:0 12px 8px}
 .ing-list li{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--border)}
 .ing-list .n{min-width:0;word-break:break-word;color:var(--text)}
-.ing-list .b{white-space:nowrap;color:var(--ok);font-weight:600;font-variant-numeric:tabular-nums}
+.ing-list .b{white-space:nowrap;color:var(--ok);font-weight:600;font-variant-numeric:tabular-nums}.ing-season{display:block;flex:1;min-width:0;color:var(--text-dim);font-size:11px;line-height:1.5;text-align:right;word-break:break-word}
 .ing-tags{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 10px}
 .ing-tags span{background:var(--bg-dim);border-radius:6px;padding:3px 9px;font-size:12px;color:var(--text);word-break:break-word}
 .ing-more{margin-top:6px}

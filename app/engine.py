@@ -3271,6 +3271,9 @@ def _fetch_ingest(hours=24):
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
     min_date = cutoff.strftime('%Y-%m-%dT%H:%M:%S.0000000Z')
     tv_tree = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    # 详情树：在原有“剧名 + 集数”统计之外保留季/集信息，供 Web 入库汇报展示。
+    # 不改变 tv_tree 的旧结构，避免兼容 Telegram / 旧前端。
+    tv_detail = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {'count': 0, 'seasons': defaultdict(lambda: {'count': 0, 'episodes': []})})))
     mov_tree = defaultdict(lambda: defaultdict(list))
     movies_raw = []
     episodes_raw = []
@@ -3294,7 +3297,25 @@ def _fetch_ingest(hours=24):
             dt = parse_dt(e.get('DateCreated'))
             if not dt or dt < cutoff: continue
             episodes_raw.append(e)
-            tv_tree[_src(e.get('Path', ''))][parse_emby_library(e, False)][e.get('SeriesName') or '未知剧集'] += 1
+            src = _src(e.get('Path', ''))
+            cat = parse_emby_library(e, False)
+            title = e.get('SeriesName') or '未知剧集'
+            tv_tree[src][cat][title] += 1
+            d = tv_detail[src][cat][title]
+            d['count'] += 1
+            try:
+                season = int(e.get('ParentIndexNumber'))
+            except (TypeError, ValueError):
+                season = None
+            try:
+                episode = int(e.get('IndexNumber'))
+            except (TypeError, ValueError):
+                episode = None
+            sk = str(season) if season is not None and season >= 0 else 'unknown'
+            sd = d['seasons'][sk]
+            sd['count'] += 1
+            if episode is not None and episode > 0:
+                sd['episodes'].append(episode)
     except Exception as e:
         log.warning('入库剧集拉取失败: %s', e)
         errors.append('剧集: %s' % e)
@@ -3338,10 +3359,19 @@ def _fetch_ingest(hours=24):
         'stats': {'movies': total_mov, 'series': total_series, 'episodes': total_eps},
         'tree': {
             'tv': {k: {c: dict(s) for c, s in v.items()} for k, v in tv_tree.items()},
+            'tv_detail': {
+                src: {cat: {title: {
+                    'count': int(info.get('count') or 0),
+                    'seasons': {sk: {
+                        'count': int(sd.get('count') or 0),
+                        'episodes': sorted(set(int(x) for x in (sd.get('episodes') or []) if isinstance(x, int) or str(x).isdigit()))
+                    } for sk, sd in info.get('seasons', {}).items()}
+                } for title, info in shows.items()} for cat, shows in cats.items()} for src, cats in tv_detail.items()
+            },
             'mov': {k: {c: list(ns) for c, ns in v.items()} for k, v in mov_tree.items()},
         },
         'movies_raw': [{'name': m.get('Name'), 'path': m.get('Path',''), 'created': m.get('DateCreated')} for m in movies_raw[:200]],
-        'episodes_raw': [{'name': e.get('Name'), 'series': e.get('SeriesName'), 'path': e.get('Path',''), 'created': e.get('DateCreated')} for e in episodes_raw[:500]],
+        'episodes_raw': [{'name': e.get('Name'), 'series': e.get('SeriesName'), 'series_id': e.get('SeriesId'), 'season': e.get('ParentIndexNumber'), 'episode': e.get('IndexNumber'), 'path': e.get('Path',''), 'created': e.get('DateCreated')} for e in episodes_raw[:500]],
     }
 
 
