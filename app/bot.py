@@ -3,10 +3,12 @@
 特性：
   - 无底部常驻键盘，界面极简，靠 ☰ 命令菜单操作
   - 操作反馈卡片 60 秒自动销毁（阅后即焚）
-  - 用户命令消息 10 秒自动删除
+  - 用户命令消息 10 秒自动删除（所有命令统一在入口登记，不再依赖各分支单独传参）
+  - 计划卡片到期自动消失；点到过期/已用/失效的卡片会就地提示并给「重新扫描」
+  - 待删队列落盘，重启后不丢
   - 欢迎提示 15 秒即焚，只保留最新一条
 """
-import json, re, time, html, logging, threading, urllib.request, urllib.parse
+import json, re, time, html, logging, threading, urllib.request, urllib.parse, urllib.error
 from argparse import Namespace
 
 try:
@@ -25,6 +27,9 @@ _state = {
     'running': False, 'thread': None, 'offset': 0,
     'last_error': '', 'last_poll': 0, 'bot_username': '',
     'initialized': False,
+    'fail_count': 0,        # getUpdates 连续失败次数，成功一次清零
+    'last_error_ts': 0,
+    'queue_loaded': False,
     'gen': 0,  # 每次 start() +1；旧代的轮询线程发现代数变了就退出
 }
 _LOCK = threading.Lock()
@@ -52,11 +57,55 @@ def _api(token, method, params=None, timeout=35):
 
 
 # ═══════════════════ 阅后即焚队列 ═══════════════════
+_delete_fail = {}          # (chat_id, mid) -> 已重试次数
+_DELETE_RETRY = 3
+_DELETE_RETRY_DELAY = 20
+
+
+def _queue_file():
+    return engine.STATE_DIR / 'bot_delete_queue.json'
+
+
+def _persist_queue_locked():
+    """落盘待删队列（调用方须已持有 _DELETE_LOCK）。以前队列只在内存，重启一次，
+    所有卡片 / 命令消息的删除计划全部丢失，消息就永远留在聊天里。"""
+    try:
+        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _queue_file().with_suffix('.tmp')
+        tmp.write_text(json.dumps(_delete_queue), encoding='utf-8')
+        tmp.replace(_queue_file())
+    except Exception as e:
+        log.debug('保存待删队列失败: %s', e)
+
+
+def _load_queue():
+    try:
+        data = json.loads(_queue_file().read_text(encoding='utf-8'))
+    except Exception:
+        return
+    with _DELETE_LOCK:
+        known = {m for (_, _, m) in _delete_queue}
+        for d, c, m in data:
+            if m not in known:
+                _delete_queue.append((float(d), c, m))
+
+
 def _schedule_delete(chat_id, message_id, delay):
     if not message_id: return
     with _DELETE_LOCK:
         _delete_queue[:] = [(d, c, m) for (d, c, m) in _delete_queue if m != message_id]
         _delete_queue.append((time.time() + delay, chat_id, message_id))
+        _persist_queue_locked()
+
+
+def _err_desc(e):
+    """Telegram 的 4xx 会抛 HTTPError，真正的原因在响应体 description 里。"""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            return json.loads(e.read().decode('utf-8')).get('description', '') or str(e)
+        except Exception:
+            return str(e)
+    return str(e)
 
 
 def _try_delete(token, chat_id, message_id):
@@ -65,7 +114,10 @@ def _try_delete(token, chat_id, message_id):
              {'chat_id': str(chat_id), 'message_id': message_id}, timeout=10)
         return True
     except Exception as e:
-        log.debug('删除消息失败 (%s/%s): %s', chat_id, message_id, e)
+        desc = _err_desc(e)
+        if 'not found' in desc.lower():
+            return True   # 已经不在了，等同删除成功
+        log.debug('删除消息失败 (%s/%s): %s', chat_id, message_id, desc)
         return False
 
 
@@ -77,17 +129,29 @@ def _cleanup_loop(gen):
     log.info('阅后即焚线程启动')
     while _alive(gen):
         time.sleep(2)
-        now = time.time()
         token = (load_config().get('telegram_bot_token') or '').strip()
         if not token: continue
+        now = time.time()
+        # 只在锁内取出到期项；deleteMessage 是网络调用（最长 10 秒），
+        # 以前整个循环都握着锁，网络一抖，_send / _edit（轮询线程）和 Web 的 status() 全被卡住。
         with _DELETE_LOCK:
-            remaining = []
-            for deadline, chat_id, mid in _delete_queue:
-                if now >= deadline:
-                    _try_delete(token, chat_id, mid)
-                else:
-                    remaining.append((deadline, chat_id, mid))
-            _delete_queue[:] = remaining
+            due = [x for x in _delete_queue if now >= x[0]]
+            if not due: continue
+            _delete_queue[:] = [x for x in _delete_queue if now < x[0]]
+            _persist_queue_locked()
+        for _deadline, chat_id, mid in due:
+            if _try_delete(token, chat_id, mid):
+                _delete_fail.pop((chat_id, mid), None)
+                continue
+            n = _delete_fail.get((chat_id, mid), 0) + 1
+            if n >= _DELETE_RETRY:
+                _delete_fail.pop((chat_id, mid), None)
+                continue
+            _delete_fail[(chat_id, mid)] = n
+            with _DELETE_LOCK:   # 期间若被重新登记（例如卡片又被编辑）就不要覆盖新的计划
+                if not any(m == mid for (_, _, m) in _delete_queue):
+                    _delete_queue.append((time.time() + _DELETE_RETRY_DELAY, chat_id, mid))
+                    _persist_queue_locked()
 
 
 # ═══════════════════ 发送 / 编辑 ═══════════════════
@@ -126,7 +190,7 @@ def _answer_callback(token, cb_id, text='', alert=False):
         log.warning('应答按钮失败: %s', e)
 
 
-def _edit(token, chat_id, message_id, text, keyboard=None):
+def _edit(token, chat_id, message_id, text, keyboard=None, ttl=None):
     params = {
         'chat_id': str(chat_id), 'message_id': message_id,
         'text': text[:4000], 'parse_mode': 'HTML',
@@ -135,11 +199,25 @@ def _edit(token, chat_id, message_id, text, keyboard=None):
     if keyboard is not None: params['reply_markup'] = json.dumps(keyboard)
     try:
         result = _api(token, 'editMessageText', params, timeout=15)
-        _schedule_delete(chat_id, message_id, BOT_MSG_TTL)
-        return result
     except Exception as e:
-        log.warning('编辑消息失败: %s', e)
+        desc = _err_desc(e)
+        if 'not modified' in desc.lower():
+            return {'ok': True}
+        log.warning('编辑消息失败: %s', desc)
         return None
+    delay = BOT_MSG_TTL if ttl is None else ttl
+    if delay > 0:
+        _schedule_delete(chat_id, message_id, delay)
+    return result
+
+
+def _edit_or_send(token, chat_id, message_id, text, keyboard=None, ttl=None):
+    """优先就地编辑卡片；卡片已被删 / 编辑失败时退回发新消息，保证用户总能看到结果。"""
+    if message_id:
+        r = _edit(token, chat_id, message_id, text, keyboard, ttl=ttl)
+        if r and r.get('ok'):
+            return r
+    return _send(token, chat_id, text, keyboard, ttl=ttl)
 
 
 def _is_allowed(user_id, chat_id):
@@ -167,6 +245,67 @@ def _clean_confirm_keyboard(plan_id):
         [{'text': '✅ 确认执行', 'callback_data': f'clean_do:{plan_id}'},
          {'text': '❌ 取消', 'callback_data': 'dismiss'}],
     ]}
+
+
+def _close_keyboard():
+    return {'inline_keyboard': [[{'text': '❌ 关闭', 'callback_data': 'dismiss'}]]}
+
+
+def _rescan_keyboard():
+    return {'inline_keyboard': [[
+        {'text': '🔄 重新扫描', 'callback_data': 'cmd:check'},
+        {'text': '❌ 关闭', 'callback_data': 'dismiss'}]]}
+
+
+def _plan_ttl_left(plan_id, default=None):
+    """计划剩余有效秒数：计划卡片据此设置自动销毁，到期即消失。"""
+    plan = engine.load_plan(plan_id) if plan_id else None
+    if not plan:
+        return default
+    left = float(plan.get('ts') or 0) + engine.PLAN_TTL - time.time()
+    return max(int(left), 10)
+
+
+def _plan_problem(plan_id):
+    """校验计划还能不能执行。返回 (code, 提示文案)，可执行则 (None, '')。
+    顺手把已超时但仍是 pending 的计划落盘标成 expired。"""
+    plan = engine.load_plan(plan_id)
+    if plan is None:
+        return 'missing', '计划已失效或不存在'
+    st = plan.get('state')
+    if st in ('done', 'failed', 'stale'):
+        return 'used', '计划已执行过或已失效，不能重复执行'
+    if st == 'executing' and _get_current_task() is not None:
+        return 'executing', '计划正在执行中，请稍候'
+    if st == 'expired' or time.time() - float(plan.get('ts') or 0) > engine.PLAN_TTL:
+        if st == 'pending':
+            engine.save_plan_state(plan_id, 'expired')
+        return 'expired', f'计划已超过 {engine.PLAN_TTL // 3600} 小时有效期，已过期'
+    sig = str(plan.get('rule_sig') or '')
+    try:
+        cur_sig = engine._current_rule_snapshot()['sig']
+    except Exception:
+        cur_sig = ''
+    if sig and cur_sig and sig != cur_sig:
+        return 'rule_changed', '清理规则在扫描后已变化，旧计划不再适用'
+    return None, ''
+
+
+def _show_plan_problem(token, chat_id, message_id, code, text):
+    """点到过期 / 已用 / 失效的计划卡片：就地改成提示，并给「重新扫描 / 关闭」。"""
+    if code == 'executing':
+        _edit(token, chat_id, message_id, f'⏳ {text}', _close_keyboard(), ttl=20)
+    else:
+        _edit_or_send(token, chat_id, message_id,
+                      f'⌛ <b>{_esc(text)}</b>\n\n请重新扫描生成新计划。',
+                      _rescan_keyboard(), ttl=60)
+
+
+def _dismiss(token, chat_id, message_id):
+    """忽略 / 取消：删除卡片；删不掉（超 48 小时、网络抖动）就把卡片改成已忽略并去掉按钮。"""
+    if _try_delete(token, chat_id, message_id):
+        return
+    _edit(token, chat_id, message_id, '✅ 已忽略', {'inline_keyboard': []}, ttl=5)
 
 
 # ═══════════════════ 命令注册 ═══════════════════
@@ -273,7 +412,9 @@ def _spawn_and_watch(kind, action_fn, chat_id, message_id=None,
         if isinstance(t.result, dict):
             _notify_result(token, chat_id, kind, t.result, message_id, user_msg_id)
         else:
-            _send(token, chat_id, f'❌ {kind} 执行失败: {t.error or "未知错误"}')
+            # 任务抛异常：以前只另发一条消息，原来那张「⏳ 正在执行…」卡片永远停在那里
+            _show_failure(token, chat_id, kind,
+                          {'status': 'error', 'message': t.error or '未知错误'}, message_id)
 
     exclusive = kind in _EXCLUSIVE_KINDS
     try:
@@ -281,7 +422,7 @@ def _spawn_and_watch(kind, action_fn, chat_id, message_id=None,
                             exclusive=exclusive, source='bot', on_done=on_done)
     except tasks.TaskBusy as e:
         txt = f'⏳ {e}'
-        if message_id: _edit(token, chat_id, message_id, txt, {'inline_keyboard': []})
+        if message_id: _edit(token, chat_id, message_id, txt, _close_keyboard(), ttl=20)
         else: _send(token, chat_id, txt)
 
 
@@ -490,15 +631,35 @@ def notify_auto_scan(res, error=None):
         text += (f'\n\n<i>清单 {engine.PLAN_TTL // 3600} 小时内有效，过期需重新扫描；'
                  '清理不会自动执行，确认后请点下方按钮</i>')
         kb = _plan_keyboard(pid) if pid else {'inline_keyboard': []}
-    r = _send(token, chat_id, text, kb, ttl=43200)
+    # 带按钮的卡片跟计划同寿命：计划过期（PLAN_TTL）就自动消失，不再挂 12 小时变成点不动的死卡片
+    ttl = _plan_ttl_left(pid, 43200) if (pid and loc + shr > 0) else 43200
+    r = _send(token, chat_id, text, kb, ttl=ttl)
     return bool(r and r.get('ok'))
+
+
+_RESCAN_CODES = {'plan_expired', 'plan_rule_changed', 'plan_not_found', 'plan_used'}
+
+
+def _show_failure(token, chat_id, kind, res, message_id=None):
+    """任务失败 / 忙：编辑原卡片而不是另发消息。
+    以前 clean_do 先把卡片改成「⏳ 正在执行清理...」并去掉按钮，计划过期时引擎返回 error，
+    Bot 却另发一条新消息，原卡片永远停在「执行中」，也没有任何按钮可点。"""
+    status, code = res.get('status'), res.get('code')
+    msg = res.get('message') or ('已有治理任务正在执行，请稍后再试' if status == 'busy' else '未知错误')
+    if status == 'busy':
+        text, kb = f'⏳ {_esc(msg)}', _close_keyboard()
+    elif code in _RESCAN_CODES:
+        text, kb = f'⌛ <b>{_esc(msg)}</b>', _rescan_keyboard()
+    else:
+        text, kb = f'❌ {kind} 失败: {_esc(msg)}', (_close_keyboard() if message_id else None)
+    _edit_or_send(token, chat_id, message_id, text, kb, ttl=60)
 
 
 def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None):
     if not isinstance(res, dict):
         _send(token, chat_id, f'⚠️ {kind} 返回异常'); return
-    if res.get('status') == 'error':
-        _send(token, chat_id, f'❌ {kind} 失败: {res.get("message", "未知错误")}'); return
+    if res.get('status') in ('error', 'busy'):
+        _show_failure(token, chat_id, kind, res, message_id); return
 
     if kind == 'check':
         pid = res.get('plan_id')
@@ -509,15 +670,11 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
             kb = {'inline_keyboard': []}
         else:
             kb = _plan_keyboard(pid) if pid else {'inline_keyboard': []}
-        if message_id: _edit(token, chat_id, message_id, text, kb)
-        else: _send(token, chat_id, text, kb)
+        # 带按钮的计划卡片保留到计划过期（到期自动消失），不再 60 秒就被销毁
+        ttl = _plan_ttl_left(pid) if (pid and total) else None
+        _edit_or_send(token, chat_id, message_id, text, kb, ttl=ttl)
 
     elif kind == 'clean':
-        if res.get('status') == 'busy':
-            txt = f"⏳ {res.get('message') or '已有治理任务正在执行，请稍后再试'}"
-            if message_id: _edit(token, chat_id, message_id, txt, {'inline_keyboard': []})
-            else: _send(token, chat_id, txt)
-            return
         skipped = res.get('skipped') or 0  # 引擎返回的是跳过项数（int），以前按列表 len() 会在清理完成后抛错
         text = '\n'.join([engine.tg_title('🗑️', '清理完成', engine.tg_stamp()), '',
                           engine.tg_row('💾', '释放本地', res.get('loc_cnt', 0)),
@@ -525,8 +682,7 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
                           engine.tg_row('🔄', 'Emby 刷新', '✅' if res.get('refreshed') else '❌')])
         if skipped:
             text += '\n' + engine.tg_row('⏭️', '跳过', skipped, '状态已变化，未执行')
-        if message_id: _edit(token, chat_id, message_id, text, {'inline_keyboard': []})
-        else: _send(token, chat_id, text)
+        _edit_or_send(token, chat_id, message_id, text, {'inline_keyboard': []}, ttl=300)
 
     elif kind == 'search':
         text = (res.get('text') or '无结果').replace('**', '').replace('`', '')
@@ -628,6 +784,11 @@ def _handle_command(token, msg):
     text = (msg.get('text') or '').strip()
     msg_id = msg.get('message_id')
 
+    # 所有用户消息统一 10 秒后删除。以前只有 /menu、/search 空参数等少数分支
+    # 把 delete_user_msg 传给了 _send，/check /search 关键词 /gap 等命令的原消息永远不删。
+    if msg_id:
+        _schedule_delete(chat_id, msg_id, USER_MSG_TTL)
+
     if not _is_allowed(user_id, chat_id):
         _send(token, chat_id,
               f'⛔ 你没有权限使用此 Bot。\n你的 ID: <code>{user_id}</code>')
@@ -669,54 +830,86 @@ def _handle_command(token, msg):
 
 
 def _handle_callback(token, cb):
-    chat_id = cb['message']['chat']['id']
-    user_id = cb['from']['id']
-    message_id = cb['message']['message_id']
+    msg = cb.get('message') or {}
+    chat_id = (msg.get('chat') or {}).get('id')
+    message_id = msg.get('message_id')
+    user_id = (cb.get('from') or {}).get('id')
     data = cb.get('data') or ''
 
+    if chat_id is None or message_id is None:
+        _answer_callback(token, cb['id'], '卡片已失效，请重新发送命令', alert=True); return
     if not _is_allowed(user_id, chat_id):
         _answer_callback(token, cb['id'], '⛔ 无权限', alert=True); return
-    _answer_callback(token, cb['id'])
+    _answer_callback(token, cb['id'])   # 一次回调只能应答一次，先应答让按钮不转圈；后续结果都落在卡片上
 
-    if data.startswith('cmd:'):
+    if data == 'dismiss':
+        _dismiss(token, chat_id, message_id)
+
+    elif data.startswith('cmd:'):
         _dispatch(data[4:], token, chat_id, message_id=message_id)
 
     elif data.startswith('plan:'):
         plan_id = data[5:]
-        plan_data = engine.load_plan(plan_id)
-        if plan_data is None:
-            _answer_callback(token, cb['id'], '计划已失效/格式过旧', alert=True); return
+        code, text = _plan_problem(plan_id)
+        if code and code != 'executing':
+            _show_plan_problem(token, chat_id, message_id, code, text); return
+        plan_data = engine.load_plan(plan_id) or {}
         actions = plan_data.get('actions') or []
         if not actions:
             _send(token, chat_id, '📋 <b>计划清单</b>\n\n(空)'); return
-        preview = '\n'.join('• ' + (a.get('text') or '?') for a in actions[:20])
+        preview = '\n'.join('• ' + _esc(a.get('text') or '?') for a in actions[:20])
         more = f'\n… 共 {len(actions)} 条' if len(actions) > 20 else ''
         state = plan_data.get('state', 'pending')
         _send(token, chat_id,
-              f'📋 <b>计划清单</b> ({len(actions)} 项 · {state})\n\n{preview}{more}')
+              f'📋 <b>计划清单</b> ({len(actions)} 项 · {state})\n\n{preview}{more}',
+              ttl=LIST_MSG_TTL)
 
     elif data.startswith('clean_ask:'):
         plan_id = data[10:]
+        code, text = _plan_problem(plan_id)
+        if code:
+            _show_plan_problem(token, chat_id, message_id, code, text); return
         _edit(token, chat_id, message_id,
-              f'⚠️ <b>确认执行清理？</b>\n\n计划 ID: <code>{plan_id}</code>\n'
+              f'⚠️ <b>确认执行清理？</b>\n\n计划 ID: <code>{_esc(plan_id)}</code>\n'
               f'将按清单删除本地 STRM（含 115 云端源）和分享 STRM。\n\n此操作不可撤销！',
-              _clean_confirm_keyboard(plan_id))
+              _clean_confirm_keyboard(plan_id), ttl=_plan_ttl_left(plan_id, BOT_MSG_TTL))
 
     elif data.startswith('clean_do:'):
         plan_id = data[9:]
+        # 执行前先核验：过期 / 已执行 / 规则变化 → 卡片就地提示并给「重新扫描」
+        code, text = _plan_problem(plan_id)
+        if code:
+            _show_plan_problem(token, chat_id, message_id, code, text); return
         bm = _busy_msg()
         if bm:
-            _edit(token, chat_id, message_id, bm, {'inline_keyboard': []}); return
-        _edit(token, chat_id, message_id, '⏳ 正在执行清理...', {'inline_keyboard': []})
+            _edit(token, chat_id, message_id, bm, _close_keyboard(), ttl=20); return
+        # 清理可能跑很久：进度卡片保留 30 分钟，别 60 秒就被删，否则结果没地方显示
+        _edit(token, chat_id, message_id, '⏳ 正在执行清理...', {'inline_keyboard': []}, ttl=1800)
         _spawn_and_watch('clean', engine.ACTIONS['inter_clean'], chat_id,
                          message_id=message_id, plan=plan_id, dry_run=False,
                          notify=False)  # Bot 自己编辑确认消息，引擎不再另发一条
 
-    elif data == 'dismiss':
-        _try_delete(token, chat_id, message_id)
-
 
 # ═══════════════════ 长轮询 ═══════════════════
+def _is_timeout(e):
+    return isinstance(e, TimeoutError) or 'timed out' in str(e).lower()
+
+
+def _note_poll_failure(e):
+    _state['fail_count'] += 1
+    _state['last_error'] = str(e) or type(e).__name__
+    _state['last_error_ts'] = time.time()
+    log.warning('getUpdates 失败(连续 %d 次): %s', _state['fail_count'], e)
+
+
+def _handle_update(token, upd):
+    try:
+        if 'message' in upd: _handle_command(token, upd['message'])
+        elif 'callback_query' in upd: _handle_callback(token, upd['callback_query'])
+    except Exception as e:
+        log.warning('处理 update 失败: %s', e)
+
+
 def _poll_loop(gen):
     log.info('Bot 长轮询线程启动')
     while _alive(gen):
@@ -743,29 +936,31 @@ def _poll_loop(gen):
                     'allowed_updates': json.dumps(['message', 'callback_query']),
                 }, timeout=35)
             except Exception as e:
-                _state['last_error'] = str(e)
-                log.warning('getUpdates 失败: %s', e)
-                time.sleep(5); continue
+                _note_poll_failure(e)
+                # 长轮询读超时在弱网 / 代理下很常见：立刻重连即可，别睡 5 秒（睡眠期间点的按钮全在排队）
+                time.sleep(1 if _is_timeout(e) else min(3 * _state['fail_count'], 30))
+                continue
 
             if not _alive(gen):
                 break  # 长轮询期间被 restart() 换代：这批更新留给新线程处理，避免同一条命令执行两次
-            _state['last_poll'] = time.time()
             if not resp.get('ok'):
+                _note_poll_failure(RuntimeError(str(resp.get('description') or 'getUpdates 返回 not ok')))
                 time.sleep(3); continue
+            # 成功：清掉错误。以前 last_error 一旦出现就永远留着，Web 上一直红着「timed out」
+            _state['last_poll'] = time.time()
+            _state['fail_count'] = 0
+            _state['last_error'] = ''
 
             for upd in resp.get('result', []):
                 if not _alive(gen):
                     break  # 处理到一半被换代：剩下的留给新线程（offset 未推进），不重复执行
                 _state['offset'] = upd['update_id'] + 1
-                try:
-                    if 'message' in upd: _handle_command(token, upd['message'])
-                    elif 'callback_query' in upd: _handle_callback(token, upd['callback_query'])
-                except Exception as e:
-                    log.warning('处理 update 失败: %s', e)
+                # 每个 update 单独线程：一个慢操作（网络卡住的 edit / delete）不再堵住后面所有按钮点击
+                threading.Thread(target=_handle_update, args=(token, upd),
+                                 daemon=True, name='tg-update').start()
 
         except Exception as e:
-            _state['last_error'] = str(e)
-            log.warning('Bot 循环异常: %s', e)
+            _note_poll_failure(e)
             time.sleep(5)
 
     log.info('Bot 长轮询线程退出')
@@ -781,6 +976,9 @@ def _start_locked():
     token = (load_config().get('telegram_bot_token') or '').strip()
     if not token:
         log.info('Telegram Bot Token 未配置，跳过启动'); return
+    if not _state['queue_loaded']:
+        _load_queue()
+        _state['queue_loaded'] = True
     _state['running'] = True
     _state['gen'] += 1
     gen = _state['gen']
@@ -808,6 +1006,7 @@ def _restart_locked():
     _state['initialized'] = False
     _state['bot_username'] = ''
     _state['last_error'] = ''
+    _state['fail_count'] = 0
     # offset 保留：避免重启后重复处理旧消息。
     # 以前靠 sleep(0.5) 等旧线程退出，但旧线程正卡在 25 秒的长轮询里，根本来不及看到 running=False，
     # 每保存一次配置就多一个轮询线程；现在靠代数 gen 让旧线程自行退出。
@@ -817,10 +1016,31 @@ def _restart_locked():
 def status():
     with _DELETE_LOCK:
         pending = len(_delete_queue)
+    now = time.time()
+    ago = int(now - _state['last_poll']) if _state['last_poll'] else None
+    fails = _state['fail_count']
+    t = _state['thread']
+    alive = bool(t and t.is_alive())
+    # state: stopped 未启动 / starting 刚启动 / ok 正常 / degraded 网络不稳（在重试）/ down 无响应
+    if not _state['running']:
+        st = 'stopped'
+    elif not alive or (ago is not None and ago > 180) or (ago is None and fails >= 3):
+        st = 'down'
+    elif fails >= 1 or (ago is not None and ago > 60):
+        st = 'degraded'
+    elif ago is None:
+        st = 'starting'
+    else:
+        st = 'ok'
     return {
         'running': _state['running'],
+        'state': st,
+        'thread_alive': alive,
         'bot_username': _state['bot_username'],
-        'last_poll_ago': int(time.time() - _state['last_poll']) if _state['last_poll'] else None,
-        'last_error': _state['last_error'],
+        'last_poll_ago': ago,
+        'fail_count': fails,
+        # 只在「当前仍在失败」时给出错误；已恢复就是空，Web 不再显示过期的报错
+        'last_error': _state['last_error'] if fails else '',
+        'last_error_ago': int(now - _state['last_error_ts']) if (fails and _state['last_error_ts']) else None,
         'pending_deletes': pending,
     }

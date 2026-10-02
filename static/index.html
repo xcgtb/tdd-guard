@@ -687,6 +687,8 @@ pre.out{
 .bot-status .dot{width:8px;height:8px;border-radius:50%}
 .bot-status .dot.on{background:var(--ok);box-shadow:0 0 0 2px rgba(16,185,129,.2)}
 .bot-status .dot.off{background:var(--text-dim)}
+.bot-status .dot.warn{background:var(--warn,#f59e0b);box-shadow:0 0 0 2px rgba(245,158,11,.2)}
+.bot-status .dot.bad{background:var(--err,#ef4444);box-shadow:0 0 0 2px rgba(239,68,68,.2)}
 
 /* ═══════════ Modal ═══════════ */
 .modal-bg{
@@ -4464,21 +4466,45 @@ async function toggleReveal(key){
     } catch(e){ toast('加载失败: ' + e.message, 'error'); }
   }
 }
+function botErrText(e){
+  if (!e) return '';
+  if (/timed out/i.test(e)) return '连接 Telegram 超时（网络波动，自动重试中）';
+  if (/401|Unauthorized/i.test(e)) return 'Bot Token 无效（401）';
+  if (/409|Conflict/i.test(e)) return '同一个 Bot Token 正被另一个实例使用（409）';
+  return e;
+}
 async function loadBotStatus(){
   try {
     var r = await api('/api/bot/status');
     var b = r.bot || {};
-    var running = b.running;
-    var uname = b.bot_username ? '@' + b.bot_username : '未连接';
+    var st = b.state || (b.running ? 'ok' : 'stopped');
+    var map = {
+      ok:       ['on',   'Bot 运行中'],
+      starting: ['warn', 'Bot 启动中'],
+      degraded: ['warn', 'Bot 网络不稳定，正在重试'],
+      down:     ['bad',  'Bot 无响应'],
+      stopped:  ['off',  'Bot 未运行']
+    };
+    var m = map[st] || map.stopped;
+    var uname = b.bot_username ? ' @' + b.bot_username : '';
     var lastAgo = b.last_poll_ago != null ? (b.last_poll_ago + ' 秒前') : '—';
-    var err = b.last_error ? ('\n⚠️ ' + b.last_error) : '';
+    var detail = '上次轮询: ' + lastAgo;
+    if (st === 'ok') detail += ' · 轮询正常';
+    // 只在「当前仍在失败」时显示错误；恢复后后端会清空，不会再残留旧报错
+    if (b.last_error) {
+      detail += '<br>⚠️ ' + botErrText(b.last_error).replace(/</g, '&lt;') +
+                (b.fail_count > 1 ? '（连续 ' + b.fail_count + ' 次）' : '');
+    }
     $('botStatus').innerHTML =
-      '<div class="bot-status"><span class="dot ' + (running ? 'on' : 'off') + '"></span>' +
-      (running ? 'Bot 运行中 ' + uname : 'Bot 未运行') +
-      '</div>' +
-      '<div style="margin-top:6px;color:#9ca3af">上次轮询: ' + lastAgo + err + '</div>';
+      '<div class="bot-status"><span class="dot ' + m[0] + '"></span>' + m[1] + uname + '</div>' +
+      '<div style="margin-top:6px;color:#9ca3af">' + detail + '</div>';
   } catch(e){ $('botStatus').textContent = '加载失败: ' + e.message; }
 }
+// 设置页可见时每 8 秒自动刷新一次，不用再手动刷新页面
+setInterval(function(){
+  var el = $('botStatus');
+  if (el && el.offsetParent !== null) loadBotStatus();
+}, 8000);
 async function saveConfig(){
   var body = {
     emby_host: $('cfg-emby-host').value.trim(),
