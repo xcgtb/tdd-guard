@@ -1612,6 +1612,7 @@ window.addEventListener('unhandledrejection', function(e){
             <div>
               <div class="lbl">平局保留本地</div>
               <div class="desc">仅当「画质对比规则」逐维比较后完全打平时才生效：开 = 保留本地，关 = 保留分享。「保留本地 / 保留分享」决策模式下不会用到；剧集逐集对比同样适用（决定该集分享版是否达标）。</div>
+              <button class="btn gray" style="margin-top:6px;min-height:28px;padding:2px 10px;font-size:11px" onclick="goCoverRules()">前往「画质对比规则」设置 →</button>
             </div>
             <label class="switch"><input type="checkbox" id="strTieLocal" onchange="onTieLocalToggle(this)"><span class="slider"></span></label>
           </div>
@@ -1627,13 +1628,18 @@ window.addEventListener('unhandledrejection', function(e){
         </div>
 
         <!-- 画质对比规则 -->
-        <div class="panel">
-          <h3 data-icon="scale">画质对比规则</h3>
+        <div class="panel" id="coverPanel">
+          <div class="row-between">
+            <h3 data-icon="scale">画质对比规则 <span style="font-size:10px;font-weight:600;color:#dc2626;border:1px solid #dc2626;border-radius:6px;padding:1px 6px;margin-left:6px">关键策略</span></h3>
+            <span id="coverDirty" style="display:none;font-size:11px;color:#d97706;font-weight:600">● 有未保存的改动</span>
+          </div>
+          <p style="font-size:12px;color:#dc2626;margin-bottom:6px">⚠️ 保存后立即生效（配置热加载），直接决定治理时「删本地还是删分享」。调整顺序/开关只是草稿，点「保存规则」并二次确认后才会生效。</p>
           <p style="font-size:12px;color:#6b7280;margin-bottom:12px">双库治理比较「分享版 vs 本地版」的唯一依据（没有隐藏打分）。按下方从上到下逐项比较：某一项两边档位不同，排在前面的档位胜出，后面的项不再比较；这一项两边相同或都未识别，才继续看下一项；全部打平交给上面的「平局保留本地」。关闭一项只是跳过它，不会反向优先。无法识别的规格排在该项最后，不会被强行判定为更优。</p>
           <div id="coverRules"><div class="list-empty">加载中...</div></div>
           <div style="margin-top:10px;display:flex;gap:8px">
-            <button class="btn" onclick="saveCoverStrategy()" data-icon="save">保存规则</button>
-            <button class="btn gray" onclick="resetCoverStrategy()">恢复默认</button>
+            <button class="btn" onclick="requestSaveCover()" data-icon="save">保存规则…</button>
+            <button class="btn gray" onclick="discardCoverDraft()">放弃改动</button>
+            <button class="btn gray" onclick="requestResetCover()">恢复默认…</button>
           </div>
           <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
             <div class="lbl" style="margin-bottom:6px">对比测试</div>
@@ -2457,6 +2463,9 @@ function renderMenu(){
 }
 
 function switchTab(id){
+  if (window.__activeTab === 'settings' && id !== 'settings' && typeof coverIsDirty === 'function' && coverIsDirty()) {
+    if (!confirm('「画质对比规则」有未保存的改动，离开将丢弃。\n\n确定离开？')) return;
+  }
   window.__activeTab = id;
   document.querySelectorAll('.sidebar nav a').forEach(function(a){
     var target = a.dataset.tab;
@@ -4378,7 +4387,7 @@ function pickMatchStrategy(v){
   if (!confirm('确定将配对策略切换为「' + label + '」？\n\n切换后旧治理计划会失效，需重新扫描生成新计划。')) {
     applyStrategyUI(); return;
   }
-  currentStrategy.decision = v;
+  currentStrategy.match_strategy = v;
   applyStrategyUI();
   saveStrategy();
 }
@@ -4435,6 +4444,7 @@ async function loadCoverStrategy(){
     var r = await api('/api/cover-strategy');
     if (r.status !== 'success') throw new Error(r.message || '加载失败');
     currentCover = r.strategy;
+    coverBaseline = coverSnapshot();
     renderCoverRules();
   } catch(e){ var el2 = $('coverRules'); if (el2) el2.innerHTML = '<div class="list-empty">画质对比规则加载失败：' + esc(e.message || e) + '</div>'; }
 }
@@ -4480,6 +4490,7 @@ function renderCoverRules(){
       (skipped ? '' : _iconBtn(r.__open ? '收起' : (r.key === 'release_group' ? '设置列表' : '设置顺序'), 'coverToggleTiers(' + k + ')')) +
       '</div>' + (skipped ? '' : '<div style="' + (r.__open ? '' : 'display:none;') + 'margin-top:8px"><div style="font-size:11px;color:var(--text-dim);margin-bottom:2px">越靠前优先级越高</div>' + body + '</div>') + '</div>';
   }).join('');
+  coverUpdateDirty();
 }
 function _coverFind(key){ return (currentCover.rules || []).filter(function(r){ return r.key === key; })[0]; }
 function coverToggleRule(key, on){ _coverFind(key).enabled = on; renderCoverRules(); }
@@ -4514,7 +4525,82 @@ function coverAddGroup(){
   if (r.groups.length === 1) r.enabled = true;
   renderCoverRules();
 }
+/* ── 草稿 / 差异 / 二次确认 ── */
+var coverBaseline = '';
+function coverSnapshot(){
+  if (!currentCover) return '';
+  return JSON.stringify((currentCover.rules || []).map(function(r){
+    return { key: r.key, enabled: !!r.enabled, tiers: r.tiers || null, groups: r.groups || null };
+  }));
+}
+function coverIsDirty(){ return !!currentCover && !!coverBaseline && coverSnapshot() !== coverBaseline; }
+function coverUpdateDirty(){
+  var el = $('coverDirty');
+  if (el) el.style.display = coverIsDirty() ? '' : 'none';
+}
+window.addEventListener('beforeunload', function(e){
+  if (coverIsDirty()) { e.preventDefault(); e.returnValue = ''; }
+});
+function coverDiffLines(){
+  var base = [];
+  try { base = JSON.parse(coverBaseline || '[]'); } catch(e){}
+  var bmap = {}; base.forEach(function(r, i){ r.__i = i; bmap[r.key] = r; });
+  var out = [];
+  (currentCover.rules || []).forEach(function(r, i){
+    var b = bmap[r.key], name = r.label || r.key;
+    if (!b) return;
+    if (b.__i !== i) out.push('「' + name + '」优先级 第 ' + (b.__i + 1) + ' 位 → 第 ' + (i + 1) + ' 位');
+    if (b.enabled !== !!r.enabled) out.push('「' + name + '」' + (r.enabled ? '关闭 → 启用' : '启用 → 关闭'));
+    if (JSON.stringify(b.tiers) !== JSON.stringify(r.tiers || null)) out.push('「' + name + '」档位顺序：' + (b.tiers || []).join(' > ') + '  →  ' + (r.tiers || []).join(' > '));
+    if (JSON.stringify(b.groups) !== JSON.stringify(r.groups || null)) out.push('「' + name + '」发布组：' + ((b.groups || []).join('、') || '（空）') + '  →  ' + ((r.groups || []).join('、') || '（空）'));
+  });
+  return out;
+}
+function _coverConfirmModal(title, bodyHtml, okText, okFn){
+  openModal('<h3>' + title + '</h3>' + bodyHtml +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">' +
+    '<button class="btn gray" onclick="closeModal()">取消</button>' +
+    '<button class="btn red" id="coverOkBtn" disabled onclick="' + okFn + '">' + okText + '</button></div>');
+  // 防误触：确认键 1.5 秒后才可点
+  var n = 2, btn = $('coverOkBtn');
+  btn.textContent = okText + '（' + n + 's）';
+  var t = setInterval(function(){
+    n--;
+    if (!$('coverOkBtn') || $('coverOkBtn') !== btn) return clearInterval(t);
+    if (n <= 0) { clearInterval(t); btn.disabled = false; btn.textContent = okText; }
+    else btn.textContent = okText + '（' + n + 's）';
+  }, 750);
+}
+function requestSaveCover(){
+  if (!currentCover) return;
+  if (!coverIsDirty()) return toast('规则没有改动', 'info');
+  var lines = coverDiffLines();
+  var list = lines.length ? '<ul style="margin:8px 0 0 18px;font-size:12px;line-height:1.7">' + lines.map(function(l){ return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>' : '';
+  _coverConfirmModal('确认保存「画质对比规则」？',
+    '<div style="font-size:12px;color:#dc2626">这是关键策略：保存后立即生效（热加载），会改变双库治理中谁胜谁负、删本地还是删分享。已生成的旧治理计划建议重新扫描。</div>' +
+    '<div style="font-size:12px;margin-top:10px;font-weight:600">本次改动（' + lines.length + ' 项）</div>' + list,
+    '确认保存并生效', 'saveCoverStrategy()');
+}
+function requestResetCover(){
+  _coverConfirmModal('确认恢复默认规则？',
+    '<div style="font-size:12px;color:#dc2626">将覆盖当前全部自定义的顺序、开关、档位和发布组列表，并立即生效。</div>',
+    '确认恢复默认', 'resetCoverStrategy()');
+}
+function discardCoverDraft(){
+  if (!coverIsDirty()) return toast('没有未保存的改动', 'info');
+  if (!confirm('放弃所有未保存的改动，恢复为已保存的规则？')) return;
+  loadCoverStrategy();
+}
+function goCoverRules(){
+  var el = $('coverPanel');
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.style.transition = 'box-shadow .3s';
+  el.style.boxShadow = '0 0 0 3px #dc2626';
+  setTimeout(function(){ el.style.boxShadow = ''; }, 1800);
+}
 async function saveCoverStrategy(){
+  closeModal();
   try {
     var payload = JSON.parse(JSON.stringify(currentCover));
     payload.rules.forEach(function(r){ delete r.__open; delete r.label; delete r.desc; });
@@ -4524,16 +4610,18 @@ async function saveCoverStrategy(){
     (currentCover.rules || []).forEach(function(r){ open[r.key] = r.__open; });
     currentCover = r2.strategy;
     currentCover.rules.forEach(function(r){ r.__open = open[r.key]; });
+    coverBaseline = coverSnapshot();
     renderCoverRules();
-    toast('画质对比规则已保存，下次扫描生效', 'success');
+    toast('画质对比规则已保存并生效', 'success');
   } catch(e){ toast('保存失败: ' + e.message, 'error'); }
 }
 async function resetCoverStrategy(){
-  if (!confirm('恢复默认规则（对齐上游默认顺序、开关与档位）？')) return;
+  closeModal();
   try {
     var r2 = await api('/api/cover-strategy', { method: 'POST', body: JSON.stringify({ strategy: { rules: [] } }) });
     if (r2.status !== 'success') throw new Error(r2.message || '重置失败');
     currentCover = r2.strategy;
+    coverBaseline = coverSnapshot();
     renderCoverRules();
     toast('已恢复默认规则', 'success');
   } catch(e){ toast('重置失败: ' + e.message, 'error'); }
