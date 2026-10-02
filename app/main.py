@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Media Agent Web 层 —— FastAPI 后端"""
-import os, sys, time, json, asyncio, logging, threading, secrets, hmac, hashlib
+import os, sys, time, json, asyncio, logging, threading, secrets
 import urllib.parse, urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app import engine, bot, logger, scheduler, tasks
+from app import security as _sec
 from app import config as _cfg
 from app.config import (
     load_config, save_config, EDITABLE_KEYS,
@@ -151,20 +152,28 @@ _SESSION_KEY = (os.environ.get('SESSION_SECRET', '').strip() or WEB_PASSWORD or 
 
 
 def _sign_session(user: str, exp: int) -> str:
-    msg = ('%s|%d' % (user, exp)).encode()
-    sig = hmac.new(_SESSION_KEY, msg, hashlib.sha256).hexdigest()
-    return '%s|%d|%s' % (user, exp, sig)
+    return _sec.sign_session(_SESSION_KEY, user, exp)
 
 
 def _verify_session(token: str) -> bool:
-    try:
-        user, exp, sig = token.split('|')
-        if int(exp) < time.time():
-            return False
-        good = hmac.new(_SESSION_KEY, ('%s|%s' % (user, exp)).encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(sig, good) and hmac.compare_digest(user, WEB_USER)
-    except Exception:
-        return False
+    return _sec.verify_session(_SESSION_KEY, WEB_USER, token)
+
+
+# ── CSRF + 安全响应头 ──
+# 反向代理改写了 Host 且没传 X-Forwarded-Host 时，用 ALLOWED_ORIGINS 补白名单（逗号分隔）。
+_ALLOWED_HOSTS = _sec.parse_allowed_origins(os.environ.get('ALLOWED_ORIGINS', ''))
+
+
+@app.middleware('http')
+async def _security_mw(request: Request, call_next):
+    if request.url.path.startswith('/api/') and _sec.csrf_blocked(
+            request.method, request.headers, bool(request.cookies.get(SESSION_COOKIE)), _ALLOWED_HOSTS):
+        return JSONResponse({'status': 'error', 'detail': '跨站请求被拒绝（Origin 校验失败）。'
+                             '如通过反向代理访问，请设置 ALLOWED_ORIGINS。'}, status_code=403)
+    resp = await call_next(request)
+    for k, v in _sec.SECURITY_HEADERS.items():
+        resp.headers.setdefault(k, v)
+    return resp
 
 
 def auth(request: Request = None, credentials: HTTPBasicCredentials = Depends(_security)):
@@ -681,7 +690,7 @@ def api_get_strategy():
 
 @app.get('/api/cover-strategy', dependencies=[Depends(auth)])
 def api_get_cover():
-    """洗版覆盖策略（对齐上游自定义覆盖策略）。"""
+    """画质对比规则（8 维）。"""
     return {'status': 'success', 'strategy': get_cover_strategy()}
 
 
@@ -692,8 +701,17 @@ def api_set_cover(body: dict = None):
         result = update_cover_strategy(body.get('strategy') or {})
     except ValueError as e:
         raise HTTPException(400, str(e))
-    engine.invalidate_cover_cache()
     return {'status': 'success', 'strategy': result}
+
+
+@app.post('/api/cover-compare', dependencies=[Depends(auth)])
+def api_cover_compare(body: dict = None):
+    """对比测试：给两个文件名，按当前规则逐维展示谁胜、为什么。a=分享版 b=本地版。"""
+    body = body or {}
+    a, b = str(body.get('a') or '').strip(), str(body.get('b') or '').strip()
+    if not a or not b:
+        raise HTTPException(400, '需要 a、b 两个文件名')
+    return {'status': 'success', 'compare': engine._compare_meta(a, b)}
 
 
 @app.post('/api/strategy', dependencies=[Depends(auth)])
@@ -723,8 +741,6 @@ def api_set_strategy(body: dict = None):
         kwargs['multi_season_protect'] = mp
     if 'tie_keep_local' in body:
         kwargs['tie_keep_local'] = bool(body['tie_keep_local'])
-    if 'dolby_first' in body:
-        kwargs['dolby_first'] = bool(body['dolby_first'])
     if 'exempt_keywords' in body:
         kwargs['exempt_keywords'] = body['exempt_keywords']
     if 'special_action' in body:

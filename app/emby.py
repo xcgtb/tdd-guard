@@ -11,11 +11,11 @@ import contextlib, dataclasses, html
 log = logging.getLogger('media_agent')
 
 try:
-    from .core import (esc, parse_season_dir, get_ep, get_score, best_score, title_key,
+    from .core import (esc, parse_season_dir, get_ep, title_key,
                        governance_title_key, analyze_season_episodes, parse_emby_library,
                        quality_label, RE_SXXEXX)
 except ImportError:
-    from core import (esc, parse_season_dir, get_ep, get_score, best_score, title_key,
+    from core import (esc, parse_season_dir, get_ep, title_key,
                       governance_title_key, analyze_season_episodes, parse_emby_library,
                       quality_label, RE_SXXEXX)
 
@@ -42,7 +42,7 @@ def _eng():
 
 def emby_request(path, params=None, method='GET', timeout=None, body=None, retries=None):
     if not _eng().EMBY_KEY:
-        raise RuntimeError('未配置 _eng().EMBY_KEY')
+        raise RuntimeError('未配置 EMBY_KEY')
     timeout = timeout or _eng().EMBY_TIMEOUT
     url = _eng().EMBY_HOST + path + ('?' + urllib.parse.urlencode(params) if params else '')
     headers = {'X-Emby-Token': _eng().EMBY_KEY}
@@ -222,7 +222,7 @@ def _recent(item_type, fields, limit, cutoff):
         yield it
 
 def _src(path):
-    lib = emby_lib_of(path)
+    lib = _eng().emby_lib_of(path)
     return '本地影视库' if lib == 'local' else ('分享影视库' if lib == 'share' else '其它库')
 
 def emby_path_to_container(emby_path):

@@ -17,5 +17,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest httpx
 
+      - name: Static check (undefined names / broken _eng() refs)
+        run: python3 scripts/static_check.py
+
+      - name: Release check
+        run: python3 scripts/release_check.py
+
+      - name: Frontend JS syntax
+        run: |
+          python3 - <<'PY'
+          import re
+          s = open('static/index.html', encoding='utf-8').read()
+          for i, b in enumerate(re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', s, re.S)):
+              open(f'/tmp/blk{i}.js', 'w', encoding='utf-8').write(b)
+          PY
+          for f in /tmp/blk*.js; do node --check "$f"; done
+
       - name: Run tests
         run: pytest tests/ -v

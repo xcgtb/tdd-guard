@@ -11,13 +11,13 @@ import contextlib, dataclasses, html
 log = logging.getLogger('media_agent')
 
 try:
-    from .core import (esc, parse_season_dir, get_ep, get_score, best_score, title_key,
+    from .core import (esc, parse_season_dir, get_ep, title_key,
                        governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
+                       quality_label, RE_SXXEXX, compare_cover, explain_compare)
 except ImportError:
-    from core import (esc, parse_season_dir, get_ep, get_score, best_score, title_key,
+    from core import (esc, parse_season_dir, get_ep, title_key,
                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
+                      quality_label, RE_SXXEXX, compare_cover, explain_compare)
 
 
 try:
@@ -44,48 +44,21 @@ def _strategy():
     return _cfg.get_strategy()
 
 
-_cover_cache = {'ts': 0, 'data': None}
-
-
 def _cover_strategy():
-    """洗版覆盖策略（60 秒缓存；/api 保存后会通过 _cover_cache 失效。"""
-    import time as _t
-    now = _t.time()
-    if _cover_cache['data'] is not None and now - _cover_cache['ts'] < 60:
-        return _cover_cache['data']
-    try:
-        data = _cfg.get_cover_strategy()
-    except Exception as e:
-        log.warning('覆盖策略读取失败，回退默认: %s', e)
-        from core import cover_default_strategy
-        data = cover_default_strategy()
-    _cover_cache['ts'] = now
-    _cover_cache['data'] = data
-    return data
-
-
-def invalidate_cover_cache():
-    _cover_cache['data'] = None
+    """画质对比规则（config 内部按文件签名缓存，保存后立即生效）。"""
+    return _cfg.get_cover_strategy()
 
 
 def _cmp_versions(a_name, b_name):
-    """版本比较统一入口（治理/去重共用）。
+    """版本比较唯一入口（治理/去重共用）：只按 8 维画质对比规则，1(a优)/-1(b优)/0(平)。
+    没有任何隐藏打分或兜底；平局由调用方按「平局保留本地/分享」决定。"""
+    return compare_cover(a_name, b_name, _cover_strategy())
 
-    覆盖策略允许洗版（allow_wash）时按自定义覆盖策略逐维比较；
-    平局或策略异常时回退原五元组画质比较。返回 1(a优)/-1(b优)/0(平)。
-    """
-    try:
-        cov = _cover_strategy()
-        if cov.get('allow_wash', True):
-            from core import compare_cover
-            r = compare_cover(a_name, b_name, cov)
-            if r != 0:
-                return r
-    except Exception as e:
-        log.warning('覆盖策略比较异常，回退五元组: %s', e)
-    sa = get_score(a_name)
-    sb = get_score(b_name)
-    return 1 if sa > sb else (-1 if sb > sa else 0)
+
+def _tie_share_wins():
+    """平局时分享是否胜出（由 Web「平局保留本地」开关决定）。"""
+    return not _eng()._strategy()['tie_keep_local']
+
 
 def _exempt_keywords():
     return _eng()._strategy()['exempt_keywords']
@@ -146,16 +119,27 @@ def _exempt_group_of(path, kws):
                 return part, k
     return None, None
 
-def _share_wins(s_q, l_q, s_name=None, l_name=None):
-    s = _eng()._strategy()
-    decision = s['decision']
+def _share_wins(s_name, l_name):
+    """分享版本是否胜出：先看决策模型，再按 8 维对比，全部打平才用平局开关。"""
+    decision = _eng()._strategy()['decision']
     if decision == 'keep_local': return False
     if decision == 'keep_share': return True
-    if s_name and l_name:
-        r = _cmp_versions(s_name, l_name)
-        if r != 0:
-            return r > 0 if s['tie_keep_local'] else r >= 0
-    return s_q > l_q if s['tie_keep_local'] else s_q >= l_q
+    r = _cmp_versions(s_name, l_name)
+    return r > 0 or (r == 0 and _tie_share_wins())
+
+def _ep_share_ok(s_name, l_name):
+    """剧集逐集：分享版是否「达标」——8 维分胜负；全部打平按「平局保留本地/分享」开关。
+    （只用于画质优先下的逐集比较；选了「保留本地/保留分享」时剧集在 build 阶段按季直接取舍，不会走到这里。）"""
+    r = _cmp_versions(s_name, l_name)
+    return r > 0 or (r == 0 and _tie_share_wins())
+
+def _compare_meta(s_name, l_name, season=False):
+    """把「分享版 vs 本地版」逐维对比结果挂到动作上，Web 可直接展示依据。"""
+    e = explain_compare(s_name, l_name, _cover_strategy())
+    e['share_name'], e['local_name'] = s_name, l_name
+    e['decision'] = 'quality_first' if season else _eng()._strategy()['decision']
+    e['tie_keep_local'] = not _tie_share_wins()
+    return e
 
 def _season_compare(s_files, l_files):
     """
@@ -186,9 +170,16 @@ def _season_compare(s_files, l_files):
             l_eps[ep[1]] = f
     s_keys, l_keys = set(s_eps), set(l_eps)
     common = s_keys & l_keys
+    # 代表集：优先取第一个「非平局」的共同集，让 Web 能展示决胜依据；全平则取第一集
+    sample = None
+    for e in sorted(common):
+        if _cmp_versions(s_eps[e].name, l_eps[e].name) != 0:
+            sample = e; break
+    if sample is None and common:
+        sample = min(common)
     s_better = l_better = 0
     for e in common:
-        if _cmp_versions(s_eps[e].name, l_eps[e].name) >= 0:
+        if _ep_share_ok(s_eps[e].name, l_eps[e].name):
             s_better += 1
         else:
             l_better += 1
@@ -205,6 +196,8 @@ def _season_compare(s_files, l_files):
         's_only': sorted(s_keys - l_keys),
         'l_only': sorted(l_keys - s_keys),
         'common': common, 's_better': s_better, 'l_better': l_better,
+        'sample': (dict(_compare_meta(s_eps[sample].name, l_eps[sample].name, season=True), episode=sample)
+                   if sample is not None else None),
         's_complete': _side_complete(s_keys),
         'l_complete': _side_complete(l_keys),
         'complete': _side_complete(s_keys) and _side_complete(l_keys),
@@ -471,14 +464,17 @@ def _build_plan_with_libs():
                                   'title': disp, 'keywords': hit_kws}))
             continue
 
-        if _share_wins(_best(s_files), _best(l_files)):
+        s_best, l_best = _best(s_files), _best(l_files)
+        if _share_wins(s_best, l_best):
             acts.append(Act('loc', f'🎬 《{disp}》 (分享画质达标，穿透删本地腾网盘)',
                             f'├─ 🎬 《{disp}》: 分享画质达标 ➔ CD2联动删除115网盘旧源', l_files,
-                            meta={'reason': 'share_better', 'reason_label': '分享画质达标', 'title': disp}))
+                            meta={'reason': 'share_better', 'reason_label': '分享画质达标', 'title': disp,
+                                  'compare': _compare_meta(s_best, l_best)}))
         else:
             acts.append(Act('shr', f'🎬 《{disp}》 (分享画质劣于本地，淘汰分享)',
                             f'├─ 🎬 《{disp}》: 分享画质次级 ➔ 清理分享影视库strm', s_files,
-                            meta={'reason': 'local_better', 'reason_label': '本地画质更优', 'title': disp}))
+                            meta={'reason': 'local_better', 'reason_label': '本地画质更优', 'title': disp,
+                                  'compare': _compare_meta(s_best, l_best)}))
 
     for key, s_seasons in S.tv.items():
         disp = S.meta[key][0]
@@ -532,22 +528,24 @@ def _build_plan_with_libs():
                                       'title': disp, 'season': 0}))
         elif special_action != 'ignore' and s00_files and l00_files:
             # 画质对比档（一边没有时不做处理）
-            s_q, l_q = _best(s00_files), _best(l00_files)
+            s_best, l_best = _best(s00_files), _best(l00_files)
             tag = f'《{disp}》S00'
-            if _share_wins(s_q, l_q):
+            if _share_wins(s_best, l_best):
                 acts.append(Act('loc', f'🎬 {tag} (特别篇画质对比 → 删本地)',
                                 f'├─ 🎬 {tag}: 分享画质达标 ➔ CD2联动删除115网盘旧源',
                                 l00_files,
                                 meta={'reason': 'special_share_better',
                                       'reason_label': '特别篇分享更优',
-                                      'title': disp, 'season': 0}))
+                                      'title': disp, 'season': 0,
+                                      'compare': _compare_meta(s_best, l_best)}))
             else:
                 acts.append(Act('shr', f'🎬 {tag} (特别篇画质对比 → 删分享)',
                                 f'├─ 🎬 {tag}: 本地画质更优 ➔ 清理分享影视库strm',
                                 s00_files,
                                 meta={'reason': 'special_local_better',
                                       'reason_label': '特别篇本地更优',
-                                      'title': disp, 'season': 0}))
+                                      'title': disp, 'season': 0,
+                                      'compare': _compare_meta(s_best, l_best)}))
         # ignore: 完全跳过
 
         s_proper = {k: v for k, v in s_seasons.items() if k > 0}
@@ -558,10 +556,49 @@ def _build_plan_with_libs():
         n_local = len(l_proper)
         is_multi_local = n_local >= 2
 
-        # full 档：本地多季合集一律保护，不删本地
+        # 决策模型「保留本地 / 保留分享」：剧集逐季直接按决策取舍，不比画质，优先级高于多季保护三档（含全量豁免）。只处理两库都有的季；单边独有的季是补充，不动。
+        decision = s['decision']
+        if decision in ('keep_local', 'keep_share'):
+            for sn, s_files in sorted(s_proper.items()):
+                if sn not in l_proper:
+                    continue
+                l_files = l_proper[sn]
+                tag = f'《{disp}》S{sn:02d}'
+                if decision == 'keep_local':
+                    acts.append(Act('shr', f'📺 {tag} (保留本地 → 淘汰分享)',
+                                    f'├─ 📺 {tag}: 决策「保留本地」 ➔ 清理分享影视库strm',
+                                    s_files,
+                                    meta={'reason': 'decision_keep_local',
+                                          'reason_label': '保留本地-删分享',
+                                          'title': disp, 'season': sn}))
+                    continue
+                # keep_share 会通过 CD2 删 115 源，不可恢复：分享这一季没覆盖本地全部集时不删本地
+                cmp = _season_compare(s_files, l_files)
+                if not set(cmp['l_eps']) <= set(cmp['s_eps']):
+                    continue
+                acts.append(Act('loc', f'📺 {tag} (保留分享 → 删本地腾网盘)',
+                                f'├─ 📺 {tag}: 决策「保留分享」 ➔ CD2联动删除115网盘旧源',
+                                l_files,
+                                meta={'reason': 'decision_keep_share',
+                                      'reason_label': '保留分享-删本地',
+                                      'title': disp, 'season': sn}))
+            continue
+
+        # full 档（全量豁免）：本地多季合集一律保护——不比画质、不删本地（含残次品），
+        # 分享库里与本地同季的副本一律纳入清理；分享独有的季（本地没有）是补充，不动。
         if multi_protect == 'full' and is_multi_local:
-            # 只处理分享独有季吗？不——full 档下本地各季全部保护，
-            # 分享库中与本地对齐的季也不动，整体跳过本剧所有正片季。
+            for sn, s_files in sorted(s_proper.items()):
+                if sn not in l_proper:
+                    continue
+                tag = f'《{disp}》S{sn:02d}'
+                acts.append(Act('shr', f'📺 {tag} (全量豁免·本地多季一律保护 → 淘汰分享)',
+                                f'├─ 📺 {tag}: 全量豁免，本地 {n_local} 季一律保护 ➔ 清理分享影视库strm',
+                                s_files,
+                                meta={'reason': 'multi_full_protect',
+                                      'reason_label': '全量豁免-淘汰分享',
+                                      'title': disp, 'season': sn,
+                                      'local_seasons': n_local,
+                                      'share_seasons': len(s_proper)}))
             continue
 
         # compare 档（即“开启”）：本地多季时，仅当分享对本地全部季逐集达标才整体删本地；
@@ -761,7 +798,8 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
                               'reason_label': '分享择优-删本地',
                               'title': disp, 'season': sn,
                               'share_better': s_better, 'local_better': l_better,
-                              'share_total': s_total, 'local_total': l_total}))
+                              'share_total': s_total, 'local_total': l_total,
+                              'compare': cmp['sample']}))
     else:
         if s_total < l_total:
             # 分享在共同集上画质虽好，但集数明显少于本地 → 按集数优先规则保留本地
@@ -772,7 +810,8 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
                                   'reason_label': '本地更全-删分享',
                                   'title': disp, 'season': sn,
                                   'share_better': s_better, 'local_better': l_better,
-                                  'share_total': s_total, 'local_total': l_total}))
+                                  'share_total': s_total, 'local_total': l_total,
+                                  'compare': cmp['sample']}))
         else:
             acts.append(Act('shr', f'📺 {tag} (本地更优 {l_better}/{common} 集 → 淘汰分享)',
                             f'├─ 📺 {tag}: 本地达标率 {(l_better/common):.0%} ({l_better}/{common}集) ➔ 清理分享影视库strm',
@@ -781,7 +820,8 @@ def _emit_season_act(acts, disp, sn, s_files, l_files):
                                   'reason_label': '本地择优-删分享',
                                   'title': disp, 'season': sn,
                                   'share_better': s_better, 'local_better': l_better,
-                                  'share_total': s_total, 'local_total': l_total}))
+                                  'share_total': s_total, 'local_total': l_total,
+                                  'compare': cmp['sample']}))
 
 def _emit_season_acts_full(acts, disp, s_proper, l_proper, n_local):
     """多季保护 compare 档（开启）：两阶段治理。
@@ -1019,7 +1059,7 @@ def action_inter_check(args):
     write_audit_log('库间查重巡检',
                     f'扫描完成：待清理本地 {len(loc)} 项, 待清理分享 {len(shr)} 项, 保护 {len(keep)} 项, 豁免 {len(exempted)} 项')
     if (loc or shr) and not getattr(args, 'silent', False):
-        notify_telegram(fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
+        _eng().notify_telegram(_eng().fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
                                       len(_group_exempt_acts(exempted))))
     def _file_count(items):
         return sum(len(a.files) for a in items)
@@ -1112,7 +1152,7 @@ def _run_inter_clean(args):
             save_plan_state(args.plan, 'executing')
 
         _eng()._invalidate_lib_cache()  # 二次校验必须基于最新磁盘状态，不能复用 30 秒内的 _eng().Lib 快照
-        current = build_plan()
+        current = _eng().build_plan()
         current_by_id = {a.action_id: a for a in current
                          if a.kind not in ('keep', 'exempt') and a.action_id}
         old_actions = {act.get('action_id', ''): act
@@ -1140,7 +1180,7 @@ def _run_inter_clean(args):
             todo.append(dataclasses.replace(cur, files=files))
         skipped = len(old_actions) - len(todo)
     else:
-        todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt')]
+        todo = [a for a in _eng().build_plan() if a.kind not in ('keep', 'exempt')]
         skipped = 0
 
     n_loc = n_sh = 0
@@ -1185,11 +1225,11 @@ def _run_inter_clean(args):
                         detail + [f'⚠️ {w}' for w in warns])
         # Bot 端发起的清理会传 notify=False：由 Bot 自己编辑确认消息，避免重复弹两条
         if (n_loc or n_sh) and getattr(args, 'notify', True):
-            notify_telegram('\n'.join([
-                tg_title('🗑️', '清理完成', tg_stamp()), '',
-                tg_row('💾', '释放本地', n_loc),
-                tg_row('📤', '淘汰分享', n_sh),
-                tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
+            _eng().notify_telegram('\n'.join([
+                _eng().tg_title('🗑️', '清理完成', _eng().tg_stamp()), '',
+                _eng().tg_row('💾', '释放本地', n_loc),
+                _eng().tg_row('📤', '淘汰分享', n_sh),
+                _eng().tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
         if args.plan:
             save_plan_state(args.plan, 'done', {
                 'executed_at': time.time(),

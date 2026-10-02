@@ -300,6 +300,8 @@ TTD Guard 靠 Emby 返回的文件路径判断一部片属于本地库还是分�
 **忘记 Web 密码了怎么办？**
 修改 `docker-compose.yml` 里的 `WEB_PASSWORD`，然后 `docker compose up -d` 重启容器即可。登录会话 Cookie 有效期为 30 天。
 
+> **反向代理访问：** 登录后的写操作带有 CSRF 同源校验（Origin 必须与访问的 Host 一致）。若你用域名反代、且代理没有透传 `Host` / `X-Forwarded-Host`，操作会返回 403，此时在环境变量里设置 `ALLOWED_ORIGINS=https://你的域名` 即可；直连 `IP:端口` 无需配置。
+
 **8321 端口被占用了？**
 容器默认监听 8321（`network_mode: host`）。可在 `docker-compose.yml` 中覆盖 `command` 修改 uvicorn 端口，并同步设置 `PORT` 环境变量（供容器健康检查使用）。
 
@@ -318,7 +320,7 @@ docker compose up -d
 固定版本（避免 latest 意外升级）：
 
 ```yaml
-image: ghcr.io/xcgtb/ttd-guard:<版本号>   # 例如 1.7.1，版本号见 GitHub Releases
+image: ghcr.io/xcgtb/ttd-guard:<版本号>   # 版本号见 GitHub Releases
 ```
 
 ---

@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.7.9
+
+### 剧集接入「保留本地 / 保留分享」决策模型
+
+- **保留本地**：剧集两库都有的季一律淘汰分享副本，不比画质、不看多季保护三档；本地残次品也保留。分享独有的季（本地没有）当补充，不动。
+- **保留分享**：两库都有的季，分享覆盖本地该季全部集时删本地（CD2 联动删 115 源）；分享该季缺集（不覆盖本地全部集）时不删本地，避免不可恢复地丢源。
+- **优先级**：「保留本地 / 保留分享」高于多季保护三档（含全量豁免）；默认「画质优先」不高于多季保护，三档照旧。电影与特别篇行为不变。白名单仍最优先。
+- 前端：两个决策选项补充剧集说明；治理动作新增原因标签「保留本地·删分享 / 保留分享·删本地」。
+- 新增 4 项测试（`TestCoverRulesInGovernance`）。
+
+## 1.7.8
+
+### 双库治理：画质对比改为 8 维自定义规则（抛弃旧五元组打分）
+
+- **修复 8 维规则从未生效**：`governance.py` / `config.py` 用 `from core import …`，容器里模块路径是 `app.core`，导入失败被 `except` 吞掉后静默回退旧五元组；同时 `GET /api/cover-strategy` 500，设置页显示「覆盖策略加载失败」。现统一用包内导入，并新增子进程回归测试（只放项目根目录，不放 `app/`）。
+- **删除五元组**：`quality_of / get_score / best_score / share_wins` 与「杜比优先洗版」开关（`strategy_dolby_first`）全部移除。版本比较只剩 `compare_cover`：按规则顺序逐维比较，某一维档位不同则靠前者胜，相同/都未识别才进入下一维；没有任何隐藏兜底。
+- **「洗版覆盖策略」改名「画质对比规则」，不再有「允许洗版」总闸**（旧配置里的 `allow_wash` 被忽略）。规则配置读写时统一规范化：补全 8 条、档位只允许重排、「其他 / 未识别」恒在最后。发布组列表可在 Web 里维护（此前没有入口）；列表为空时发布组一项不参与；文件大小因 STRM 取不到真实大小恒被跳过。
+- **决策模型与范围策略不变，只换「怎么比」**：画质优先 / 保留本地 / 保留分享、多季保护三档（关闭=逐季独立择优；开启=分享全季达标才删本地，否则保本地；全量豁免=本地多季一律保护）、特别篇、白名单、达标率阈值均沿用。
+- **平局开关语义统一**：8 维全部打平时，默认剔除本地，开启「平局保留本地」则剔除分享；电影、S00、剧集逐集一致（此前剧集逐集忽略该开关）。「保留本地/保留分享」决策模型仍只作用于电影与 S00。
+- **全量豁免修正**：此前对本地多季的剧整部直接跳过（分享副本也不清理）；现在本地多季一律保护且分享里同季副本一律纳入清理，分享独有季不动。
+- **对比依据可见**：治理动作详情新增逐维对比表（分享版 / 本地版档位、每一维结果、决胜维度）；设置页新增「对比测试」（`POST /api/cover-compare`），填两个文件名即可按当前规则试算。
+- **其他修复**：切换「决策模型」时误写入 `match_strategy`（导致决策选择不生效并破坏配对策略），已改为写 `decision`；保存规则后调用不存在的 `engine.invalidate_cover_cache()` 的问题随缓存一并移除（`config` 已按文件签名缓存）。
+- 新增测试：`TestCoverCompare`（core）与 `TestCoverRulesInGovernance`（engine）。
+
+## 1.7.7
+
+### 安全与可维护性加固（无功能变更）
+
+- **CSRF 同源校验**：带会话 Cookie 的写请求（POST/PUT/DELETE…）必须 `Origin`（缺失时看 `Referer`）与访问的 `Host` / `X-Forwarded-Host` 一致，否则 403。Basic 头（脚本 / curl）与读请求不受影响。域名反代且代理未透传 Host 时，用新增环境变量 `ALLOWED_ORIGINS` 补白名单。
+- **安全响应头**：`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: same-origin`，以及不影响现有内联脚本的 CSP 子集（`frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'`）。
+- **前端 XSS 加固**（`static/index.html`）：
+  - 内联 `onclick` 里 `'' + esc(x) + ''` 的写法不安全（`esc` 把 `'` 转成 `&#39;`，HTML 解析后又还原成 `'`，字符串可被逃逸）。新增 `jsarg()`（JSON 字符串 + HTML 转义），替换了 8 处 `esc()` 传参、6 处裸 `r.key` 传参，以及 4 个「删除本地库 / 删除分享库」按钮里用 `.replace(/'/g,'&#39;')` 的传参。
+  - `toast()` 改为 `textContent` 写入消息（原来直接拼进 `innerHTML`，而有 31 处调用传入的是 `e.message` 等服务端文本）。
+  - 补上少量遗漏转义的字段（追更缺集数、缺口对照的季数 / 画质、Bot 用户名、豁免命中的库名等）。
+- **拆分 `app/security.py`**：会话签名 / 校验、CSRF 校验、安全响应头从 `main.py` 抽成不依赖 FastAPI 的纯函数并加单测；`main.py` 保留 `_sign_session` / `_verify_session` 同名包装，行为不变。
+- **静态自检 `scripts/static_check.py`**：基于 `symtable` 检查各模块里「既非本模块定义 / 导入、也非内置」的全局名，并检出字符串字面量里混入的 `_eng()`，专防 engine 拆分后跨模块裸引用（v1.7.5 / v1.7.6 的 NameError 类问题）。已接入 CI 与 `tests/test_static_checks.py`。顺带修复一处损坏的报错文案（`未配置 _eng().EMBY_KEY` → `未配置 EMBY_KEY`）。
+- **CI**：新增静态自检、`release_check`、前端内联 JS 语法检查（`node --check`）；新增 `.github/dependabot.yml`（pip / docker / actions）以持续更新依赖。
+- **新增测试**：`test_security.py`（会话 + CSRF）、`test_static_checks.py`、`test_frontend_xss.py`（防止上述不安全写法回归）。
+- README 示例里写死的 `1.7.1` 版本号改为通用说明。
+
+## 1.7.6
+
+### 拆分收尾：monkeypatch 穿透补丁（修复 v1.7.5 拆分遗留的 25 项测试失败）
+
+v1.7.5 的模块拆分约定「跨模块调用统一经 `_eng()` 惰性访问」在拆分/替换时留了四类缺口，本版一次性补齐（核验：240/240 测试全通过）：
+
+- **漏改的直连调用**：`emby.py _src()`、`tmdb.py`（实时集数/库索引/探索/订阅查询）、`subscribe.py`（追更通知）、`governance.py`（二次校验 `build_plan`）里仍残留裸引用 `emby_lib_of` / `Tmdb()` / `tg_title` / `notify_telegram` / `build_plan()`。其中 `emby_lib_of` 的 NameError 被 `_fetch_ingest` / `_emby_series_live_eps` 外层 `except` 吞掉，表现为入库统计与实时集数**静默归零**；`Tmdb()` 绕过测试桩打到真实 API（HTTP 401）导致订阅缺集全 0；`_run_inter_clean` 直连 `build_plan` 使执行异常不再向外抛（计划无法标记 failed）。
+- **机械替换损坏**：`morning.py` 两处 `ProviderIds.get('Tmdb')` 被误替换成 `get('_eng().Tmdb')`（`_eng()` 进了字符串字面量），片库快照的 TMDB 身份永远取不到，同 TMDB 双库剧集不再合并、`to_container` 兜底路径误触发。
+- **画质对比传参错误**：`governance.py` 两处 `_share_wins(_best(...), _best(...))` 把**文件名字符串**当画质分数比较（`'720p' >= '2160p'` 按字典序成立），本地 2160p vs 分享 720p 会误判「分享达标删本地」。改为传 `get_score()` 分数 + 文件名（文件名走 `_cmp_versions` 保留洗版覆盖策略维度）。
+- **门面缺再导出**：`engine._lib_cache` 未从 `lib.py` 再导出（`Lib` 30 秒缓存失效断言直接 AttributeError）。
+- **静态审计补漏（测试未覆盖、生产必炸）**：晨报发送（`morning.py`）、清理完成 Telegram 通知（`governance.py`）里的 `tg_title/tg_row/tg_stamp/fmt_scan_text/notify_telegram` 共 4 处裸引用，全部改经 `_eng()`。
+
 ## 1.7.5
 
 ### 追更与片库映射/影视探索：对齐上游 TgtoDrive 的磁盘目录名 tmdb

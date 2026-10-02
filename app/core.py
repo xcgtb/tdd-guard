@@ -18,11 +18,6 @@ RE_BRACKET = re.compile(r'\[.*?\]|\{.*?\}|\(.*?\)')
 RE_YEAR = re.compile(r'\((\d{4})\)')
 
 RE_DV = re.compile(r'(?<![A-Z0-9])(?:DV|DOVI)(?![A-Z0-9])|DOLBY[ ._-]?VISION')
-RE_4K = re.compile(r'2160P|(?<![A-Z0-9])4K(?![A-Z0-9])')
-RE_FPS = re.compile(r'(?<![0-9])(?:60|120)FPS')
-RE_HDR = re.compile(r'(?<![A-Z0-9])HDR(?:10)?(?![A-Z0-9])')
-RE_SDR = re.compile(r'(?<![A-Z0-9])SDR(?![A-Z0-9])')
-RE_BIT10 = re.compile(r'(?i)10[ ._-]?bit')
 
 # ═══════════════════ 默认数据 ═══════════════════
 DEFAULT_EXEMPT_KEYWORDS: Tuple[str, ...] = ()
@@ -106,76 +101,6 @@ def governance_title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:
     disp = base + (f' ({year})' if year else '')
     return key, disp, base, year
 
-# ═══════════════════ 画质评分 ═══════════════════
-# 画质分层比较，避免「1080p DV > 4K HDR」这类跨分辨率错判。
-# 比较维度优先级（高 → 低）：
-#   1. 分辨率：2160p > 1080p > 720p > 其他
-#   2. HDR 维度（同分辨率才有意义，作为第二比较位）：DV > HDR10/HDR > SDR > 无
-#   3. 编码档次：REMUX > WEB-DL/其他
-#   4. 帧率：60fps+ > 其他
-#   5. 色深：10bit > 8bit
-# 每个维度独立成一位，返回可比较的 tuple；逐位比较保证同级才往后比。
-
-def quality_of(name: str, dolby_first: bool = False) -> Tuple[int, int, int, int, int]:
-    """解析文件名，返回五元组，逐位越大越优。
-
-    默认顺序 (分辨率, HDR, 编码, 帧率, 色深) —— 分辨率优先；
-    ``dolby_first=True`` 时 (HDR, 分辨率, 编码, 帧率, 色深) —— 杜比优先，
-    对齐上游 TgtoDrive 的「杜比优先」洗版覆盖策略（1080p 杜比 > 4K SDR）。
-    """
-    s = name.upper()
-    if RE_4K.search(s):
-        res = 3
-    elif '1080P' in s:
-        res = 2
-    elif '720P' in s:
-        res = 1
-    else:
-        res = 0
-    if RE_DV.search(s):
-        hdr = 3
-    elif RE_HDR.search(s):
-        hdr = 2
-    elif RE_SDR.search(s):
-        hdr = 1
-    else:
-        hdr = 0
-    codec = 1 if 'REMUX' in s else 0
-    fps = 1 if RE_FPS.search(s) else 0
-    bit = 1 if RE_BIT10.search(s) else 0
-    if dolby_first:
-        return (hdr, res, codec, fps, bit)
-    return (res, hdr, codec, fps, bit)
-
-
-def quality_label(name: str) -> str:
-    """人类可读的画质档位标签（用于展示/审计）。"""
-    res, hdr, codec, fps, bit = quality_of(name)
-    parts = []
-    parts.append({3: '2160p', 2: '1080p', 1: '720p'}.get(res, 'SD'))
-    if hdr == 3:
-        parts.append('DV')
-    elif hdr == 2:
-        parts.append('HDR')
-    if codec:
-        parts.append('REMUX')
-    return ' '.join(parts)
-
-
-def get_score(name: str, dolby_first: bool = False) -> Tuple[int, int, int, int, int]:
-    """兼容旧调用：返回画质五元组（可比较）。"""
-    return quality_of(name, dolby_first=dolby_first)
-
-
-def best_score(names: Iterable[str], dolby_first: bool = False):
-    """取一组文件中的最高画质五元组。"""
-    return max((quality_of(n, dolby_first=dolby_first) for n in names), default=(0, 0, 0, 0, 0))
-
-
-def share_wins(s_q, l_q, tie_keep_local: bool = False) -> bool:
-    """比较两组画质元组：s_q 是否胜出（>= 或 >，取决于平局策略）。"""
-    return s_q > l_q if tie_keep_local else s_q >= l_q
-
 # ═══════════════════ 集数判定 ═══════════════════
 def is_exempt(name: str, keywords: Optional[Sequence[str]] = None) -> bool:
     if keywords is None: keywords = DEFAULT_EXEMPT_KEYWORDS
@@ -229,13 +154,17 @@ def parse_emby_library(item: dict, is_movie: bool = False, categories: Sequence[
         return categories[6]
     return categories[9] if any(k in path for k in ['华语', '国产', '大陆', '港台']) else categories[10]
 
-# ═══════════════════ 洗版覆盖策略引擎（对齐上游 TgtoDrive 自定义覆盖策略） ═══════════════════
+# ═══════════════════ 画质对比规则（8 维，双库治理唯一的版本比较依据） ═══════════════════
+# 对齐上游 TgtoDrive「影视整理」自定义规则。按规则顺序逐维比较：
+#   两个版本在该维度的档位序号不同 → 序号小（靠前）者胜；相同或都未识别 → 进入下一维。
+# 没有任何隐藏打分：能影响结果的只有「规则顺序 / 启用开关 / 档位顺序 / 发布组列表」。
+# 全部规则打平 = 平局，由「平局保留本地/分享」开关决定，这里不兜底。
 COVER_RULE_ORDER = ['release_group', 'source', 'resolution', 'dolby',
                     'bitdepth', 'audio', 'fps', 'filesize']
 
 COVER_RULE_META = {
     'release_group': {'label': '发布组优先级',
-                      'desc': '按你维护的发布组列表比较；越靠前优先级越高。'},
+                      'desc': '按你维护的发布组列表比较；越靠前优先级越高，不在列表内的排最后。'},
     'source': {'label': '资源类型优先级',
                'desc': '识别 UHD/蓝光/WEB 等片源类型；其他或未识别格式默认排在最后。'},
     'resolution': {'label': '分辨率优先级',
@@ -243,13 +172,13 @@ COVER_RULE_META = {
     'dolby': {'label': '动态范围优先级',
               'desc': 'Dolby Vision 会细分 P7、P5、P8，并识别 HDR Vivid；未识别格式排在最后。'},
     'bitdepth': {'label': '色深优先级',
-                 'desc': '优先识别文件名中的 bit depth；未识别色深排在最后。'},
+                 'desc': '识别文件名中的 bit depth；未识别色深排在最后。'},
     'audio': {'label': '音频规格优先级',
-              'desc': '同一文件有多个音轨时，按其中最高规格参与比较；Audio Vivid 与未识别格式均有明确档位。'},
+              'desc': '按文件名中识别到的最高音频规格比较；未识别格式排在最后。'},
     'fps': {'label': '帧率优先级',
             'desc': '59.94 / 29.97 / 23.976 会分别归入 60 / 30 / 24 档，未识别帧率排在最后。'},
     'filesize': {'label': '文件大小优先级',
-                 'desc': '建议保留在最后，作为所有规格相同或未知时的兜底。（STRM 模式取不到云端真实大小，建议关闭）'},
+                 'desc': 'STRM 取不到云端真实大小，此项在治理比较中恒被跳过（仅保留与上游一致的位置）。'},
 }
 
 COVER_TIERS_DEFAULT = {
@@ -271,14 +200,55 @@ COVER_ENABLED_DEFAULT = {
 }
 
 
+def _cover_rule(key, enabled=None, tiers=None, groups=None):
+    return {'key': key, 'label': COVER_RULE_META[key]['label'], 'desc': COVER_RULE_META[key]['desc'],
+            'enabled': COVER_ENABLED_DEFAULT.get(key, True) if enabled is None else bool(enabled),
+            'tiers': list(COVER_TIERS_DEFAULT.get(key, []) if tiers is None else tiers),
+            'groups': list(groups or [])}
+
+
 def cover_default_strategy():
-    """默认覆盖策略：顺序/开关/档位全部对齐上游 TgtoDrive 新增的自定义覆盖策略。"""
-    rules = []
+    """默认画质对比规则：顺序/开关/档位全部对齐上游 TgtoDrive。"""
+    return {'rules': [_cover_rule(k) for k in COVER_RULE_ORDER]}
+
+
+def normalize_cover(data):
+    """把任意（可能残缺/过期/来自旧版本）的配置规范成完整 8 条规则。
+
+    - 未知 key 丢弃，缺失的规则按默认补在末尾，重复 key 只取第一条；
+    - 档位只允许「重排」：用户顺序里不存在于默认档位的项丢弃，默认里缺的项补在末尾
+      （「其他 / 未识别」始终保持最后一档，避免用户误把未识别排到最前）；
+    - 发布组列表去空去重；旧版 allow_wash 字段忽略。
+    """
+    raw = data.get('rules') if isinstance(data, dict) else None
+    seen, rules = set(), []
+    for r in (raw if isinstance(raw, list) else []):
+        if not isinstance(r, dict):
+            continue
+        key = r.get('key')
+        if key not in COVER_RULE_META or key in seen:
+            continue
+        seen.add(key)
+        default_tiers = COVER_TIERS_DEFAULT.get(key, [])
+        tiers = []
+        for t in (r.get('tiers') or []):
+            t = str(t)
+            if t in default_tiers and t not in tiers:
+                tiers.append(t)
+        tiers += [t for t in default_tiers if t not in tiers]
+        if '其他 / 未识别' in tiers:
+            tiers.remove('其他 / 未识别')
+            tiers.append('其他 / 未识别')
+        groups = []
+        for g in (r.get('groups') or []):
+            g = str(g).strip()
+            if g and g not in groups:
+                groups.append(g)
+        rules.append(_cover_rule(key, r.get('enabled', COVER_ENABLED_DEFAULT.get(key, True)), tiers, groups))
     for k in COVER_RULE_ORDER:
-        rules.append({'key': k, 'label': COVER_RULE_META[k]['label'], 'desc': COVER_RULE_META[k]['desc'],
-                      'enabled': COVER_ENABLED_DEFAULT.get(k, True),
-                      'tiers': list(COVER_TIERS_DEFAULT.get(k, [])), 'groups': []})
-    return {'allow_wash': True, 'rules': rules}
+        if k not in seen:
+            rules.append(_cover_rule(k))
+    return {'rules': rules}
 
 
 def _dim_source(s):
@@ -288,7 +258,7 @@ def _dim_source(s):
         return 'UHD Remux' if is_uhd else 'Remux'
     if 'BLURAY' in su or 'BLU-RAY' in su or 'BDMV' in su:
         return 'UHD BluRay / BDMV' if is_uhd else 'BluRay'
-    if 'WEB-DL' in su:
+    if 'WEB-DL' in su or 'WEBDL' in su:
         return 'WEB-DL'
     if 'WEBRIP' in su:
         return 'WEBRip'
@@ -301,9 +271,9 @@ def _dim_source(s):
 
 def _dim_resolution(s):
     su = s.upper()
-    if '4320' in su or '8K' in su: return '4320p / 8K'
-    if '2160' in su or '4K' in su: return '2160p / 4K'
-    if '1440' in su or '2K' in su: return '1440p / 2K'
+    if '4320' in su or re.search(r'(?<![A-Z0-9])8K(?![A-Z0-9])', su): return '4320p / 8K'
+    if '2160' in su or re.search(r'(?<![A-Z0-9])4K(?![A-Z0-9])', su): return '2160p / 4K'
+    if '1440' in su or re.search(r'(?<![A-Z0-9])2K(?![A-Z0-9])', su): return '1440p / 2K'
     if '1080' in su: return '1080p'
     if '720' in su: return '720p'
     if '576' in su or '480' in su: return 'SD（576p 及以下）'
@@ -317,11 +287,11 @@ def _dim_dolby(s):
         if m:
             return f'Dolby Vision Profile {m.group(1)}'
         return 'Dolby Vision（未识别 Profile）'
-    if 'HDR10+' in su: return 'HDR10+'
-    if 'HDRVIVID' in su.replace(' ', '') or 'HDR VIVID' in su: return 'HDR Vivid'
+    if 'HDR10+' in su or 'HDR10PLUS' in su: return 'HDR10+'
+    if 'HDRVIVID' in su.replace(' ', '').replace('.', '') : return 'HDR Vivid'
     if 'HDR10' in su: return 'HDR10'
     if 'HDR' in su or 'HLG' in su: return 'HDR / HLG'
-    if 'SDR' in su: return 'SDR'
+    if re.search(r'(?<![A-Z0-9])SDR(?![A-Z0-9])', su): return 'SDR'
     return '其他 / 未识别'
 
 
@@ -329,7 +299,7 @@ def _dim_bitdepth(s):
     su = s.upper()
     if re.search(r'12[ ._-]?BIT', su): return '12bit'
     if re.search(r'10[ ._-]?BIT', su): return '10bit'
-    if re.search(r'8[ ._-]?BIT', su): return '8bit'
+    if re.search(r'(?<![0-9])8[ ._-]?BIT', su): return '8bit'
     return '其他 / 未识别'
 
 
@@ -351,7 +321,7 @@ def _dim_audio(s):
 
 def _dim_fps(s):
     su = s.upper().replace(' ', '')
-    if '59.94' in su or '60FPS' in su: return '60 / 59.94 fps'
+    if '59.94' in su or '60FPS' in su or '120FPS' in su: return '60 / 59.94 fps'
     if '50FPS' in su: return '50 fps'
     if '29.97' in su or '30FPS' in su: return '30 / 29.97 fps'
     if '25FPS' in su: return '25 fps'
@@ -360,13 +330,13 @@ def _dim_fps(s):
 
 
 def _dim_release_group(name):
-    stem = name[:-5] if name.lower().endswith('.strm') else name
+    stem = re.sub(r'(?i)\.(strm|mkv|mp4|ts|m2ts|avi|iso)$', '', name)
     m = re.search(r'-([A-Za-z0-9@#&~^]{2,24})$', stem)
     return m.group(1) if m else ''
 
 
 def recognize_dims(name):
-    """从文件名识别各维度档位标签。"""
+    """从文件名识别各维度档位标签（所有比较的唯一输入）。"""
     return {
         'source': _dim_source(name),
         'resolution': _dim_resolution(name),
@@ -386,32 +356,82 @@ def _tier_rank(label, tiers):
         return max(0, len(tiers) - 1)
 
 
-def compare_cover(a_name, b_name, cover):
-    """按覆盖策略比较两个版本：返回 1（a 更优）/ -1（b 更优）/ 0（平）。
+def _dim_rank(key, rule, dims):
+    """某版本在某维度的序号（越小越优）。返回 (序号, 展示文本)。"""
+    if key == 'release_group':
+        groups = rule.get('groups') or []
+        g = dims.get('release_group') or ''
+        return (groups.index(g) if g in groups else len(groups)), (g or '未识别')
+    tiers = rule.get('tiers') or COVER_TIERS_DEFAULT.get(key) or []
+    label = dims.get(key) or '其他 / 未识别'
+    return _tier_rank(label, tiers), label
 
-    按启用的规则顺序逐维比较：两版本在该维度的档位序号不同则高者胜；
-    相同或均未识别则进入下一维度。filesize 维度在 STRM 模式下恒为平（跳过）。
-    """
-    da = recognize_dims(a_name)
-    db = recognize_dims(b_name)
+
+def _active_rules(cover):
+    """实际参与比较的规则：已启用、非 filesize（STRM 无真实大小）、有可比内容。"""
+    out = []
     for r in (cover.get('rules') or []):
-        if r.get('enabled') is False:
-            continue
         key = r.get('key')
-        if key == 'filesize':
-            continue
-        tiers = r.get('tiers') or COVER_TIERS_DEFAULT.get(key) or []
-        if not tiers:
+        if r.get('enabled') is False or key == 'filesize':
             continue
         if key == 'release_group':
-            groups = r.get('groups') or []
-            ga = da.get('release_group') or ''
-            gb = db.get('release_group') or ''
-            ia = groups.index(ga) if ga in groups else len(groups)
-            ib = groups.index(gb) if gb in groups else len(groups)
-        else:
-            ia = _tier_rank(da.get(key) or '', tiers)
-            ib = _tier_rank(db.get(key) or '', tiers)
+            if not (r.get('groups') or []):
+                continue          # 没维护发布组列表 = 该维度无意义，跳过
+        elif not (r.get('tiers') or COVER_TIERS_DEFAULT.get(key)):
+            continue
+        out.append(r)
+    return out
+
+
+def compare_cover(a_name, b_name, cover):
+    """按画质对比规则比较两个版本：1（a 更优）/ -1（b 更优）/ 0（全部打平）。"""
+    da, db = recognize_dims(a_name), recognize_dims(b_name)
+    for r in _active_rules(cover):
+        ia, _ = _dim_rank(r['key'], r, da)
+        ib, _ = _dim_rank(r['key'], r, db)
         if ia != ib:
             return 1 if ia < ib else -1
     return 0
+
+
+def explain_compare(a_name, b_name, cover):
+    """逐维解释一次比较（给 Web 展示 / 审计留痕用）。
+
+    返回 {'result': 1|-1|0, 'decided_by': 规则key|None,
+          'dims': [{key,label,a,b,verdict:'a'|'b'|'tie'|'skip', reason}...]}
+    verdict=skip 表示该维度未参与（关闭 / filesize / 发布组未维护列表）；
+    决出胜负之后的维度标 'after'（不再比较）。
+    """
+    da, db = recognize_dims(a_name), recognize_dims(b_name)
+    dims, decided, result = [], None, 0
+    active = {id(r) for r in _active_rules(cover)}
+    for r in (cover.get('rules') or []):
+        key = r.get('key')
+        meta = COVER_RULE_META.get(key, {})
+        row = {'key': key, 'label': r.get('label') or meta.get('label') or key}
+        ia, ta = _dim_rank(key, r, da)
+        ib, tb = _dim_rank(key, r, db)
+        row['a'], row['b'] = ta, tb
+        if id(r) not in active:
+            row['verdict'] = 'skip'
+            row['reason'] = ('已关闭' if r.get('enabled') is False else
+                             'STRM 无真实大小' if key == 'filesize' else '未维护发布组列表')
+        elif decided is not None:
+            row['verdict'] = 'after'
+            row['reason'] = '上一维已分胜负'
+        elif ia != ib:
+            decided, result = key, (1 if ia < ib else -1)
+            row['verdict'] = 'a' if ia < ib else 'b'
+            row['reason'] = '决胜维度'
+        else:
+            row['verdict'] = 'tie'
+            row['reason'] = '打平，继续比下一维'
+        dims.append(row)
+    return {'result': result, 'decided_by': decided, 'dims': dims}
+
+
+def quality_label(name):
+    """人类可读的版本标签（展示/审计用，不参与任何比较）。"""
+    d = recognize_dims(name)
+    parts = [d[k] for k in ('resolution', 'source', 'dolby') if d[k] != '其他 / 未识别']
+    return ' · '.join(parts) if parts else '未识别规格'

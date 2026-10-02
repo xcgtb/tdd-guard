@@ -168,7 +168,7 @@ section('5. core 关键函数')
 if 'core' in sys.modules:
     import core
     core_funcs = [
-        'esc', 'parse_season_dir', 'get_ep', 'get_score', 'best_score',
+        'esc', 'parse_season_dir', 'get_ep', 
         'title_key', 'is_exempt', 'fmt_nums',
         'analyze_season_episodes', 'is_seq', 'parse_emby_library',
     ]

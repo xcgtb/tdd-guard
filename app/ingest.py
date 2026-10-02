@@ -11,11 +11,11 @@ import contextlib, dataclasses, html
 log = logging.getLogger('media_agent')
 
 try:
-    from .core import (esc, parse_season_dir, get_ep, get_score, best_score, title_key,
+    from .core import (esc, parse_season_dir, get_ep, title_key,
                        governance_title_key, analyze_season_episodes, parse_emby_library,
                        quality_label, RE_SXXEXX)
 except ImportError:
-    from core import (esc, parse_season_dir, get_ep, get_score, best_score, title_key,
+    from core import (esc, parse_season_dir, get_ep, title_key,
                       governance_title_key, analyze_season_episodes, parse_emby_library,
                       quality_label, RE_SXXEXX)
 

@@ -14,6 +14,9 @@ services:
       WEB_USER: admin
       WEB_PASSWORD: CHANGE_ME_TO_A_STRONG_PASSWORD
 
+      # 通过反向代理访问且代理未透传 Host / X-Forwarded-Host 时，填写访问域名（逗号分隔）；直连 IP:端口无需配置
+      # ALLOWED_ORIGINS: https://nas.example.com
+
       # 使用 CloudDrive2 联动删除源文件时改成 "1"；不用时保持 "0"
       ENABLE_CD2_WATCHDOG: "0"
 

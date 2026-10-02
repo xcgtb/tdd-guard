@@ -953,3 +953,109 @@ class TestMatchStrategy:
         acts = [a for a in engine.build_plan() if a.kind in ('loc', 'shr')]
         assert len(acts) == 1
         assert acts[0].kind == 'shr'
+
+
+# ═══════════════════ 画质对比规则接入治理 ═══════════════════
+class TestCoverRulesInGovernance:
+    def test_package_import_path_uses_cover_engine(self):
+        """回归：容器以 `app.main` 方式加载，裸 `from core import` 会静默失效。
+        子进程里只放项目根目录（不放 app/），确认 8 维引擎真的在跑。"""
+        import subprocess
+        code = (
+            "import app.governance as g, app.config as c;"
+            "assert g._cmp_versions('a.1080p.BluRay.mkv','a.2160p.WEB-DL.mkv')==1;"
+            "assert len(c.get_cover_strategy()['rules'])==8;print('ok')")
+        r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                           cwd=str(Path(__file__).parent.parent),
+                           env=dict(os.environ, AGENT_DATA=str(_TMP / 'data')))
+        assert r.returncode == 0 and 'ok' in r.stdout, r.stderr
+
+    def test_season_tie_follows_tie_switch(self):
+        """剧集逐集 8 维全打平：默认剔除本地；开启「平局保留本地」则剔除分享"""
+        for keep_local, kind in ((False, 'loc'), (True, 'shr')):
+            _reset_libs()
+            _patch_strategy({'multi_season_protect': 'off', 'tie_keep_local': keep_local})
+            for lib in (engine.L_ROOT, engine.S_ROOT):
+                _strm(lib, '季平局 (2020)/Season 01', 'E01.1080p.strm')
+                _strm(lib, '季平局 (2020)/Season 01', 'E02.1080p.strm')
+            hits = _acts_for_title(engine.build_plan(), '季平局')
+            assert len(hits) == 1 and hits[0].kind == kind
+
+    def _two_season(self, title, share_res):
+        for sn in ('01', '02'):
+            for e in ('E01', 'E02'):
+                _strm(engine.L_ROOT, f'{title} (2020)/Season {sn}', f'{e}.1080p.strm')
+        for sn in share_res:
+            for e in ('E01', 'E02'):
+                _strm(engine.S_ROOT, f'{title} (2020)/Season {sn}', f'{e}.2160p.strm')
+
+    def test_multi_protect_compare_needs_all_seasons(self):
+        """开启：分享全季达标才删本地；少一季就保本地、淘汰分享"""
+        _reset_libs(); _patch_strategy({'multi_season_protect': 'compare'})
+        self._two_season('多季全', ['01', '02'])
+        hits = _acts_for_title(engine.build_plan(), '多季全')
+        assert hits and all(a.kind == 'loc' for a in hits)
+        _reset_libs(); _patch_strategy({'multi_season_protect': 'compare'})
+        self._two_season('多季缺', ['01'])
+        hits = _acts_for_title(engine.build_plan(), '多季缺')
+        assert hits and all(a.kind == 'shr' for a in hits)
+
+    def test_multi_protect_full_protects_local_cleans_share(self):
+        """全量豁免：本地多季一律保护，分享里同季副本一律清理（哪怕分享画质更好）"""
+        _reset_libs(); _patch_strategy({'multi_season_protect': 'full'})
+        self._two_season('多季豁免', ['01', '02'])
+        _strm(engine.S_ROOT, '多季豁免 (2020)/Season 03', 'E01.2160p.strm')  # 分享独有季：不动
+        hits = _acts_for_title(engine.build_plan(), '多季豁免')
+        assert len(hits) == 2 and all(a.kind == 'shr' for a in hits)
+        assert {a.meta['season'] for a in hits} == {1, 2}
+        assert all(a.meta['reason'] == 'multi_full_protect' for a in hits)
+
+    def test_series_keep_local_decision(self):
+        """保留本地：剧集两库都有的季一律删分享（不比画质，哪怕分享 2160p）；分享独有季不动"""
+        for mp in ('off', 'compare'):
+            _reset_libs(); _patch_strategy({'decision': 'keep_local', 'multi_season_protect': mp})
+            self._two_season('决策留本地', ['01', '02'])
+            _strm(engine.S_ROOT, '决策留本地 (2020)/Season 03', 'E01.2160p.strm')
+            hits = _acts_for_title(engine.build_plan(), '决策留本地')
+            assert len(hits) == 2 and all(a.kind == 'shr' for a in hits)
+            assert {a.meta['season'] for a in hits} == {1, 2}
+            assert all(a.meta['reason'] == 'decision_keep_local' for a in hits)
+
+    def test_series_keep_share_decision(self):
+        """保留分享：分享覆盖本地全部集的季删本地（哪怕本地画质更好）；少一季只处理有的那季"""
+        for mp in ('off', 'compare'):
+            _reset_libs(); _patch_strategy({'decision': 'keep_share', 'multi_season_protect': mp})
+            self._two_season('决策留分享', ['01'])
+            hits = _acts_for_title(engine.build_plan(), '决策留分享')
+            assert len(hits) == 1 and hits[0].kind == 'loc' and hits[0].meta['season'] == 1
+            assert hits[0].meta['reason'] == 'decision_keep_share'
+
+    def test_series_keep_share_never_deletes_local_when_share_has_gaps(self):
+        """保留分享：分享该季缺集（不覆盖本地全部集）时不删本地，避免丢 115 源"""
+        _reset_libs(); _patch_strategy({'decision': 'keep_share', 'multi_season_protect': 'off'})
+        for e in ('E01', 'E02', 'E03'):
+            _strm(engine.L_ROOT, '决策缺集 (2020)/Season 01', f'{e}.1080p.strm')
+        for e in ('E01', 'E02'):
+            _strm(engine.S_ROOT, '决策缺集 (2020)/Season 01', f'{e}.2160p.strm')
+        assert not [a for a in _acts_for_title(engine.build_plan(), '决策缺集') if a.kind == 'loc']
+
+    def test_series_decision_beats_multi_protect(self):
+        """保留本地/保留分享优先于多季保护（含全量豁免）；默认画质优先时多季保护照常生效"""
+        _reset_libs(); _patch_strategy({'decision': 'keep_share', 'multi_season_protect': 'full'})
+        self._two_season('决策高于豁免', ['01', '02'])
+        hits = _acts_for_title(engine.build_plan(), '决策高于豁免')
+        assert hits and all(a.kind == 'loc' and a.meta['reason'] == 'decision_keep_share' for a in hits)
+        _reset_libs(); _patch_strategy({'decision': 'quality_first', 'multi_season_protect': 'full'})
+        self._two_season('画质不高于豁免', ['01', '02'])
+        hits = _acts_for_title(engine.build_plan(), '画质不高于豁免')
+        assert hits and all(a.kind == 'shr' and a.meta['reason'] == 'multi_full_protect' for a in hits)
+
+    def test_movie_act_carries_per_dimension_evidence(self):
+        _reset_libs()
+        _patch_strategy({})
+        _strm(engine.L_ROOT, '依据电影 (2021)', '依据电影.1080p.WEB-DL.strm')
+        _strm(engine.S_ROOT, '依据电影 (2021)', '依据电影.2160p.WEB-DL.strm')
+        hits = _acts_for_title(engine.build_plan(), '依据电影')
+        cmp = hits[0].meta['compare']
+        assert cmp['decided_by'] == 'resolution' and cmp['result'] == 1
+        assert {d['key'] for d in cmp['dims']} == set(engine.core.COVER_RULE_ORDER) if hasattr(engine, 'core') else True

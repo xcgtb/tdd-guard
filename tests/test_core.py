@@ -110,53 +110,74 @@ class TestTitleKey:
         assert k1 != k3
 
 
-# ═══════════════════ get_score / best_score ═══════════════════
-class TestScore:
-    def test_resolution_outranks_hdr(self):
-        # 关键回归：1080p DV 不得高于 4K HDR（分辨率优先，同级才比 HDR）
-        assert core.get_score('xxx.2160p.HDR10.mkv') > core.get_score('xxx.1080p.DoVi.P5.mkv')
+# ═══════════════════ 画质对比规则（8 维） ═══════════════════
+class TestCoverCompare:
+    def cov(self, **over):
+        c = core.cover_default_strategy()
+        for r in c['rules']:
+            if r['key'] in over:
+                r['enabled'] = over[r['key']]
+        return c
 
-    def test_resolution_tiers(self):
-        s4k = core.get_score('xxx.2160p.mkv')
-        s1080 = core.get_score('xxx.1080p.mkv')
-        s720 = core.get_score('xxx.720p.mkv')
-        s_none = core.get_score('xxx.mkv')
-        assert s4k > s1080 > s720 > s_none
+    def test_default_source_before_resolution(self):
+        # 上游默认顺序：资源类型在分辨率之前，1080p BluRay > 4K WEB-DL
+        assert core.compare_cover('a.1080p.BluRay.mkv', 'a.2160p.WEB-DL.mkv', self.cov()) == 1
 
-    def test_hdr_tiers_same_resolution(self):
-        assert core.get_score('xxx.2160p.DV.mkv') > core.get_score('xxx.2160p.HDR10.mkv')
-        assert core.get_score('xxx.2160p.HDR10.mkv') > core.get_score('xxx.2160p.SDR.mkv')
+    def test_resolution_when_source_disabled(self):
+        c = self.cov(source=False)
+        assert core.compare_cover('a.2160p.WEB-DL.mkv', 'a.1080p.BluRay.mkv', c) == 1
 
-    def test_remux_outranks_web_same_res(self):
-        assert core.get_score('xxx.2160p.REMUX.mkv') > core.get_score('xxx.2160p.WEB-DL.mkv')
+    def test_dolby_profile_tiers(self):
+        c = self.cov(source=False, resolution=False)
+        assert core.compare_cover('a.DV.P7.mkv', 'a.DV.P8.mkv', c) == 1
+        assert core.compare_cover('a.HDR10.mkv', 'a.SDR.mkv', c) == 1
 
-    def test_dovi_alias(self):
-        assert core.get_score('xxx.2160p.DOLBY.VISION.mkv')[1] == 3
-        assert core.get_score('xxx.2160p.DOVI.mkv')[1] == 3
+    def test_tie_is_zero_no_hidden_fallback(self):
+        assert core.compare_cover('a.mkv', 'b.mkv', self.cov()) == 0
+        # 全部维度关闭 → 永远平局，不再回退任何隐藏打分
+        c = self.cov(source=False, resolution=False, dolby=False, bitdepth=False, audio=False, fps=False)
+        assert core.compare_cover('a.2160p.DV.mkv', 'a.720p.mkv', c) == 0
 
-    def test_best_score_picks_max(self):
-        names = ['a.720p.mkv', 'b.2160p.DV.mkv', 'c.1080p.mkv']
-        assert core.best_score(names) == core.get_score('b.2160p.DV.mkv')
+    def test_unrecognized_ranks_last(self):
+        assert core.compare_cover('a.1080p.mkv', 'a.mkv', self.cov(source=False)) == 1
 
-    def test_best_score_empty(self):
-        assert core.best_score([]) == (0, 0, 0, 0, 0)
+    def test_filesize_always_skipped(self):
+        c = self.cov(filesize=True)
+        assert core.compare_cover('a.mkv', 'b.mkv', c) == 0
 
+    def test_release_group_needs_list(self):
+        c = self.cov()
+        rg = [r for r in c['rules'] if r['key'] == 'release_group'][0]
+        rg['enabled'] = True
+        assert core.compare_cover('a.1080p-ADWeb.mkv', 'a.1080p-HHWEB.mkv', c) == 0  # 列表为空，跳过
+        rg['groups'] = ['HHWEB', 'ADWeb']
+        c['rules'].remove(rg); c['rules'].insert(0, rg)
+        assert core.compare_cover('a.1080p-HHWEB.mkv', 'a.1080p-ADWeb.mkv', c) == 1
 
-# ═══════════════════ share_wins ═══════════════════
-class TestShareWins:
-    def test_share_strictly_better(self):
-        assert core.share_wins((3, 2, 0, 0, 0), (2, 3, 0, 0, 0)) is True
-        assert core.share_wins((3, 2, 0, 0, 0), (2, 3, 0, 0, 0), tie_keep_local=True) is True
+    def test_rule_order_changes_result(self):
+        c = self.cov()
+        c['rules'].sort(key=lambda r: r['key'] != 'resolution')
+        assert core.compare_cover('a.2160p.WEB-DL.mkv', 'a.1080p.BluRay.mkv', c) == 1
 
-    def test_local_strictly_better(self):
-        assert core.share_wins((2, 3, 0, 0, 0), (3, 2, 0, 0, 0)) is False
-        assert core.share_wins((2, 3, 0, 0, 0), (3, 2, 0, 0, 0), tie_keep_local=True) is False
+    def test_explain_marks_deciding_dim(self):
+        e = core.explain_compare('a.2160p.WEB-DL.mkv', 'a.1080p.WEB-DL.mkv', core.cover_default_strategy())
+        assert e['result'] == 1 and e['decided_by'] == 'resolution'
+        v = {d['key']: d['verdict'] for d in e['dims']}
+        assert v['source'] == 'tie' and v['resolution'] == 'a' and v['dolby'] == 'after'
+        assert v['filesize'] == 'skip' and v['release_group'] == 'skip'
 
-    def test_tie_default_share_wins(self):
-        assert core.share_wins((3, 2, 0, 0, 0), (3, 2, 0, 0, 0)) is True
+    def test_normalize_repairs_partial_config(self):
+        n = core.normalize_cover({'allow_wash': False, 'rules': [
+            {'key': 'fps', 'enabled': False, 'tiers': ['25 fps', 'bogus']}, {'key': 'zzz'}]})
+        keys = [r['key'] for r in n['rules']]
+        assert keys[0] == 'fps' and sorted(keys) == sorted(core.COVER_RULE_ORDER)
+        fps = n['rules'][0]
+        assert fps['enabled'] is False and fps['tiers'][0] == '25 fps'
+        assert 'bogus' not in fps['tiers'] and fps['tiers'][-1] == '其他 / 未识别'
 
-    def test_tie_keep_local_flag(self):
-        assert core.share_wins((3, 2, 0, 0, 0), (3, 2, 0, 0, 0), tie_keep_local=True) is False
+    def test_quality_label_is_display_only(self):
+        assert core.quality_label('a.2160p.UHD.BluRay.Remux.DV.P7.mkv') == '2160p / 4K · UHD Remux · Dolby Vision Profile 7'
+        assert core.quality_label('a.mkv') == '未识别规格'
 
 
 # ═══════════════════ is_exempt ═══════════════════

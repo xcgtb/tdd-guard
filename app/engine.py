@@ -12,14 +12,14 @@ from dataclasses import dataclass, field
 
 try:
     from .core import (
-        esc, parse_season_dir, get_ep, get_score, best_score,
+        esc, parse_season_dir, get_ep,
         title_key, governance_title_key, analyze_season_episodes,
         parse_emby_library, quality_label, RE_SXXEXX,
     )
     from . import config as _cfg
 except ImportError:
     from core import (
-        esc, parse_season_dir, get_ep, get_score, best_score,
+        esc, parse_season_dir, get_ep,
         title_key, governance_title_key, analyze_season_episodes,
         parse_emby_library, quality_label, RE_SXXEXX,
     )
@@ -36,10 +36,10 @@ try:
 except ImportError:
     from tg import tg_title, tg_row, tg_stamp, fmt_scan_text, split_telegram_html, notify_telegram  # noqa: F401
 try:
-    from .lib import (Lib, _get_lib, _invalidate_lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
+    from .lib import (Lib, _get_lib, _invalidate_lib_cache, _lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
                       _match_governance_key, _normalize_title, _find_dir_fuzzy, _under_tv_category)  # noqa: F401
 except ImportError:
-    from lib import (Lib, _get_lib, _invalidate_lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
+    from lib import (Lib, _get_lib, _invalidate_lib_cache, _lib_cache, _disk_tmdb_lookup, _disk_eps_by_tmdb,
                      _match_governance_key, _normalize_title, _find_dir_fuzzy, _under_tv_category)  # noqa: F401
 try:
     from .emby import emby_request, container_to_emby_path, emby_path_to_container, notify_emby_deleted, notify_emby_refresh, parse_dt, _fetch_all_episodes, _alive_dir_map, _dir_has_media, _paged_items, _src, _recent  # noqa: F401
@@ -62,9 +62,9 @@ try:
 except ImportError:
     from wash import cloud_videos, _inside, MutationBusy, mutation_lock, _is_sidecar_of, _load_wash_residuals, _save_wash_residuals, _record_wash_residuals, _remove_strm, _classify_dir, _has_confirmed_residual_in_dir, _dir_cleanable, _prune_up, _unlink_with_timeout, safe_delete_files, find_movie_strms_by_tmdb, _clamp_depth, scan_orphans, _confirmed_wash_residuals, _parse_residual_ts, scan_orphan_dirs, clean_orphan_dirs, _clean_orphan_dirs, action_scan_orphans, action_clean_orphan_dirs, purge_old, scan_empty_dirs, clean_empty_dirs  # noqa: F401
 try:
-    from .governance import _strategy, _exempt_keywords, _ep, _best, _exempt_hit, _nat_key, _split_root, _exempt_group_of, _share_wins, _season_compare, _side_gap_desc, Act, _media_title_folder, _tmdb_ids_from_files, _governance_evidence, _attach_governance_evidence, _act_to_dict, _group_exempt_acts, _ingest_quiet_minutes, _QuietGate, _identity_conflicts, _build_plan_with_libs, build_plan, _dedupe_lib_versions, _emit_season_act, _emit_season_acts_full, _current_rule_snapshot, save_plan, load_plan, save_plan_state, save_latest_scan, load_latest_scan, action_inter_check, action_inter_clean, _action_inter_clean_locked, _confirmed_files, _run_inter_clean, write_audit_log  # noqa: F401
+    from .governance import _strategy, _exempt_keywords, _ep, _best, _exempt_hit, _nat_key, _split_root, _exempt_group_of, _share_wins, _compare_meta, _season_compare, _side_gap_desc, Act, _media_title_folder, _tmdb_ids_from_files, _governance_evidence, _attach_governance_evidence, _act_to_dict, _group_exempt_acts, _ingest_quiet_minutes, _QuietGate, _identity_conflicts, _build_plan_with_libs, build_plan, _dedupe_lib_versions, _emit_season_act, _emit_season_acts_full, _current_rule_snapshot, save_plan, load_plan, save_plan_state, save_latest_scan, load_latest_scan, action_inter_check, action_inter_clean, _action_inter_clean_locked, _confirmed_files, _run_inter_clean, write_audit_log  # noqa: F401
 except ImportError:
-    from governance import _strategy, _exempt_keywords, _ep, _best, _exempt_hit, _nat_key, _split_root, _exempt_group_of, _share_wins, _season_compare, _side_gap_desc, Act, _media_title_folder, _tmdb_ids_from_files, _governance_evidence, _attach_governance_evidence, _act_to_dict, _group_exempt_acts, _ingest_quiet_minutes, _QuietGate, _identity_conflicts, _build_plan_with_libs, build_plan, _dedupe_lib_versions, _emit_season_act, _emit_season_acts_full, _current_rule_snapshot, save_plan, load_plan, save_plan_state, save_latest_scan, load_latest_scan, action_inter_check, action_inter_clean, _action_inter_clean_locked, _confirmed_files, _run_inter_clean, write_audit_log  # noqa: F401
+    from governance import _strategy, _exempt_keywords, _ep, _best, _exempt_hit, _nat_key, _split_root, _exempt_group_of, _share_wins, _compare_meta, _season_compare, _side_gap_desc, Act, _media_title_folder, _tmdb_ids_from_files, _governance_evidence, _attach_governance_evidence, _act_to_dict, _group_exempt_acts, _ingest_quiet_minutes, _QuietGate, _identity_conflicts, _build_plan_with_libs, build_plan, _dedupe_lib_versions, _emit_season_act, _emit_season_acts_full, _current_rule_snapshot, save_plan, load_plan, save_plan_state, save_latest_scan, load_latest_scan, action_inter_check, action_inter_clean, _action_inter_clean_locked, _confirmed_files, _run_inter_clean, write_audit_log  # noqa: F401
 try:
     from .morning import _save_overview_disk, _load_overview_disk, _overview_bg_refresh, emby_library_overview, _build_emby_library_overview, read_manual_done, _apply_manual_done_to_series, build_library_health_snapshot, save_library_snapshot, load_library_snapshot, refresh_library_snapshot_background, unified_health, daily_consistency_snapshot, gap_report, action_emby_library, build_morning_report, send_morning_report, _live_series_episodes, _resync_series_entry, _patch_all_caches, patch_emby_lib_cache_after_series_delete, patch_emby_lib_cache_after_movie_delete, save_emby_lib_cache, read_emby_lib_cache, get_tmdb_scan_progress, refresh_tmdb_scan, _refresh_tmdb_scan, scan_exempt_matches  # noqa: F401
 except ImportError:
