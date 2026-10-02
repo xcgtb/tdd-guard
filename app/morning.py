@@ -345,7 +345,7 @@ def refresh_library_snapshot_background():
 
 def unified_health(max_age=1800):
     """统一健康数据入口。优先磁盘快照；过期只返回旧快照并后台刷新，保证 Web 秒开。"""
-    snap = load_library_snapshot(max_age=max_age)
+    snap = _eng().load_library_snapshot(max_age=max_age)
     if snap:
         return snap
     snap = build_library_health_snapshot()

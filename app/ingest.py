@@ -170,7 +170,7 @@ def refresh_ingest_cache(hours=24) -> dict:
     """立即拉取并覆盖缓存。拉取失败（超时等）时保留上一份完整缓存，只附上失败信息，
     避免把「+0 部 / +0 集」的残缺结果写成最新数据。"""
     log.info('入库缓存刷新开始（%sh）', hours)
-    data = _fetch_ingest(hours=hours)
+    data = _eng()._fetch_ingest(hours=hours)
     if not data.get('ok', True):
         old = read_ingest_cache()
         if old and old.get('ok', True):

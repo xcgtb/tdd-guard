@@ -95,7 +95,7 @@ def notify_emby_deleted(emby_paths, background=True):
                 ok = False
                 for ep in ('/Library/Media/Updated', '/emby/Library/Media/Updated'):
                     try:
-                        emby_request(ep, method='POST', timeout=15, body=body)
+                        _eng().emby_request(ep, method='POST', timeout=15, body=body)
                         ok = True
                         break
                     except Exception as e:
@@ -114,7 +114,7 @@ def notify_emby_deleted(emby_paths, background=True):
 def notify_emby_refresh():
     for ep in ('/Library/Refresh', '/emby/Library/Refresh'):
         try:
-            emby_request(ep, method='POST', timeout=10)
+            _eng().emby_request(ep, method='POST', timeout=10)
             return True
         except Exception as e:
             log.warning('Emby 刷新失败 %s: %s', ep, e)
@@ -139,7 +139,7 @@ def _fetch_all_episodes(force=False):
         start = 0
         page_size = 5000
         while True:
-            data = emby_request('/Items', {
+            data = _eng().emby_request('/Items', {
                 'Recursive': 'true',
                 'IncludeItemTypes': 'Episode',
                 'Fields': 'SeriesId,ParentIndexNumber,IndexNumber,Path',
@@ -199,7 +199,7 @@ def _paged_items(params, page_size=1000, max_items=50000):
     """分页拉取 /Items；任何一页失败都向上抛，由调用方决定是否保留旧缓存。"""
     items, start = [], 0
     while len(items) < max_items:
-        data = emby_request('/Items', dict(params, StartIndex=start, Limit=page_size)) or {}
+        data = _eng().emby_request('/Items', dict(params, StartIndex=start, Limit=page_size)) or {}
         page = data.get('Items') or []
         items.extend(page)
         total = data.get('TotalRecordCount') or 0
@@ -214,7 +214,7 @@ def _recent(item_type, fields, limit, cutoff):
         'Recursive': 'true', 'IncludeItemTypes': item_type,
         'Fields': fields, 'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'Limit': limit,
     }
-    data = emby_request('/Items', params) or {}
+    data = _eng().emby_request('/Items', params) or {}
     for it in data.get('Items', []):
         dt = parse_dt(it.get('DateCreated'))
         if dt is None: continue

@@ -32,6 +32,9 @@ def _engine_ns():
             return None
 
 
+_eng = _engine_ns  # 兼容后续修复中的简写
+
+
 class Lib:
     def __init__(self, root):
         self.root = root
@@ -169,7 +172,7 @@ def _get_lib(root: Path) -> Lib:
         hit = _lib_cache.get(key)
         if hit and now - hit[0] < LIB_CACHE_TTL:
             return hit[1]
-    lib = Lib(root)
+    lib = _eng().Lib(root)
     with _lib_cache_lock:
         _lib_cache[key] = (now, lib)
     return lib

@@ -359,7 +359,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
                 st['cloud_missing'] += 1
                 st['errors'].append(f'{f.name}: 云端根目录不可用 ({cloud_root})，STRM 保留')
                 continue
-            vids, conf = cloud_videos(f, base_root, cloud_root)
+            vids, conf = _eng().cloud_videos(f, base_root, cloud_root)
             if conf == 'none':
                 st['cloud_missing'] += 1
                 st['errors'].append(f'{f.name}: 未找到云端源文件，STRM 保留')

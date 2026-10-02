@@ -88,7 +88,7 @@ def _cmp_versions(a_name, b_name):
     return 1 if sa > sb else (-1 if sb > sa else 0)
 
 def _exempt_keywords():
-    return _strategy()['exempt_keywords']
+    return _eng()._strategy()['exempt_keywords']
 
 def _ep(p: Path):
     parent = p.parent
@@ -147,7 +147,7 @@ def _exempt_group_of(path, kws):
     return None, None
 
 def _share_wins(s_q, l_q, s_name=None, l_name=None):
-    s = _strategy()
+    s = _eng()._strategy()
     decision = s['decision']
     if decision == 'keep_local': return False
     if decision == 'keep_share': return True
@@ -443,7 +443,7 @@ def _build_plan_with_libs():
         S, L = _fs.result(), _fl.result()
     log.info('双库遍历完成：分享 %d / 本地 %d 个 STRM，耗时 %.1fs',
              S.strm_count, L.strm_count, time.time() - t_start)
-    s = _strategy()
+    s = _eng()._strategy()
     kws = _exempt_keywords()
     gate = _QuietGate()
     acts = []
