@@ -17,6 +17,7 @@ from app.config import (
     load_config, save_config, EDITABLE_KEYS,
     SENSITIVE_KEYS, mask_config, mask_value, is_masked_value,
     get_strategy, update_strategy,
+    get_cover_strategy, update_cover_strategy,
     get_subscriptions, set_subscriptions,
     get_morning_report, update_morning_report,
     get_ingest_cfg,
@@ -627,6 +628,37 @@ def api_clean_orphan_dirs(body: dict = None):
     return engine.clean_orphan_dirs(paths, dry_run=dry_run)
 
 
+@app.post('/api/wash/empty-dirs/scan', dependencies=[Depends(auth)])
+def api_wash_empty_scan(body: dict = None):
+    """目录级残留扫描（照搬上游）：叶子目录内完全没有 .strm 的媒体目录。"""
+    body = body or {}
+    path = str(body.get('path') or '')
+    limit = int(body.get('limit') or 100)
+    if not path:
+        raise HTTPException(400, '缺少扫描目录')
+    if not _orphan_lock.acquire(blocking=False):
+        raise HTTPException(409, '有扫描/清理正在进行，请稍后再试')
+    try:
+        return engine.scan_empty_dirs(path, limit=limit)
+    finally:
+        _orphan_lock.release()
+
+
+@app.post('/api/wash/empty-dirs/clean', dependencies=[Depends(auth)])
+def api_wash_empty_clean(body: dict = None):
+    """执行空目录清理：先移入 residue_backup 备份目录（可恢复），并通知 Emby。"""
+    body = body or {}
+    paths = body.get('paths') or []
+    if not paths:
+        raise HTTPException(400, '缺少清理路径')
+    if not _orphan_lock.acquire(blocking=False):
+        raise HTTPException(409, '有扫描/清理正在进行，请稍后再试')
+    try:
+        return engine.clean_empty_dirs(paths)
+    finally:
+        _orphan_lock.release()
+
+
 @app.post('/api/cache/refresh', dependencies=[Depends(auth)])
 def api_cache_refresh():
     """清除全部内存缓存并触发后台重建（STRM 计数 / 片库映射 / 统计 / 分集 / Emby 索引）。
@@ -645,6 +677,23 @@ def api_cache_refresh():
 @app.get('/api/strategy', dependencies=[Depends(auth)])
 def api_get_strategy():
     return {'status': 'success', 'strategy': get_strategy()}
+
+
+@app.get('/api/cover-strategy', dependencies=[Depends(auth)])
+def api_get_cover():
+    """洗版覆盖策略（对齐上游自定义覆盖策略）。"""
+    return {'status': 'success', 'strategy': get_cover_strategy()}
+
+
+@app.post('/api/cover-strategy', dependencies=[Depends(auth)])
+def api_set_cover(body: dict = None):
+    body = body or {}
+    try:
+        result = update_cover_strategy(body.get('strategy') or {})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    engine.invalidate_cover_cache()
+    return {'status': 'success', 'strategy': result}
 
 
 @app.post('/api/strategy', dependencies=[Depends(auth)])
@@ -674,6 +723,8 @@ def api_set_strategy(body: dict = None):
         kwargs['multi_season_protect'] = mp
     if 'tie_keep_local' in body:
         kwargs['tie_keep_local'] = bool(body['tie_keep_local'])
+    if 'dolby_first' in body:
+        kwargs['dolby_first'] = bool(body['dolby_first'])
     if 'exempt_keywords' in body:
         kwargs['exempt_keywords'] = body['exempt_keywords']
     if 'special_action' in body:

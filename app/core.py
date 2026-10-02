@@ -116,8 +116,13 @@ def governance_title_key(folder: str) -> Tuple[str, str, str, Optional[str]]:
 #   5. 色深：10bit > 8bit
 # 每个维度独立成一位，返回可比较的 tuple；逐位比较保证同级才往后比。
 
-def quality_of(name: str) -> Tuple[int, int, int, int, int]:
-    """解析文件名，返回 (分辨率, HDR, 编码, 帧率, 色深) 五元组，逐位越大越优。"""
+def quality_of(name: str, dolby_first: bool = False) -> Tuple[int, int, int, int, int]:
+    """解析文件名，返回五元组，逐位越大越优。
+
+    默认顺序 (分辨率, HDR, 编码, 帧率, 色深) —— 分辨率优先；
+    ``dolby_first=True`` 时 (HDR, 分辨率, 编码, 帧率, 色深) —— 杜比优先，
+    对齐上游 TgtoDrive 的「杜比优先」洗版覆盖策略（1080p 杜比 > 4K SDR）。
+    """
     s = name.upper()
     if RE_4K.search(s):
         res = 3
@@ -138,6 +143,8 @@ def quality_of(name: str) -> Tuple[int, int, int, int, int]:
     codec = 1 if 'REMUX' in s else 0
     fps = 1 if RE_FPS.search(s) else 0
     bit = 1 if RE_BIT10.search(s) else 0
+    if dolby_first:
+        return (hdr, res, codec, fps, bit)
     return (res, hdr, codec, fps, bit)
 
 
@@ -155,14 +162,14 @@ def quality_label(name: str) -> str:
     return ' '.join(parts)
 
 
-def get_score(name: str) -> Tuple[int, int, int, int, int]:
+def get_score(name: str, dolby_first: bool = False) -> Tuple[int, int, int, int, int]:
     """兼容旧调用：返回画质五元组（可比较）。"""
-    return quality_of(name)
+    return quality_of(name, dolby_first=dolby_first)
 
 
-def best_score(names: Iterable[str]):
+def best_score(names: Iterable[str], dolby_first: bool = False):
     """取一组文件中的最高画质五元组。"""
-    return max((quality_of(n) for n in names), default=(0, 0, 0, 0, 0))
+    return max((quality_of(n, dolby_first=dolby_first) for n in names), default=(0, 0, 0, 0, 0))
 
 
 def share_wins(s_q, l_q, tie_keep_local: bool = False) -> bool:
@@ -221,3 +228,190 @@ def parse_emby_library(item: dict, is_movie: bool = False, categories: Sequence[
         if any(k in path for k in ['日韩', '日本', '韩剧', '韩国']): return categories[8]
         return categories[6]
     return categories[9] if any(k in path for k in ['华语', '国产', '大陆', '港台']) else categories[10]
+
+# ═══════════════════ 洗版覆盖策略引擎（对齐上游 TgtoDrive 自定义覆盖策略） ═══════════════════
+COVER_RULE_ORDER = ['release_group', 'source', 'resolution', 'dolby',
+                    'bitdepth', 'audio', 'fps', 'filesize']
+
+COVER_RULE_META = {
+    'release_group': {'label': '发布组优先级',
+                      'desc': '按你维护的发布组列表比较；越靠前优先级越高。'},
+    'source': {'label': '资源类型优先级',
+               'desc': '识别 UHD/蓝光/WEB 等片源类型；其他或未识别格式默认排在最后。'},
+    'resolution': {'label': '分辨率优先级',
+                   'desc': '按画面高度比较；2K/1440p 作为兼容档位保留，未识别分辨率排在最后。'},
+    'dolby': {'label': '动态范围优先级',
+              'desc': 'Dolby Vision 会细分 P7、P5、P8，并识别 HDR Vivid；未识别格式排在最后。'},
+    'bitdepth': {'label': '色深优先级',
+                 'desc': '优先识别文件名中的 bit depth；未识别色深排在最后。'},
+    'audio': {'label': '音频规格优先级',
+              'desc': '同一文件有多个音轨时，按其中最高规格参与比较；Audio Vivid 与未识别格式均有明确档位。'},
+    'fps': {'label': '帧率优先级',
+            'desc': '59.94 / 29.97 / 23.976 会分别归入 60 / 30 / 24 档，未识别帧率排在最后。'},
+    'filesize': {'label': '文件大小优先级',
+                 'desc': '建议保留在最后，作为所有规格相同或未知时的兜底。（STRM 模式取不到云端真实大小，建议关闭）'},
+}
+
+COVER_TIERS_DEFAULT = {
+    'source': ['UHD Remux', 'Remux', 'UHD BluRay / BDMV', 'BluRay', 'WEB-DL', 'WEBRip', 'HDTV', 'DVD', '其他 / 未识别'],
+    'resolution': ['4320p / 8K', '2160p / 4K', '1440p / 2K', '1080p', '720p', 'SD（576p 及以下）', '其他 / 未识别'],
+    'dolby': ['Dolby Vision Profile 7', 'Dolby Vision Profile 5', 'Dolby Vision Profile 8',
+              'Dolby Vision（未识别 Profile）', 'HDR10+', 'HDR Vivid', 'HDR10', 'HDR / HLG', 'SDR', '其他 / 未识别'],
+    'bitdepth': ['12bit', '10bit', '8bit', '其他 / 未识别'],
+    'audio': ['TrueHD Atmos / DTS:X', 'TrueHD / DTS-HD MA', 'LPCM / FLAC', 'Audio Vivid / AV3A',
+              'DD+ Atmos', 'DD+ / E-AC-3', 'DTS', 'AC3 / DD', 'AAC', '其他 / 未识别'],
+    'fps': ['60 / 59.94 fps', '50 fps', '30 / 29.97 fps', '25 fps', '24 / 23.976 fps', '其他 / 未识别'],
+    'filesize': ['大文件优先', '小文件优先'],
+    'release_group': [],
+}
+
+COVER_ENABLED_DEFAULT = {
+    'release_group': False, 'source': True, 'resolution': True, 'dolby': True,
+    'bitdepth': True, 'audio': True, 'fps': True, 'filesize': False,
+}
+
+
+def cover_default_strategy():
+    """默认覆盖策略：顺序/开关/档位全部对齐上游 TgtoDrive 新增的自定义覆盖策略。"""
+    rules = []
+    for k in COVER_RULE_ORDER:
+        rules.append({'key': k, 'label': COVER_RULE_META[k]['label'], 'desc': COVER_RULE_META[k]['desc'],
+                      'enabled': COVER_ENABLED_DEFAULT.get(k, True),
+                      'tiers': list(COVER_TIERS_DEFAULT.get(k, [])), 'groups': []})
+    return {'allow_wash': True, 'rules': rules}
+
+
+def _dim_source(s):
+    su = s.upper().replace(' ', '')
+    is_uhd = '2160' in su or 'UHD' in su
+    if 'REMUX' in su:
+        return 'UHD Remux' if is_uhd else 'Remux'
+    if 'BLURAY' in su or 'BLU-RAY' in su or 'BDMV' in su:
+        return 'UHD BluRay / BDMV' if is_uhd else 'BluRay'
+    if 'WEB-DL' in su:
+        return 'WEB-DL'
+    if 'WEBRIP' in su:
+        return 'WEBRip'
+    if 'HDTV' in su:
+        return 'HDTV'
+    if 'DVD' in su:
+        return 'DVD'
+    return '其他 / 未识别'
+
+
+def _dim_resolution(s):
+    su = s.upper()
+    if '4320' in su or '8K' in su: return '4320p / 8K'
+    if '2160' in su or '4K' in su: return '2160p / 4K'
+    if '1440' in su or '2K' in su: return '1440p / 2K'
+    if '1080' in su: return '1080p'
+    if '720' in su: return '720p'
+    if '576' in su or '480' in su: return 'SD（576p 及以下）'
+    return '其他 / 未识别'
+
+
+def _dim_dolby(s):
+    su = s.upper()
+    if RE_DV.search(su):
+        m = re.search(r'(?:DOVI|DOLBY[ ._-]?VISION|DV)[ ._-]*P([578])', su)
+        if m:
+            return f'Dolby Vision Profile {m.group(1)}'
+        return 'Dolby Vision（未识别 Profile）'
+    if 'HDR10+' in su: return 'HDR10+'
+    if 'HDRVIVID' in su.replace(' ', '') or 'HDR VIVID' in su: return 'HDR Vivid'
+    if 'HDR10' in su: return 'HDR10'
+    if 'HDR' in su or 'HLG' in su: return 'HDR / HLG'
+    if 'SDR' in su: return 'SDR'
+    return '其他 / 未识别'
+
+
+def _dim_bitdepth(s):
+    su = s.upper()
+    if re.search(r'12[ ._-]?BIT', su): return '12bit'
+    if re.search(r'10[ ._-]?BIT', su): return '10bit'
+    if re.search(r'8[ ._-]?BIT', su): return '8bit'
+    return '其他 / 未识别'
+
+
+def _dim_audio(s):
+    su = s.upper().replace('.', ' ')
+    if 'TRUEHD' in su and 'ATMOS' in su: return 'TrueHD Atmos / DTS:X'
+    if 'DTS:X' in su or 'DTS-X' in su: return 'TrueHD Atmos / DTS:X'
+    if 'TRUEHD' in su or 'DTS-HD' in su: return 'TrueHD / DTS-HD MA'
+    if 'LPCM' in su or 'FLAC' in su or 'PCM' in su: return 'LPCM / FLAC'
+    if 'AUDIO VIVID' in su or 'AV3A' in su: return 'Audio Vivid / AV3A'
+    if 'DDP' in su or 'DD+' in su:
+        return 'DD+ Atmos' if 'ATMOS' in su else 'DD+ / E-AC-3'
+    if 'E-AC-3' in su or 'EAC3' in su: return 'DD+ / E-AC-3'
+    if 'DTS' in su: return 'DTS'
+    if 'AC3' in su or 'DD5' in su or 'DOLBY DIGITAL' in su: return 'AC3 / DD'
+    if 'AAC' in su: return 'AAC'
+    return '其他 / 未识别'
+
+
+def _dim_fps(s):
+    su = s.upper().replace(' ', '')
+    if '59.94' in su or '60FPS' in su: return '60 / 59.94 fps'
+    if '50FPS' in su: return '50 fps'
+    if '29.97' in su or '30FPS' in su: return '30 / 29.97 fps'
+    if '25FPS' in su: return '25 fps'
+    if '23.976' in su or '24FPS' in su: return '24 / 23.976 fps'
+    return '其他 / 未识别'
+
+
+def _dim_release_group(name):
+    stem = name[:-5] if name.lower().endswith('.strm') else name
+    m = re.search(r'-([A-Za-z0-9@#&~^]{2,24})$', stem)
+    return m.group(1) if m else ''
+
+
+def recognize_dims(name):
+    """从文件名识别各维度档位标签。"""
+    return {
+        'source': _dim_source(name),
+        'resolution': _dim_resolution(name),
+        'dolby': _dim_dolby(name),
+        'bitdepth': _dim_bitdepth(name),
+        'audio': _dim_audio(name),
+        'fps': _dim_fps(name),
+        'release_group': _dim_release_group(name),
+    }
+
+
+def _tier_rank(label, tiers):
+    """label 在 tiers 里的序号；找不到（未识别/用户改了档位名）→ 最后一档。"""
+    try:
+        return tiers.index(label)
+    except ValueError:
+        return max(0, len(tiers) - 1)
+
+
+def compare_cover(a_name, b_name, cover):
+    """按覆盖策略比较两个版本：返回 1（a 更优）/ -1（b 更优）/ 0（平）。
+
+    按启用的规则顺序逐维比较：两版本在该维度的档位序号不同则高者胜；
+    相同或均未识别则进入下一维度。filesize 维度在 STRM 模式下恒为平（跳过）。
+    """
+    da = recognize_dims(a_name)
+    db = recognize_dims(b_name)
+    for r in (cover.get('rules') or []):
+        if r.get('enabled') is False:
+            continue
+        key = r.get('key')
+        if key == 'filesize':
+            continue
+        tiers = r.get('tiers') or COVER_TIERS_DEFAULT.get(key) or []
+        if not tiers:
+            continue
+        if key == 'release_group':
+            groups = r.get('groups') or []
+            ga = da.get('release_group') or ''
+            gb = db.get('release_group') or ''
+            ia = groups.index(ga) if ga in groups else len(groups)
+            ib = groups.index(gb) if gb in groups else len(groups)
+        else:
+            ia = _tier_rank(da.get(key) or '', tiers)
+            ib = _tier_rank(db.get(key) or '', tiers)
+        if ia != ib:
+            return 1 if ia < ib else -1
+    return 0

@@ -27,6 +27,8 @@ DEFAULTS = {
     'match_strategy':                'title_year',  # title_year | tmdb_first —— 双库治理配对身份策略
     'strategy_multi_season_protect': 'compare',  # off | compare | full —— 多季合集保护档位（compare 即“开启”）
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
+    'strategy_dolby_first':          '0',  # 0 | 1 —— 杜比优先洗版（对齐上游：1080p 杜比 > 4K SDR）
+    'strategy_cover': '{"allow_wash":true,"rules":[{"key":"release_group","enabled":false,"tiers":[],"groups":[]},{"key":"source","enabled":true,"tiers":["UHD Remux","Remux","UHD BluRay / BDMV","BluRay","WEB-DL","WEBRip","HDTV","DVD","其他 / 未识别"]},{"key":"resolution","enabled":true,"tiers":["4320p / 8K","2160p / 4K","1440p / 2K","1080p","720p","SD（576p 及以下）","其他 / 未识别"]},{"key":"dolby","enabled":true,"tiers":["Dolby Vision Profile 7","Dolby Vision Profile 5","Dolby Vision Profile 8","Dolby Vision（未识别 Profile）","HDR10+","HDR Vivid","HDR10","HDR / HLG","SDR","其他 / 未识别"]},{"key":"bitdepth","enabled":true,"tiers":["12bit","10bit","8bit","其他 / 未识别"]},{"key":"audio","enabled":true,"tiers":["TrueHD Atmos / DTS:X","TrueHD / DTS-HD MA","LPCM / FLAC","Audio Vivid / AV3A","DD+ Atmos","DD+ / E-AC-3","DTS","AC3 / DD","AAC","其他 / 未识别"]},{"key":"fps","enabled":true,"tiers":["60 / 59.94 fps","50 fps","30 / 29.97 fps","25 fps","24 / 23.976 fps","其他 / 未识别"]},{"key":"filesize","enabled":false,"tiers":["大文件优先","小文件优先"]}]}',
     'strategy_exempt_keywords':      '',
     'strategy_special_action':       'compare', # compare | ignore | delete  —— 特别篇 S00 策略
     'ingest_quiet_minutes':          '15',      # 入库静默期（分钟）：目录 15 分钟内有新入库的标题暂不进入治理队列；0 = 关闭
@@ -177,6 +179,7 @@ def get_strategy() -> dict:
         'match_strategy': ms,
         'multi_season_protect': mp,
         'tie_keep_local': cfg.get('strategy_tie_keep_local', '0') == '1',
+        'dolby_first': cfg.get('strategy_dolby_first', '0') == '1',
         'exempt_keywords': [x.strip() for x in (cfg.get('strategy_exempt_keywords') or '').split(',') if x.strip()],
         'special_action': sa,
     }
@@ -207,6 +210,8 @@ def update_strategy(**kwargs) -> dict:
         cfg['strategy_multi_season_protect'] = mp
     if 'tie_keep_local' in kwargs:
         cfg['strategy_tie_keep_local'] = '1' if kwargs['tie_keep_local'] else '0'
+    if 'dolby_first' in kwargs:
+        cfg['strategy_dolby_first'] = '1' if kwargs['dolby_first'] else '0'
     if 'exempt_keywords' in kwargs:
         kws = kwargs['exempt_keywords']
         cfg['strategy_exempt_keywords'] = ','.join(str(x).strip() for x in kws if str(x).strip()) if isinstance(kws, list) else str(kws)
@@ -280,3 +285,41 @@ def get_ingest_cfg() -> dict:
         'enabled': cfg.get('ingest_enabled', '1') == '1',
         'interval_min': int(cfg.get('ingest_interval_min') or 5),
     }
+
+# ═══════════ 洗版覆盖策略（对齐上游自定义覆盖策略） ═══════════
+def get_cover_strategy() -> dict:
+    """读取洗版覆盖策略；无配置/解析失败时回退 core 的默认策略。"""
+    from core import cover_default_strategy
+    cfg = load_config()
+    raw = cfg.get('strategy_cover') or ''
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and isinstance(data.get('rules'), list) and data['rules']:
+            return data
+    except (ValueError, TypeError):
+        pass
+    return cover_default_strategy()
+
+
+def update_cover_strategy(strategy: dict) -> dict:
+    """保存洗版覆盖策略（整份 JSON），并返回规范化后的策略。"""
+    from core import cover_default_strategy
+    if not isinstance(strategy, dict) or not isinstance(strategy.get('rules'), list):
+        raise ValueError('覆盖策略格式错误')
+    base = cover_default_strategy()
+    known = {r['key'] for r in base['rules']}
+    rules = []
+    for r in strategy['rules']:
+        if not isinstance(r, dict) or r.get('key') not in known:
+            continue
+        rules.append({'key': r['key'], 'enabled': bool(r.get('enabled', True)),
+                      'tiers': [str(x) for x in (r.get('tiers') or [])],
+                      'groups': [str(x) for x in (r.get('groups') or [])]})
+    for br in base['rules']:
+        if all(r['key'] != br['key'] for r in rules):
+            rules.append(br)
+    out = {'allow_wash': bool(strategy.get('allow_wash', True)), 'rules': rules}
+    cfg = load_config()
+    cfg['strategy_cover'] = json.dumps(out, ensure_ascii=False, separators=(',', ':'))
+    save_config(cfg)
+    return out

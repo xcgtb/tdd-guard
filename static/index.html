@@ -1209,7 +1209,8 @@ window.addEventListener('unhandledrejection', function(e){
           </div>
           <div class="filter-row"><span class="filter-label">类型</span>
             <div class="filter-chips" id="filterMedia">
-              <button data-v="movie" class="chip active">电影</button>
+              <button data-v="all" class="chip active">全部</button>
+              <button data-v="movie" class="chip">电影</button>
               <button data-v="tv" class="chip">剧集</button>
             </div>
           </div>
@@ -1522,6 +1523,21 @@ window.addEventListener('unhandledrejection', function(e){
           </div>
           <div id="orphanDirsList"><div class="list-empty">点击右上角「开始扫描」</div></div>
         </div>
+        <div class="panel">
+          <h3 data-icon="folder">目录级残留清理（对齐上游）</h3>
+          <p style="font-size:12px;color:#6b7280;line-height:1.7">
+            递归扫描库目录，找出「整个子树内完全没有 .strm」的媒体目录（{tmdb-xxx} 命名），按空目录规则整体清理。
+            适用于上游 TgtoDrive 洗版重命名后遗留的空目录——这些目录没有本程序删除血缘，上方「洗版残留扫描」扫不到。
+            执行时会先移入 <b>residue_backup</b> 备份目录（可恢复），并通知 Emby 刷新。
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+            <input type="text" id="emptyDirPath" value="/media/local" style="flex:1;padding:6px 10px">
+            <button class="btn" onclick="scanEmptyDirs()" data-icon="search">预览扫描</button>
+            <button class="btn danger" id="cleanEmptyBtn" onclick="cleanEmptyDirs()" data-icon="trash" style="display:none">执行清理</button>
+          </div>
+          <div id="emptyDirsStats" style="display:none"></div>
+          <div id="emptyDirsList"><div class="list-empty">输入库目录后点击「预览扫描」</div></div>
+        </div>
       </section>
 
       <!-- 执行记录 -->
@@ -1598,6 +1614,31 @@ window.addEventListener('unhandledrejection', function(e){
               <div class="desc">仅在「画质优先」模式下生效</div>
             </div>
             <label class="switch"><input type="checkbox" id="strTieLocal" onchange="onTieLocalToggle(this)"><span class="slider"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">杜比优先洗版</div>
+              <div class="desc">对齐上游：1080p 杜比视界 &gt; 4K SDR（默认关闭，按分辨率优先）</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="strDolbyFirst" onchange="onDolbyToggle(this)"><span class="slider"></span></label>
+          </div>
+        </div>
+
+        <!-- 洗版覆盖策略 -->
+        <div class="panel">
+          <h3 data-icon="scale">洗版覆盖策略</h3>
+          <p style="font-size:12px;color:#6b7280;margin-bottom:12px">当目标目录已经存在同一集或同一部电影时，按下方顺序决定保留哪一个版本。每项可单独关闭并调整顺序；关闭只会跳过该项，不会反向优先。无法识别的规格不会被强行判定为更优。</p>
+          <div class="toggle-row">
+            <div>
+              <div class="lbl">允许洗版</div>
+              <div class="desc">按已启用的顺序逐项比较，保留更优版本；关闭则仅目标已有同名文件时跳过新文件</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="coverAllowWash" onchange="onCoverAllowToggle(this)"><span class="slider"></span></label>
+          </div>
+          <div id="coverRules"><div class="list-empty">加载中...</div></div>
+          <div style="margin-top:10px;display:flex;gap:8px">
+            <button class="btn" onclick="saveCoverStrategy()" data-icon="save">保存覆盖策略</button>
+            <button class="btn gray" onclick="resetCoverStrategy()">恢复默认顺序</button>
           </div>
         </div>
 
@@ -2431,7 +2472,7 @@ function switchTab(id){
   if (id === 'dashboard')  loadDashboard();
   if (id === 'governance') { if (!currentPlan) restoreGovStateFromSession(); loadLatestGov(); loadGovTruth(); }
   if (id === 'explore')    loadExplore();
-  if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); loadGovAuto(); }
+  if (id === 'settings')   { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); loadGovAuto(); loadCoverStrategy(); }
   if (id === 'mapping')    ensureEmbyLoaded();
   if (id === 'subscribe')  loadSubscriptions();
   if (id === 'morning')    loadMorning();
@@ -2827,12 +2868,12 @@ async function runClean(){
 }
 
 /* ═══════════ 影视探索 ═══════════ */
-var exploreState = { region: 'all', media: 'movie', year: '', sort: 'popularity', genre: '', page: 1, totalPages: 1, q: '' };
+var exploreState = { region: 'all', media: 'all', year: '', sort: 'popularity', genre: '', page: 1, totalPages: 1, q: '' };
 var exploreLoading = false;
 var exploreFiltersOpen = false;
 
 var REGION_LABEL = { all: '全部地区', cn: '大陆', hk: '香港', tw: '台湾', jp: '日本', kr: '韩国', us: '欧美' };
-var MEDIA_LABEL  = { movie: '电影', tv: '剧集' };
+var MEDIA_LABEL  = { all: '全部', movie: '电影', tv: '剧集' };
 var SORT_LABEL   = { popularity: '热度', release: '最新', rating: 'TMDB 评分' };
 
 function updateFilterSummaryText(){
@@ -2905,7 +2946,7 @@ function refreshGenreChipsForMedia(media){
   var activeInvalid = false;
   el.querySelectorAll('.chip').forEach(function(b){
     var m = b.dataset.media || 'both';
-    var visible = (m === 'both' || m === media || !b.dataset.v);
+    var visible = (m === 'both' || media === 'all' || m === media || !b.dataset.v);
     b.classList.toggle('hidden', !visible);
     if (!visible && b.classList.contains('active')) activeInvalid = true;
   });
@@ -3493,9 +3534,13 @@ function renderSeriesCard(s){
   else if (s.in_local) libTag = '本地';
   else if (s.in_share) libTag = '分享';
 
-  var poster = s.has_image
-    ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" loading="lazy">'
-    : '<div class="no-img">暂无海报</div>';
+  /* 照搬上游 TgtoDrive 海报对照逻辑：TMDB poster_path 优先（官方最新图），Emby 缓存图兜底 */
+  var tposter = ti && ti.poster ? 'https://image.tmdb.org/t/p/w500' + ti.poster : '';
+  var poster = tposter
+    ? '<img src="' + esc(tposter) + '" loading="lazy" onerror="this.onerror=null;this.style.display=\'none\';var n=this.nextElementSibling;if(n)n.style.display=\'flex\';"><div class="no-img" style="display:none">暂无海报</div>'
+    : (s.has_image
+      ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" loading="lazy">'
+      : '<div class="no-img">暂无海报</div>');
 
   var epInfo = (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
   // 入库进度：已入库 have/total（TMDB 总数），分库时显示 本地/分享
@@ -3528,7 +3573,11 @@ function showMovieDetailById(id){
   var html = '';
   html += '<div style="display:flex;gap:16px;margin-bottom:16px">';
   html += '<div style="width:110px;height:165px;border-radius:8px;background:#f3f4f6;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">';
-  html += m.has_image ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" style="width:100%;height:100%;object-fit:cover">' : '\u65e0\u56fe';
+  /* TMDB poster_path 优先（上游海报对照逻辑），Emby 缓存图兜底 */
+  var mtp = m.poster_tmdb ? 'https://image.tmdb.org/t/p/w500' + m.poster_tmdb : '';
+  html += mtp
+    ? '<img src="' + esc(mtp) + '" style="width:100%;height:100%;object-fit:cover" onerror="this.onerror=null;this.style.display=\'none\';">'
+    : (m.has_image ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" style="width:100%;height:100%;object-fit:cover">' : '\u65e0\u56fe');
   html += '</div>';
   html += '<div style="flex:1;min-width:0">';
   html += '<h3 style="margin:0 0 8px;font-size:16px;line-height:1.3;word-break:break-word">' + esc(m.name || '?') + '</h3>';
@@ -3609,10 +3658,12 @@ function showEmbyDetailById(id){
 
   html += '<div style="display:flex;gap:16px;margin-bottom:16px">';
   html += '<div style="width:110px;height:165px;border-radius:8px;background:#f3f4f6;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px">';
-  /* 海报改为 data-emby-src，由 hydratePosters() 带鉴权拉取 */
-  html += s.has_image
-    ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" style="width:100%;height:100%;object-fit:cover">'
-    : '无图';
+  /* TMDB poster_path 优先（上游海报对照逻辑），Emby 缓存图兜底 */
+  html += ti.poster
+    ? '<img src="https://image.tmdb.org/t/p/w500' + esc(ti.poster) + '" style="width:100%;height:100%;object-fit:cover" onerror="this.onerror=null;this.style.display=\'none\';">'
+    : (s.has_image
+      ? '<img data-emby-src="/api/emby/poster/' + esc(s.id) + '" style="width:100%;height:100%;object-fit:cover">'
+      : '无图');
   html += '</div>';
   html += '<div style="flex:1;min-width:0">';
   html += '<h3 style="margin:0 0 8px;font-size:16px;line-height:1.3;word-break:break-word">' + esc(s.name || '?') + '</h3>';
@@ -3865,9 +3916,13 @@ function renderMovieCard(m){
   else if (m.in_local) libTag = '本地';
   else if (m.in_share) libTag = '分享';
 
-  var poster = m.has_image
-    ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" loading="lazy">'
-    : '<div class="no-img">暂无海报</div>';
+  /* TMDB poster_path 优先（上游海报对照逻辑），Emby 缓存图兜底 */
+  var mtp = m.poster_tmdb ? 'https://image.tmdb.org/t/p/w500' + m.poster_tmdb : '';
+  var poster = mtp
+    ? '<img src="' + esc(mtp) + '" loading="lazy" onerror="this.onerror=null;this.style.display=\'none\';var n=this.nextElementSibling;if(n)n.style.display=\'flex\';"><div class="no-img" style="display:none">暂无海报</div>'
+    : (m.has_image
+      ? '<img data-emby-src="/api/emby/poster/' + esc(m.id) + '" loading="lazy">'
+      : '<div class="no-img">暂无海报</div>');
 
   return '<div class="poster-card emby-poster-card" onclick="showMovieDetailById(\'' + esc(m.id) + '\')">'
     + '<div class="poster-wrap">' + poster
@@ -4173,11 +4228,35 @@ function renderIngest(r){
       '<span class="ing-cnt">' + count + unit + '</span></summary>' + body + '</details>';
   }
   var tv = tree.tv || {}, mov = tree.mov || {}, tvHtml = '', movHtml = '';
+  var tvDetailAll = tree.tv_detail || {}, movDetailAll = tree.mov_detail || {};
+  /* 「最近入库置顶」：组间按组内最新入库时间倒序，组内条目同样新的在前 */
+  function ingDetailMap(kind, src, cat){
+    var all = kind === 'tv' ? tvDetailAll : movDetailAll;
+    return (all[src] && all[src][cat]) || {};
+  }
+  function ingGroupTs(kind, src, cat){
+    var dmap = ingDetailMap(kind, src, cat), mx = 0;
+    Object.keys(dmap).forEach(function(k){
+      var v = dmap[k];
+      var t = (kind === 'tv') ? (Number(v && v.last_ts) || 0) : (Number(v) || 0);
+      if (t > mx) mx = t;
+    });
+    return mx;
+  }
+  function ingSortedCats(kind, src){
+    return Object.keys((kind === 'tv' ? tv : mov)[src] || {}).sort(function(a, b){
+      return ingGroupTs(kind, src, b) - ingGroupTs(kind, src, a);
+    });
+  }
   srcs.forEach(function(src){
-    Object.keys(tv[src] || {}).sort().forEach(function(cat){
+    ingSortedCats('tv', src).forEach(function(cat){
+      var detail = ingDetailMap('tv', src, cat);
       var shows = Object.keys(tv[src][cat]).map(function(n){ return [n, tv[src][cat][n]]; })
-        .sort(function(a, b){ return b[1] - a[1]; });
-      var detail = (tree.tv_detail && tree.tv_detail[src] && tree.tv_detail[src][cat]) || {};
+        .sort(function(a, b){
+          var ta = Number((detail[a[0]] || {}).last_ts) || 0, tb = Number((detail[b[0]] || {}).last_ts) || 0;
+          if (ta !== tb) return tb - ta;
+          return b[1] - a[1];
+        });
       tvHtml += group(src, cat, shows.length, '部',
         '<ul class="ing-list">' + shows.map(function(x){
           var info = detail[x[0]] || {};
@@ -4202,8 +4281,11 @@ function renderIngest(r){
           return '<li><span class="n">《' + esc(x[0]) + '》</span>' + suffix + '</li>';
         }).join('') + '</ul>');
     });
-    Object.keys(mov[src] || {}).sort().forEach(function(cat){
-      var names = mov[src][cat] || [];
+    ingSortedCats('mov', src).forEach(function(cat){
+      var dmap = ingDetailMap('mov', src, cat);
+      var names = (mov[src][cat] || []).slice().sort(function(a, b){
+        return (Number(dmap[b]) || 0) - (Number(dmap[a]) || 0);
+      });
       movHtml += group(src, cat, names.length, '部',
         '<div class="ing-tags">' + names.map(function(n){ return '<span>《' + esc(n) + '》</span>'; }).join('') + '</div>');
     });
@@ -4249,6 +4331,7 @@ function applyStrategyUI(){
     el.classList.toggle('on', el.dataset.ms === (currentStrategy.match_strategy || 'title_year'));
   });
   $('strTieLocal').checked = !!currentStrategy.tie_keep_local;
+  $('strDolbyFirst').checked = !!currentStrategy.dolby_first;
   renderExempt();
 }
 function pickStrategy(v){
@@ -4298,6 +4381,7 @@ async function saveStrategy(){
       match_strategy: currentStrategy.match_strategy || 'title_year',
       multi_season_protect: currentStrategy.multi_season_protect || 'compare',
       tie_keep_local: $('strTieLocal').checked,
+      dolby_first: $('strDolbyFirst').checked,
       special_action: currentStrategy.special_action || 'compare',
       exempt_keywords: currentStrategy.exempt_keywords || [],
     };
@@ -4315,6 +4399,102 @@ function onTieLocalToggle(cb){
     return;
   }
   saveStrategy();
+}
+
+function onDolbyToggle(cb){
+  saveStrategy();
+}
+
+/* ═══════════ 洗版覆盖策略编辑器（对齐上游 TgtoDrive） ═══════════ */
+var currentCover = null;
+var FRONT_COVER_META = {
+  release_group: {label:'发布组优先级', desc:'按你维护的发布组列表比较；越靠前优先级越高。'},
+  source: {label:'资源类型优先级', desc:'识别 UHD/蓝光/WEB 等片源类型；其他或未识别格式默认排在最后。'},
+  resolution: {label:'分辨率优先级', desc:'按画面高度比较；2K/1440p 作为兼容档位保留，未识别分辨率排在最后。'},
+  dolby: {label:'动态范围优先级', desc:'Dolby Vision 会细分 P7、P5、P8，并识别 HDR Vivid；未识别格式排在最后。'},
+  bitdepth: {label:'色深优先级', desc:'优先识别文件名中的 bit depth；未识别色深排在最后。'},
+  audio: {label:'音频规格优先级', desc:'同一文件有多个音轨时，按其中最高规格参与比较。'},
+  fps: {label:'帧率优先级', desc:'59.94 / 29.97 / 23.976 会分别归入 60 / 30 / 24 档，未识别帧率排在最后。'},
+  filesize: {label:'文件大小优先级', desc:'建议保留在最后作为兜底。（STRM 模式取不到云端真实大小，建议关闭）'}
+};
+async function loadCoverStrategy(){
+  try {
+    var r = await api('/api/cover-strategy');
+    if (r.status !== 'success') throw new Error(r.message || '加载失败');
+    currentCover = r.strategy;
+    var el = $('coverAllowWash');
+    if (el) el.checked = !!currentCover.allow_wash;
+    renderCoverRules();
+  } catch(e){ var el2 = $('coverRules'); if (el2) el2.innerHTML = '<div class="list-empty">覆盖策略加载失败</div>'; }
+}
+function renderCoverRules(){
+  var el = $('coverRules');
+  if (!el || !currentCover) return;
+  var rules = currentCover.rules || [];
+  el.innerHTML = rules.map(function(r, i){
+    var meta = FRONT_COVER_META[r.key] || {};
+    var label = r.label || meta.label || r.key;
+    var desc = r.desc || meta.desc || '';
+    var tiersOpen = r.__open ? '' : 'display:none';
+    var tiers = (r.tiers || []).map(function(t, ti){
+      return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--border);border-radius:8px;margin:4px 0">' +
+        '<span style="width:20px;color:var(--text-dim);font-size:11px">' + (ti + 1) + '</span>' +
+        '<span style="flex:1">' + esc(t) + '</span>' +
+        '<button class="btn gray" style="min-height:26px;padding:2px 8px" onclick="coverMoveTier(\'' + r.key + '\',' + ti + ',-1)">↑</button>' +
+        '<button class="btn gray" style="min-height:26px;padding:2px 8px" onclick="coverMoveTier(\'' + r.key + '\',' + ti + ',1)">↓</button></div>';
+    }).join('');
+    return '<div style="border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin:8px 0">' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+      '<span style="width:26px;color:var(--text-dim);font-weight:700">' + (i + 1) + '</span>' +
+      '<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">' + esc(label) + '</div>' +
+      '<div style="font-size:10px;color:var(--text-dim)">' + esc(desc) + '</div></div>' +
+      '<label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer"><input type="checkbox" ' + (r.enabled ? 'checked' : '') + ' onchange="coverToggleRule(\'' + r.key + '\', this.checked)"> 启用</label>' +
+      '<button class="btn gray" style="min-height:28px;padding:2px 8px" onclick="coverMoveRule(\'' + r.key + '\',-1)">↑</button>' +
+      '<button class="btn gray" style="min-height:28px;padding:2px 8px" onclick="coverMoveRule(\'' + r.key + '\',1)">↓</button>' +
+      (r.key === 'release_group' ? '' : '<button class="btn gray" style="min-height:28px;padding:2px 8px" onclick="coverToggleTiers(\'' + r.key + '\')">' + (r.__open ? '收起' : '设置顺序') + '</button>') +
+      '</div><div style="' + tiersOpen + 'margin-top:8px">' + tiers + '</div></div>';
+  }).join('');
+}
+function _coverFind(key){ return (currentCover.rules || []).filter(function(r){ return r.key === key; })[0]; }
+function coverToggleRule(key, on){ _coverFind(key).enabled = on; }
+function coverMoveRule(key, dir){
+  var rs = currentCover.rules;
+  var i = rs.findIndex(function(r){ return r.key === key; });
+  var j = i + dir;
+  if (i < 0 || j < 0 || j >= rs.length) return;
+  var t = rs[i]; rs[i] = rs[j]; rs[j] = t;
+  renderCoverRules();
+}
+function coverToggleTiers(key){ var r = _coverFind(key); r.__open = !r.__open; renderCoverRules(); }
+function coverMoveTier(key, ti, dir){
+  var r = _coverFind(key);
+  var j = ti + dir;
+  if (j < 0 || j >= r.tiers.length) return;
+  var t = r.tiers[ti]; r.tiers[ti] = r.tiers[j]; r.tiers[j] = t;
+  renderCoverRules();
+}
+function onCoverAllowToggle(cb){ currentCover.allow_wash = cb.checked; saveCoverStrategy(); }
+async function saveCoverStrategy(){
+  try {
+    var payload = JSON.parse(JSON.stringify(currentCover));
+    payload.rules.forEach(function(r){ delete r.__open; delete r.label; delete r.desc; });
+    var r2 = await api('/api/cover-strategy', { method: 'POST', body: JSON.stringify({ strategy: payload }) });
+    if (r2.status !== 'success') throw new Error(r2.message || '保存失败');
+    currentCover = r2.strategy;
+    renderCoverRules();
+    toast('覆盖策略已保存', 'success');
+  } catch(e){ toast('保存失败: ' + e.message, 'error'); }
+}
+async function resetCoverStrategy(){
+  if (!confirm('恢复默认覆盖顺序（对齐上游默认）？')) return;
+  try {
+    var r2 = await api('/api/cover-strategy', { method: 'POST', body: JSON.stringify({ strategy: { allow_wash: true, rules: [] } }) });
+    if (r2.status !== 'success') throw new Error(r2.message || '重置失败');
+    currentCover = r2.strategy;
+    renderCoverRules();
+    toast('已恢复默认覆盖策略', 'success');
+  } catch(e){ toast('重置失败: ' + e.message, 'error');
+  }
 }
 
 /* ═══════════ 白名单 ═══════════ */
@@ -4701,12 +4881,57 @@ async function showPlanDetail(planId){
 }
 
 /* ═══════════ 洗版残留 ═══════════ */
+/* ═══════════ 目录级残留清理（对齐上游 TgtoDrive） ═══════════ */
+var __emptyDirsPreview = [];
+async function scanEmptyDirs(){
+  var p = $('emptyDirPath').value.trim();
+  if (!p) { toast('请输入扫描目录', 'error'); return; }
+  try {
+    var r = await api('/api/wash/empty-dirs/scan', { method: 'POST', body: JSON.stringify({ path: p, limit: 100 }) });
+    if (r.status !== 'success') throw new Error(r.message || '扫描失败');
+    __emptyDirsPreview = r.preview || [];
+    $('emptyDirsStats').style.display = '';
+    $('emptyDirsStats').innerHTML = '<div class="ing-sum">' +
+      '<span class="ing-chip">扫描文件夹 <b>' + (r.folders || 0) + '</b></span>' +
+      '<span class="ing-chip">命中总数 <b>' + (r.hits || 0) + '</b></span>' +
+      '<span class="ing-chip">空目录命中 <b>' + (r.empty_dirs || 0) + '</b></span>' +
+      '<span class="ing-chip">预览上限 <b>' + (r.preview_limit || 100) + '</b></span></div>';
+    $('cleanEmptyBtn').style.display = (r.hits || 0) > 0 ? '' : 'none';
+    var items = __emptyDirsPreview.map(function(x, i){
+      return '<div class="ing-grp"><div style="padding:8px 12px;font-size:12px;line-height:1.8">' +
+        '<b>' + (i + 1) + '</b> · ' + esc(x.rel) + '<br>' +
+        '<span style="color:var(--text-dim)">对象：文件夹 · 类型：' + esc(x.type) + ' · 绝对路径：' + esc(x.abs_path) + '</span><br>' +
+        '<span style="color:var(--text-dim)">规则：' + esc(x.rule) + '</span></div></div>';
+    });
+    $('emptyDirsList').innerHTML = items.length ? items.join('') : '<div class="list-empty">未发现空目录残留</div>';
+    if (r.hits > __emptyDirsPreview.length) {
+      $('emptyDirsList').innerHTML += '<div class="list-empty">命中 ' + r.hits + ' 个，仅预览前 ' + r.preview_limit + ' 条；执行时将清理预览中的目录</div>';
+    }
+    toast('扫描完成：命中 ' + (r.hits || 0) + ' 个空目录', 'success');
+  } catch(e){ toast('扫描失败: ' + e.message, 'error'); }
+}
+
+async function cleanEmptyDirs(){
+  if (!__emptyDirsPreview.length) { toast('请先预览扫描', 'error'); return; }
+  if (!confirm('确定清理预览中的 ' + __emptyDirsPreview.length + ' 个空目录？\n\n会先移入 residue_backup 备份目录（可恢复），并通知 Emby 刷新。')) return;
+  try {
+    var r = await api('/api/wash/empty-dirs/clean', { method: 'POST', body: JSON.stringify({ paths: __emptyDirsPreview.map(function(x){ return x.path; }) }) });
+    if (r.status === 'busy') throw new Error(r.message || '有任务正在执行');
+    if (r.status !== 'success') throw new Error(r.message || '清理失败');
+    toast('已清理 ' + (r.count || 0) + ' 个目录，备份于 ' + (r.backup_root || ''), 'success');
+    if ((r.errors || []).length) toast((r.errors.length) + ' 条被安全跳过', 'info');
+    scanEmptyDirs();
+  } catch(e){ toast('清理失败: ' + e.message, 'error');
+  }
+}
+
 async function loadOrphans(){
   var depth = parseInt($('orphansDepth').value) || 5;
   var panel = $('orphanDirsPanel');
   panel.style.display = '';
   $('orphanDirsList').innerHTML = '<div class="list-empty">扫描中（大库可能较慢）...</div>';
   var selectAll = $('orphanDirsSelectAll');
+
   if (selectAll) selectAll.checked = false;
   try {
     var r = await api('/api/orphans?max_depth=' + depth);
