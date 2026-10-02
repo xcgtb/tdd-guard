@@ -2816,10 +2816,13 @@ async function runClean(){
     currentPlan = null;
     clearGovStateSession();
     loadDashboard();
-    // 执行完直接重新扫描一遍，双库治理页面显示清理后的最新结果，
-    // 而不是把整页清空，什么都看不到。
-    $('planList').innerHTML = '<div class="list-empty">正在重新扫描，查看清理后的最新结果...</div>';
-    await scanLibrary();
+    // 清理完成后不再自动重扫：扫描要么手动触发，要么由后台定时轮询。
+    // 这里只把旧清单清空，并提示用户清单已用完。
+    govData = { loc: [], shr: [], keep: [], exempt: [], exemptTotal: 0 };
+    ['gov-keep','gov-loc','gov-shr','gov-exempt'].forEach(function(id){ if ($(id)) $(id).textContent = '0'; });
+    if ($('govExecBtn')) $('govExecBtn').disabled = true;
+    renderGovList();
+    setGovBanner('✅ 清理已完成，清单已用完。需要查看最新状态时请点「重新扫描」');
   } catch(e){ toast(e.message, 'error', 4000); }
 }
 
