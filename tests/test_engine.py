@@ -21,20 +21,10 @@ import tempfile
 import time
 from pathlib import Path
 
-# 在 import engine 之前把三个媒体根目录和数据目录都指到临时目录，
-# 避免测试误碰到真实 NAS 上的 /media /data。
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-# 测试里的 STRM 都是刚创建的，先关掉「入库静默期」，静默期本身在 TestIngestQuietPeriod 里单独测
-os.environ['INGEST_QUIET_MINUTES'] = '0'
+# 媒体根目录 / 数据目录由 tests/conftest.py 统一指到会话级临时目录
+_TMP = Path(os.environ['AGENT_DATA']).parent
 
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import engine  # noqa: E402
+from app import config, engine, governance, lib, state, wash  # noqa: E402
 
 
 def _strm(root: Path, folder: str, filename: str):
@@ -64,7 +54,7 @@ def _patch_strategy(monkeypatch_dict):
         'special_action': 'compare',
     }
     base.update(monkeypatch_dict)
-    engine._strategy = lambda: base
+    governance._strategy = lambda: base
 
 
 def _acts_for_title(acts, title_substr):
@@ -382,11 +372,11 @@ class TestCloudVideoConfidence:
         _strm(engine.L_ROOT, '云源测试 (2020)/Season 01', 'E01.1080p.strm')
         f = next(engine.L_ROOT.rglob('*.strm'))
         orig = engine.cloud_videos
-        engine.cloud_videos = lambda *a, **k: (vids or [], conf)
+        wash.cloud_videos = lambda *a, **k: (vids or [], conf)
         return f, orig
 
     def _teardown(self, orig):
-        engine.cloud_videos = orig
+        wash.cloud_videos = orig
 
     def test_exact_allows_deletion(self):
         f, orig = self._setup('exact', [])
@@ -478,8 +468,8 @@ class TestPlanLifecycle:
         _patch_strategy({'exempt_keywords': []})
         _strm(engine.L_ROOT, '规则指纹剧 (2020)/Season 01', 'E01.1080p.strm')
         _strm(engine.S_ROOT, '规则指纹剧 (2020)/Season 01', 'E01.1080p.strm')
-        monkeypatch.setattr(engine._cfg, 'load_config', lambda: {'strategy_exempt_keywords': ''})
-        monkeypatch.setattr(engine._cfg, 'get_strategy', lambda: {'decision': 'quality_first'})
+        monkeypatch.setattr(config, 'load_config', lambda: {'strategy_exempt_keywords': ''})
+        monkeypatch.setattr(config, 'get_strategy', lambda: {'decision': 'quality_first'})
         acts = engine.build_plan()
         pid = engine.save_plan(acts)
         data = engine.load_plan(pid)
@@ -491,8 +481,8 @@ class TestPlanLifecycle:
         _strm(engine.L_ROOT, '规则变化剧 (2020)/Season 01', 'E01.1080p.strm')
         _strm(engine.S_ROOT, '规则变化剧 (2020)/Season 01', 'E01.1080p.strm')
         state = {'decision': 'quality_first'}
-        monkeypatch.setattr(engine._cfg, 'load_config', lambda: {'strategy_exempt_keywords': state['decision']})
-        monkeypatch.setattr(engine._cfg, 'get_strategy', lambda: {'decision': state['decision']})
+        monkeypatch.setattr(config, 'load_config', lambda: {'strategy_exempt_keywords': state['decision']})
+        monkeypatch.setattr(config, 'get_strategy', lambda: {'decision': state['decision']})
         pid = engine.save_plan(engine.build_plan())
         state['decision'] = 'keep_local'
 
@@ -717,11 +707,11 @@ class TestScanSingleTraversal:
                 built.append(str(root))
                 super().__init__(root)
 
-        engine.Lib = CountingLib
+        lib.Lib = CountingLib
         try:
             engine.action_inter_check(self._Args())
         finally:
-            engine.Lib = orig_lib
+            lib.Lib = orig_lib
 
         assert sorted(built) == sorted([str(engine.L_ROOT), str(engine.S_ROOT)]), built
 

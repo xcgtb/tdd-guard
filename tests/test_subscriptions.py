@@ -21,16 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_subs_test_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import engine  # noqa: E402
+from app import config, emby, engine, state, tg, tmdb
 
 TMDB_ID = '9999'
 
@@ -95,34 +86,34 @@ class _Env:
                 pass
 
         self._orig = (engine.emby_request, engine.Tmdb, engine.notify_telegram,
-                      engine.SUB_STATE_FILE, engine._cfg.get_subscriptions())
-        self._orig_cfg = {k: engine._cfg.load_config().get(k)
+                      engine.SUB_STATE_FILE, config.get_subscriptions())
+        self._orig_cfg = {k: config.load_config().get(k)
                           for k in ('subscribe_enabled', 'subscribe_check_tmdb')}
-        engine.emby_request = self._emby
-        engine.Tmdb = FakeTmdb
-        engine.notify_telegram = self._notify
+        emby.emby_request = self._emby
+        tmdb.Tmdb = FakeTmdb
+        tg.notify_telegram = self._notify
         engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        engine.SUB_STATE_FILE = engine.STATE_DIR / 'subscriptions_state_test.json'
+        state.SUB_STATE_FILE = engine.STATE_DIR / 'subscriptions_state_test.json'
         if engine.SUB_STATE_FILE.exists():
             engine.SUB_STATE_FILE.unlink()
-        cfg = engine._cfg.load_config()
+        cfg = config.load_config()
         cfg['subscribe_enabled'] = '1'
         cfg['subscribe_check_tmdb'] = '1'
-        engine._cfg.save_config(cfg)
-        engine._cfg.set_subscriptions([{'id': 'sub1', 'tmdb_id': TMDB_ID, 'name': '测试剧', 'enabled': True}])
+        config.save_config(cfg)
+        config.set_subscriptions([{'id': 'sub1', 'tmdb_id': TMDB_ID, 'name': '测试剧', 'enabled': True}])
         return self
 
     def __exit__(self, *exc):
         if engine.SUB_STATE_FILE.exists():
             engine.SUB_STATE_FILE.unlink()
-        (engine.emby_request, engine.Tmdb, engine.notify_telegram,
-         engine.SUB_STATE_FILE, subs) = self._orig
-        cfg = engine._cfg.load_config()
+        (emby.emby_request, tmdb.Tmdb, tg.notify_telegram,
+         state.SUB_STATE_FILE, subs) = self._orig
+        cfg = config.load_config()
         for k, v in self._orig_cfg.items():
             if v is None: cfg.pop(k, None)
             else: cfg[k] = v
-        engine._cfg.save_config(cfg)
-        engine._cfg.set_subscriptions(subs)
+        config.save_config(cfg)
+        config.set_subscriptions(subs)
         return False
 
     def run(self, send_notify=False):
@@ -242,14 +233,14 @@ class TestMissingEpisodes:
                     return {'Items': _full({1: 5}) if sid == 'LOCAL' else _full({1: 6})}
                 return {}
             old = engine.emby_request
-            engine.emby_request = fake_emby
+            emby.emby_request = fake_emby
             try:
                 env.tmdb = _tmdb_info({1: 6}, last=(1, 6), status='Ended')
                 u = env.run()
                 assert u is None
                 assert env.state()['latest_ep'] == 'S01E06'
             finally:
-                engine.emby_request = old
+                emby.emby_request = old
 
 
 class TestNewEpisode:
@@ -436,9 +427,9 @@ class TestBatchGapRefillStateMachine:
     def test_no_tmdb_still_detects_new_eps(self):
         # 关闭 TMDB 对照时仍能做集合差集，只是不判缺集
         with _Env() as env:
-            cfg = engine._cfg.load_config()
+            cfg = config.load_config()
             cfg['subscribe_check_tmdb'] = '0'
-            engine._cfg.save_config(cfg)
+            config.save_config(cfg)
             self._baseline_15(env)
             env.episodes = _full({1: 18})
             env.tmdb = None
@@ -477,7 +468,7 @@ class TestExploreLiveEps:
     """探索页实时集数：绕过 30 分钟统一快照，直接问 Emby 这部剧现在有哪些集"""
 
     def test_reflects_newly_ingested_episodes_immediately(self):
-        state = {'eps': list(range(1, 16))}
+        ep_state = {'eps': list(range(1, 16))}
 
         def fake(path, params=None, method='GET', timeout=15):
             p = params or {}
@@ -487,22 +478,22 @@ class TestExploreLiveEps:
                 return {'Items': [
                     {'ParentIndexNumber': 1, 'IndexNumber': e,
                      'Path': f'/media/local/剧集/我不是大师/S01/x.S01E{e:02d}.strm'}
-                    for e in state['eps']]}
+                    for e in ep_state['eps']]}
 
             return {}
 
         old = engine.emby_request
-        engine.emby_request = fake
-        engine.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        emby.emby_request = fake
+        state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
         try:
             r = engine._emby_series_live_eps('12345', 'SR1', use_cache=False)
             assert (r['have_eps'], r['local_eps']) == (15, 15)
             # Emby 立刻入库 E16/E17/E18 → 下一次实时查询马上反映，无需等快照过期
-            state['eps'] = list(range(1, 19))
+            ep_state['eps'] = list(range(1, 19))
             r = engine._emby_series_live_eps('12345', 'SR1', use_cache=False)
             assert (r['have_eps'], r['local_eps']) == (18, 18)
         finally:
-            engine.emby_request = old
+            emby.emby_request = old
 
     def test_splits_local_and_share_by_path(self):
         def fake(path, params=None, method='GET', timeout=15):
@@ -519,15 +510,15 @@ class TestExploreLiveEps:
             return {}
 
         old = engine.emby_request
-        engine.emby_request = fake
-        engine.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        emby.emby_request = fake
+        state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
         try:
             r = engine._emby_series_live_eps('12345', 'SR1', use_cache=False)
             assert r['have_eps'] == 18
             assert r['local_eps'] == 15
             assert r['share_eps'] == 3
         finally:
-            engine.emby_request = old
+            emby.emby_request = old
 
     def test_ghost_entries_outside_library_roots_are_ignored(self):
         # CD2 已删源、Emby 还没刷掉的幽灵条目不应计入入库集数
@@ -544,13 +535,13 @@ class TestExploreLiveEps:
             return {}
 
         old = engine.emby_request
-        engine.emby_request = fake
-        engine.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        emby.emby_request = fake
+        state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
         try:
             r = engine._emby_series_live_eps('12345', None, use_cache=False)
             assert r['have_eps'] == 1
         finally:
-            engine.emby_request = old
+            emby.emby_request = old
 
     def test_micro_cache_absorbs_rapid_refresh(self):
         calls = {'n': 0}
@@ -566,15 +557,15 @@ class TestExploreLiveEps:
             return {}
 
         old = engine.emby_request
-        engine.emby_request = fake
-        engine.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        emby.emby_request = fake
+        state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
         try:
             engine._emby_series_live_eps('CACHE_HIT_TMDB', 'CACHE_HIT_SR')
             first = calls['n']
             engine._emby_series_live_eps('CACHE_HIT_TMDB', 'CACHE_HIT_SR')
             assert calls['n'] == first, '15 秒内应命中微缓存，不重复打 Emby'
         finally:
-            engine.emby_request = old
+            emby.emby_request = old
             with engine._live_eps_lock:
                 engine._live_eps_cache.pop('CACHE_HIT_TMDB', None)
 
@@ -583,10 +574,10 @@ class TestExploreLiveEps:
             raise RuntimeError('Emby 挂了')
 
         old = engine.emby_request
-        engine.emby_request = boom
-        engine.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        emby.emby_request = boom
+        state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
         try:
             # 异常不外抛；系列查不到时返回 None，由调用方回退快照
             assert engine._emby_series_live_eps('ERR_TMDB', None, use_cache=False) is None
         finally:
-            engine.emby_request = old
+            emby.emby_request = old

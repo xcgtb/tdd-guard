@@ -22,6 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))       # 让 `from app import ...` 能用
 sys.path.insert(0, str(HERE))              # 让 test_*.py 能被 import
+import conftest  # noqa: E402,F401  先于任何 app 模块设置测试环境变量（与 pytest 一致）
 
 
 def _iter_test_modules():

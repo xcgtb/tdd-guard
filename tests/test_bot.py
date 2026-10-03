@@ -12,18 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_bot_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-os.environ['TG_ALLOWED_USERS'] = ''  # 白名单从 config.json 读，不从这个环境变量的默认值读
-
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import bot  # noqa: E402
-import config  # noqa: E402
+from app import bot, config, engine
 
 
 class TestIsAllowed:
@@ -114,7 +103,6 @@ class TestCleanResultRendering:
 class TestLatestPendingPlan:
     def test_picks_newest_pending_not_newest_file(self):
         """计划被标记 done/expired 时会重写文件、mtime 变新；/clean 不能因此选中已执行过的计划"""
-        engine = bot.engine
         engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
         for f in engine.STATE_DIR.glob('plan_*.json'):
             f.unlink()
@@ -181,11 +169,10 @@ class TestBotUsesSharedTaskBus:
 
 # ═══════════════════ 卡片生命周期 / 命令删除 / 状态 ═══════════════════
 def _write_plan(pid, state='pending', age=0, rule_sig=None):
-    engine = bot.engine
     engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
     (engine.STATE_DIR / f'plan_{pid}.json').write_text(_json.dumps({
         'schema_version': 2, 'id': pid, 'ts': _time.time() - age, 'state': state,
-        'rule_sig': rule_sig if rule_sig is not None else bot.engine._current_rule_snapshot()['sig'],
+        'rule_sig': rule_sig if rule_sig is not None else engine._current_rule_snapshot()['sig'],
         'stats': {}, 'actions': [{'action_id': 'a', 'text': 'x'}]}), encoding='utf-8')
 
 
@@ -219,7 +206,7 @@ class TestPlanCardLifecycle:
     def test_expired_plan_clean_do_shows_rescan_instead_of_hanging(self):
         """核心回归：计划过期后点「确认执行」，卡片必须就地变成「已过期 + 重新扫描」，
         不能停在「正在执行清理...」"""
-        _write_plan('eeee0001', age=bot.engine.PLAN_TTL + 60)
+        _write_plan('eeee0001', age=engine.PLAN_TTL + 60)
         r = _Rec()
         try:
             bot._handle_callback('tok', _cb('clean_do:eeee0001'))
@@ -231,7 +218,7 @@ class TestPlanCardLifecycle:
         assert 'cmd:check' in _buttons(kb) and 'dismiss' in _buttons(kb)
         assert not any('正在执行' in e[1] for e in r.edits)
         # 并且落盘成 expired，不会再被当成可执行计划
-        assert bot.engine.load_plan('eeee0001')['state'] == 'expired'
+        assert engine.load_plan('eeee0001')['state'] == 'expired'
 
     def test_clean_ask_on_used_plan_is_blocked(self):
         _write_plan('eeee0002', state='done')
@@ -289,7 +276,7 @@ class TestPlanCardLifecycle:
     def test_plan_ttl_left_tracks_expiry(self):
         _write_plan('eeee0004', age=100)
         left = bot._plan_ttl_left('eeee0004')
-        assert bot.engine.PLAN_TTL - 110 <= left <= bot.engine.PLAN_TTL - 90
+        assert engine.PLAN_TTL - 110 <= left <= engine.PLAN_TTL - 90
         assert bot._plan_ttl_left('ffffffff', default=123) == 123
 
 

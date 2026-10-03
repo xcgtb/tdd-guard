@@ -10,18 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_storage_test_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import engine  # noqa: E402
-import governance  # noqa: E402
-import subscribe  # noqa: E402
+from app import engine, governance, subscribe
 
 
 def _plan(pid='abcd1234', state='pending', ts=None):

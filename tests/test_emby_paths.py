@@ -18,17 +18,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_emby_paths_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-os.environ['INGEST_QUIET_MINUTES'] = '0'
-
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import engine  # noqa: E402
+from app import config, engine, state
 
 DEF_L = '/strm/115网盘/影视媒体库'
 DEF_S = '/strm/115网盘/分享影视库'
@@ -42,11 +32,11 @@ class TestDefaultPaths:
     def test_config_defaults_keep_author_layout(self):
         # 默认值必须保持作者原来的目录，老用户升级后行为不变
         if not os.environ.get('EMBY_LOCAL_PATH'):
-            assert engine._cfg.DEFAULTS['emby_local_path'] == DEF_L
+            assert config.DEFAULTS['emby_local_path'] == DEF_L
         if not os.environ.get('EMBY_SHARE_PATH'):
-            assert engine._cfg.DEFAULTS['emby_share_path'] == DEF_S
-        assert engine._cfg.ENV_OVERRIDE_KEYS['emby_local_path'] == 'EMBY_LOCAL_PATH'
-        assert engine._cfg.ENV_OVERRIDE_KEYS['emby_share_path'] == 'EMBY_SHARE_PATH'
+            assert config.DEFAULTS['emby_share_path'] == DEF_S
+        assert config.ENV_OVERRIDE_KEYS['emby_local_path'] == 'EMBY_LOCAL_PATH'
+        assert config.ENV_OVERRIDE_KEYS['emby_share_path'] == 'EMBY_SHARE_PATH'
 
     def test_author_paths_classified(self):
         m = _default_map()
@@ -62,7 +52,7 @@ class TestDefaultPaths:
     def test_module_helpers_use_runtime_map(self):
         old = engine.EMBY_PATHS
         try:
-            engine.EMBY_PATHS = _default_map()
+            state.EMBY_PATHS = _default_map()
             assert engine.emby_lib_of(DEF_L + '/x/y.strm') == 'local'
             assert engine._src(DEF_L + '/x/y.strm') == '本地影视库'
             assert engine._src(DEF_S + '/x/y.strm') == '分享影视库'
@@ -71,7 +61,7 @@ class TestDefaultPaths:
             assert engine.emby_path_to_container('') is None
             assert engine.emby_path_to_container(None) is None
         finally:
-            engine.EMBY_PATHS = old
+            state.EMBY_PATHS = old
 
 
 class TestCustomPaths:
@@ -172,7 +162,7 @@ class TestUnsafePaths:
 
 class TestReloadConfig:
     def test_reload_from_config_file(self):
-        cfg_mod = engine._cfg
+        cfg_mod = config
         orig = cfg_mod.load_config()
         saved_env = {k: os.environ.pop(k, None) for k in ('EMBY_LOCAL_PATH', 'EMBY_SHARE_PATH')}
         try:
@@ -194,7 +184,7 @@ class TestReloadConfig:
             engine.reload_config()
 
     def test_reload_from_env_override(self):
-        cfg_mod = engine._cfg
+        cfg_mod = config
         saved_env = {k: os.environ.get(k) for k in ('EMBY_LOCAL_PATH', 'EMBY_SHARE_PATH')}
         try:
             os.environ['EMBY_LOCAL_PATH'] = '/env/local'
