@@ -137,9 +137,11 @@ def api_send_morning(body: dict = None):
     body = body or {}
     mr = get_morning_report()
     items = body.get('items') or mr.get('items') or []
-    force = bool(body.get('force', True))     # 默认立即扫描
+    # 立即发送与定时晨报保持同一口径：发送当前晨报缓存，不在 HTTP 请求里触发现场扫描。
+    # 需要现场扫描请使用「预览（现场扫）」；API 调用方仍可显式传 force=true。
+    force = bool(body.get('force', False))
     try:
-        ok = engine.send_morning_report(items, force_refresh=force)
+        ok = engine.send_morning_report(items, force_refresh=force, mark_sent=False)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
     return {'status': 'success' if ok else 'error',

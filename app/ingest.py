@@ -183,6 +183,13 @@ def refresh_ingest_cache(hours=24) -> dict:
             return old
         # 没有旧缓存可退：仍把失败结果落盘，但带 ok=False，界面据此提示而不是当成「0 新增」
     _write_ingest_cache(data)
+    # 本轮确实有新入库时，只就地刷新受影响剧集的片库映射缓存。
+    # 不触发全量 TMDB 对照，避免为了「补齐缺集」重新扫整个片库。
+    if data.get('ok', True):
+        try:
+            _eng().refresh_mapping_cache_after_ingest(data)
+        except Exception as e:
+            log.warning('入库后片库映射缓存刷新失败: %s', e)
     st = data.get('stats', {})
     if not data.get('ok', True):
         log.warning('入库缓存刷新失败且无旧缓存可保留: %s', data.get('error'))

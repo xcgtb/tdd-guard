@@ -6,7 +6,7 @@ from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-import contextlib, dataclasses, html
+import contextlib, dataclasses, html, copy
 
 log = logging.getLogger('media_agent')
 
@@ -579,7 +579,7 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
                 if len(ups) > 10:
                     lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
             else:
-                lines.append('0')
+                lines.append('✅ 无变化')
         except Exception as e:
             lines += ['', f'🔔 订阅汇报读取失败: {html.escape(str(e))}']
 
@@ -613,13 +613,16 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
 
     return '\n'.join(lines)
 
-def send_morning_report(items: list, force_refresh: bool = False) -> bool:
-    """
-    force_refresh=True → 立即扫描（晨报时间前预扫/手动测试用）
+def send_morning_report(items: list, force_refresh: bool = False, mark_sent: bool = True) -> bool:
+    """发送晨报。
+
+    force_refresh=True：现场刷新（仅现场预览/显式调用使用）。
+    mark_sent=True：记为当天定时晨报已发送；手动测试发送应传 False，
+    避免一次手动测试把当天 08:00 的定时晨报标记掉。
     """
     text = build_morning_report(items, force_refresh=force_refresh)
     ok = _eng().notify_telegram(text)
-    if ok:
+    if ok and mark_sent:
         _cfg.mark_morning_report_sent(time.strftime('%Y-%m-%d', time.localtime()))
     return ok
 
@@ -696,6 +699,120 @@ def _patch_all_caches(patch):
     tmdb_cache = read_emby_lib_cache()
     if tmdb_cache and patch(tmdb_cache):
         save_emby_lib_cache(tmdb_cache, keep_ts=True)
+
+
+def _recompute_mapping_stats(data: dict):
+    """根据当前 series 的 tmdb_info 重算片库映射统计，避免就地刷新后统计仍停留在旧快照。"""
+    series = (data or {}).get('series') or []
+    stats = (data or {}).setdefault('stats', {})
+    stats.update({
+        'total_series': len(series),
+        'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0,
+        'unmatched': 0, 'no_tmdb': 0, 'complete_series': 0,
+        'incomplete_series': 0,
+    })
+    for s in series:
+        st = (s.get('tmdb_info') or {}).get('match_status', 'unmatched')
+        if st in stats:
+            stats[st] += 1
+        if s.get('complete') or st == 'aligned':
+            stats['complete_series'] += 1
+        else:
+            stats['incomplete_series'] += 1
+
+
+def refresh_mapping_cache_after_ingest(ingest_data: dict) -> dict:
+    """入库轮询成功后，只刷新本轮确实发生入库的剧集。
+
+    不重新跑全量 TMDB 对照，也不重新搜索身份；沿用片库映射缓存里的
+    series_ids / tmdb_id，只重新读取这些剧当前真实存在的分集并重算 tmdb_info。
+    这样补齐缺集后，片库映射的卡片状态可在下一轮 5 分钟入库扫描后自动变为
+    「对齐」，无需手工点击「重新对照」。
+    """
+    result = {'status': 'skipped', 'affected': 0, 'updated': 0}
+    if not ingest_data or not ingest_data.get('ok', True):
+        return result
+
+    raw = ingest_data.get('episodes_raw') or []
+    affected_ids = {
+        str(e.get('series_id') or '').strip()
+        for e in raw
+        if str(e.get('series_id') or '').strip()
+    }
+    if not affected_ids:
+        return result
+
+    cache = read_emby_lib_cache(max_age=None)
+    if not cache:
+        return result
+
+    updated_entries = []
+    for entry in (cache.get('series') or []):
+        ids = {str(x).strip() for x in (entry.get('series_ids') or [entry.get('id')]) if str(x).strip()}
+        if not (ids & affected_ids):
+            continue
+        result['affected'] += 1
+
+        # 双库同一剧可能有两个 Emby SeriesId，必须 union 两边的实时分集。
+        live = []
+        seen = set()
+        for sid in ids:
+            for ep in _live_series_episodes(sid):
+                key = (str(ep.get('Id') or ''), str(ep.get('Path') or ''),
+                       ep.get('ParentIndexNumber'), ep.get('IndexNumber'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                live.append(ep)
+
+        before = (
+            int(entry.get('have_eps') or 0),
+            int((entry.get('tmdb_info') or {}).get('diff') or 0),
+            (entry.get('tmdb_info') or {}).get('match_status'),
+        )
+        _resync_series_entry(entry, live)
+        after = (
+            int(entry.get('have_eps') or 0),
+            int((entry.get('tmdb_info') or {}).get('diff') or 0),
+            (entry.get('tmdb_info') or {}).get('match_status'),
+        )
+        if before != after:
+            result['updated'] += 1
+            updated_entries.append((ids, copy.deepcopy(entry)))
+
+    if not result['affected']:
+        return result
+    if not result['updated']:
+        return {'status': 'checked', 'affected': result['affected'], 'updated': 0}
+
+    _recompute_mapping_stats(cache)
+    save_emby_lib_cache(cache, keep_ts=True)
+
+    # 将已经算好的条目同步到内存/总览/TMDB 对照缓存；这里不再重新访问 Emby。
+    def _patch(data):
+        touched = False
+        for src in (data or {}).get('series') or []:
+            src_ids = {str(x).strip() for x in (src.get('series_ids') or [src.get('id')]) if str(x).strip()}
+            for ids, fresh in updated_entries:
+                if src_ids & ids:
+                    src.clear()
+                    src.update(copy.deepcopy(fresh))
+                    touched = True
+                    break
+        if touched:
+            _recompute_mapping_stats(data)
+        return touched
+
+    _patch_all_caches(_patch)
+
+    # 探索/总览还有一层 library_snapshot，必须一起失效/更新，否则会继续显示旧缺集。
+    snap = load_library_snapshot(max_age=None, background_refresh=False)
+    if snap and _patch(snap):
+        save_library_snapshot(snap)
+
+    result['status'] = 'updated'
+    return result
+
 
 def patch_emby_lib_cache_after_series_delete(series_id: str, deleted_target: str = ''):
     """删除 / 同步后就地修补缓存里这部剧（以磁盘真实文件为准）。

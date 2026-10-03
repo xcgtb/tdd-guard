@@ -243,7 +243,7 @@ def _tick(now: float):
     # ── 到点发送 ──
     if lt_minutes >= target_minutes and mr.get('last_date') != today:
         try:
-            ok = engine.send_morning_report(mr.get('items') or [], force_refresh=False)
+            ok = engine.send_morning_report(mr.get('items') or [], force_refresh=False, mark_sent=True)
             if ok:
                 engine.log.info('晨报已发送')
         except Exception as e:

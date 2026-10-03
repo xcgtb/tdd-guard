@@ -4090,10 +4090,10 @@ async function previewMorning(force){
   } catch(e){ toast(e.message, 'error'); }
 }
 async function sendMorningNow(){
-  if (!(confirm('立即发送晨报到 Telegram？（会现场扫描 Emby）'))) return;
+  if (!(confirm('立即发送晨报到 Telegram？（读取当前缓存，不现场扫描）'))) return;
   toast('生成并发送中...');
   try {
-    var r = await api('/api/morning/send', { method: 'POST', body: JSON.stringify({ force: true }) });
+    var r = await api('/api/morning/send', { method: 'POST', body: JSON.stringify({ force: false }) });
     toast(r.message || '完成', r.status === 'success' ? 'success' : 'error');
   } catch(e){ toast(e.message, 'error'); }
 }

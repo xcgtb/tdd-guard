@@ -570,7 +570,7 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
                 _send(token, chat_id, '\n'.join(lines))
 
     elif action == 'morning':
-        _send(token, chat_id, '☀️ 正在生成并发送晨报（立即现场扫描）...')
+        _send(token, chat_id, '☀️ 正在读取晨报缓存并发送（不现场扫描）...')
 
         def _do_morning():
             try:
