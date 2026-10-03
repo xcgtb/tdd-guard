@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg, storage, media
+from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg, storage, media, sync
 
 log = logging.getLogger('media_agent')
 
@@ -51,6 +51,7 @@ def _overview_bg_refresh():
         state._emby_lib_cache['ts'] = time.time()
         state._emby_lib_cache['data'] = out
         _save_overview_disk(out)
+        sync.bump('library', invalidate=False, reason='overview_refresh')
         log.info('片库映射缓存后台刷新完成：剧集 %d / 电影 %d',
                  len(out.get('series', [])), len(out.get('movies', [])))
     except Exception as e:
@@ -68,7 +69,9 @@ def emby_library_overview(force=False):
         if disk is not None:
             state._emby_lib_cache['data'] = disk['data']
             state._emby_lib_cache['ts'] = disk['ts']
-            if time.time() - disk['ts'] >= state._CACHE_TTL:
+            stale = 'emby_overview' in state._stale
+            state._stale.discard('emby_overview')
+            if stale or time.time() - disk['ts'] >= state._CACHE_TTL:
                 threading.Thread(target=_overview_bg_refresh, daemon=True,
                                  name='emby-overview-refresh').start()
             return state._emby_lib_cache['data']
@@ -896,6 +899,7 @@ def _refresh_tmdb_scan():
         _cfg.update_config(lambda c: c.__setitem__('tmdb_scan_last_ts', str(time.time())))
         state._tmdb_scan_progress.update({'running': False, 'finished_at': time.time(),
                                     'stage': '完成', 'stats': stats})
+        sync.bump('library', invalidate=False, reason='tmdb_scan')
         log.info('TMDB 对照完成：对齐 %d / 缺集 %d / 超集 %d / 在更 %d',
                  stats['aligned'], stats['missing'], stats['extra'], stats['ongoing'])
         return res

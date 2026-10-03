@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, tmdb, emby, lib, storage, tg, media
+from . import state, tmdb, emby, lib, storage, tg, media, sync
 
 log = logging.getLogger('media_agent')
 
@@ -36,6 +36,7 @@ def _load_sub_state() -> dict:
 load_sub_state = _load_sub_state  # 公开名（bot / 路由用这个）
 
 def _save_sub_state(sub_state: dict):
+    sync.bump('subscriptions', invalidate=False, reason='sub_state')
     if not storage.db_save_sub_state(state.SUB_STORE, sub_state):
         log.warning('保存追更状态失败')
 

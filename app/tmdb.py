@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, morning, emby, lib, storage, media
+from . import state, morning, emby, lib, storage, media, sync
 
 log = logging.getLogger('media_agent')
 
@@ -171,6 +171,7 @@ def _emby_index_bg_refresh():
         out = _build_emby_library_index()
         state._emby_index_cache.update({'ts': time.time(), 'data': out})
         _save_emby_index_disk(out)
+        sync.bump('explore', invalidate=False, reason='index_refresh')
     except Exception as e:
         log.warning('Emby 探索索引后台刷新失败: %s', e)
     finally:
@@ -184,7 +185,9 @@ def emby_library_index(force=False):
         disk = _load_emby_index_disk()
         if disk:
             state._emby_index_cache.update(disk)
-            if time.time() - disk['ts'] >= 300:
+            stale = 'emby_index' in state._stale
+            state._stale.discard('emby_index')
+            if stale or time.time() - disk['ts'] >= 300:
                 threading.Thread(target=_emby_index_bg_refresh, daemon=True,
                                  name='emby-index-refresh').start()
             return state._emby_index_cache['data']
