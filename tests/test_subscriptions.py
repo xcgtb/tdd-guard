@@ -19,6 +19,7 @@ Emby / TMDB 都用假实现替换，不联网；运行方式同 tests/test_engin
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from app import config, emby, engine, state, subscribe, tg, tmdb
@@ -484,6 +485,8 @@ class TestExploreLiveEps:
         old = engine.emby_request
         emby.emby_request = fake
         state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        # 季目录真实存在（文件不存在不算幽灵，幽灵要求文件与目录都不在）
+        (state.L_ROOT / '剧集' / '我不是大师' / 'S01').mkdir(parents=True, exist_ok=True)
         try:
             r = engine._emby_series_live_eps('12345', 'SR1', use_cache=False)
             assert (r['have_eps'], r['local_eps']) == (15, 15)
@@ -511,6 +514,8 @@ class TestExploreLiveEps:
         old = engine.emby_request
         emby.emby_request = fake
         state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        (state.L_ROOT / '剧集' / '剧' / 'S01').mkdir(parents=True, exist_ok=True)
+        (state.S_ROOT / '剧集' / '剧' / 'S01').mkdir(parents=True, exist_ok=True)
         try:
             r = engine._emby_series_live_eps('12345', 'SR1', use_cache=False)
             assert r['have_eps'] == 18
@@ -536,8 +541,11 @@ class TestExploreLiveEps:
         old = engine.emby_request
         emby.emby_request = fake
         state.EMBY_PATHS = engine.emby_path_map('/media/local', '/media/share')
+        (state.L_ROOT / '剧集' / '剧' / 'S01').mkdir(parents=True, exist_ok=True)
         try:
-            r = engine._emby_series_live_eps('12345', None, use_cache=False)
+            # Series 条目没有 ProviderIds.Tmdb，精确查询结果无法通过校验，
+            # 必须靠 fallback_id（探索索引里的 Emby 条目 id）才能定位到这部剧。
+            r = engine._emby_series_live_eps('12345', 'SR1', use_cache=False)
             assert r['have_eps'] == 1
         finally:
             emby.emby_request = old
@@ -580,3 +588,36 @@ class TestExploreLiveEps:
             assert engine._emby_series_live_eps('ERR_TMDB', None, use_cache=False) is None
         finally:
             emby.emby_request = old
+
+
+class TestCheckSubscriptionsSerialized:
+    """并发检查串行化：定时 / 网页 / bot 同时触发时，同一批新集只推送一次。"""
+
+    def test_concurrent_checks_notify_once(self):
+        with _Env() as env:
+            # 建立基线：库中已有 S01E01–E15 且已通知到位
+            env.episodes = _full({1: 15})
+            env.tmdb = _tmdb_info({1: 20}, last=(1, 15))
+            assert env.run() is None
+            assert env.state()['latest_ep'] == 'S01E15'
+
+            # 新入库 E16–E18，两个线程同时检查
+            env.episodes = _full({1: 18})
+            env.tmdb = _tmdb_info({1: 20}, last=(1, 18))
+            results = []
+            barrier = threading.Barrier(2)
+
+            def worker():
+                barrier.wait(timeout=10)
+                results.append(subscribe.check_subscriptions(send_notify=True))
+
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+            assert len(env.sent) == 1, env.sent                 # 只推送一次
+            assert env.state()['latest_ep'] == 'S01E18'
+            changed = [r for r in results if r.get('updates')]
+            assert len(changed) == 1                            # 只有一个调用者看到变化

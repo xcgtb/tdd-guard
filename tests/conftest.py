@@ -47,3 +47,12 @@ def isolated_state(tmp_path, monkeypatch):
 
 if pytest is not None:
     isolated_state = pytest.fixture(isolated_state)
+
+    @pytest.fixture(autouse=True)
+    def _reset_media_cache():
+        """app/media.py 有进程级 60 秒库清单缓存：每个测试前后清一次，避免一个测试
+        monkeypatch 的假 Emby 数据泄漏到下一个测试（与 emby._ep_cache 不同，它跨测试保留）。"""
+        from app import media
+        media.invalidate()
+        yield
+        media.invalidate()

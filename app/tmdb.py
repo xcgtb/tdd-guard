@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, morning, emby, lib, storage
+from . import state, morning, emby, lib, storage, media
 
 log = logging.getLogger('media_agent')
 
@@ -57,7 +57,6 @@ GENRE_MAP = {
     '脱口秀': {'movie': None,  'tv': 10767},
     '电视电影': {'movie': 10770, 'tv': None},
 }
-_LIVE_EPS_TTL = 15
 _PRUNE_INTERVAL = 3600          # tmdb_cache 表过期清理：每小时最多一次
 _last_prune = {'ts': 0.0}
 
@@ -142,16 +141,8 @@ def _build_emby_library_index():
     for item_type in ('Movie', 'Series'):
         media_key = 'tv' if item_type == 'Series' else 'movie'
         try:
-            data = emby.emby_request('/Items', {
-                'Recursive': 'true', 'IncludeItemTypes': item_type,
-                'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags',
-                'Limit': 50000,
-            }) or {}
-            for it in data.get('Items', []):
-                tmdb_id = str((it.get('ProviderIds') or {}).get('Tmdb') or '')
-                if not tmdb_id:
-                    _cp = emby.emby_path_to_container(it.get('Path', '') or '')
-                    tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
+            for it in media.library_items(item_type):
+                tmdb_id = media.tmdb_id_of(it, disk_lookup)
                 if not tmdb_id: continue
                 key = f'{media_key}:{tmdb_id}'
                 path = it.get('Path', '') or ''
@@ -381,30 +372,10 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
                 'local_total': local_total, 'tmdb_total': None, 'declared_total': None, 'diff': None,
                 'seasons': [{'season': sn, 'local': local_map[sn], 'tmdb': None, 'diff': None, 'status': 'unknown'} for sn in sorted(local_map)]}
     tmdb_status = tmdb_info.get('status', '') or ''
-    tmdb_map = {}
-    season_rows = tmdb_info.get('seasons') or []
-    for ss in season_rows:
-        sn = ss.get('season_number')
-        if sn is None or sn <= 0:
-            continue
-        ec = int(ss.get('episode_count', 0) or 0)
-        if ec <= 0:
-            continue
-        tmdb_map[int(sn)] = ec
+    # 已播集：唯一口径在 media.tmdb_aired_map（按 last_episode_to_air 裁剪、排除 S00）。
+    tmdb_map = media.tmdb_aired_map(tmdb_info)
     # 标称总集数（含未播集，与上游 TgtoDrive 显示口径一致，如 18/24）；仅用于展示，缺集判断仍按已播集
-    declared_total = sum(tmdb_map.values())
-    # 对于正在播出的最后一季，只统计 last_episode_to_air 之前已经播出的集；
-    # 更后的季直接忽略。没有该字段时保留旧口径。
-    last = tmdb_info.get('last_episode_to_air') or {}
-    try:
-        last_s = int(last.get('season_number') or 0)
-        last_e = int(last.get('episode_number') or 0)
-    except (TypeError, ValueError):
-        last_s = last_e = 0
-    if last_s > 0 and last_e > 0:
-        tmdb_map = {sn: (last_e if sn == last_s else ec)
-                    for sn, ec in tmdb_map.items()
-                    if sn < last_s or sn == last_s}
+    declared_total = media.tmdb_totals(tmdb_info)['declared']
     tmdb_total = sum(tmdb_map.values())
     season_diff = []
     for sn in sorted(set(local_map.keys()) | set(tmdb_map.keys())):
@@ -425,126 +396,34 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
             'diff': local_total - tmdb_total, 'seasons': season_diff}
 
 def _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id=None):
-    """按 TMDB ID 找 Emby Series 条目 ID 列表（实时，不读缓存）。
+    """按 TMDB ID 找 Emby Series 条目 ID 列表（薄包装 media.series_ids_by_tmdb）。
 
-    优先级与 _emby_series_latest_ep 一致：① AnyProviderIdEquals 精确查询；
-    ② 全量 Series 按 ProviderIds.Tmdb 过滤。两次都空时用 fallback_id 兜底
-    （调用方从探索索引拿到的 Emby 条目 id，避免 ProviderIds 缺失时查不到）。
+    精确查询结果逐条校验 ProviderIds.Tmdb（服务端可能忽略 AnyProviderIdEquals 返回全库），
+    再回退全量清单 / fallback_id 兜底。前身实现见 media._series_items_by_tmdb。
     """
-    ids = []
-    try:
-        data = emby.emby_request('/Items', {
-            'Recursive': 'true', 'IncludeItemTypes': 'Series',
-            'Fields': 'ProviderIds,Name', 'Limit': 50000,
-            'AnyProviderIdEquals': f'Tmdb.{series_tmdb_id}',
-        }) or {}
-        ids = [it.get('Id') for it in (data.get('Items') or []) if it.get('Id')]
-    except Exception as e:
-        log.warning('实时集数：Series 精确查询失败 %s: %s', series_tmdb_id, e)
-    if not ids:
-        try:
-            data = emby.emby_request('/Items', {
-                'Recursive': 'true', 'IncludeItemTypes': 'Series',
-                'Fields': 'ProviderIds,Name', 'Limit': 50000,
-            }) or {}
-            ids = [it.get('Id') for it in (data.get('Items') or [])
-                   if str((it.get('ProviderIds') or {}).get('Tmdb') or '') == str(series_tmdb_id)
-                   and it.get('Id')]
-        except Exception as e:
-            log.warning('实时集数：Series 全量过滤失败 %s: %s', series_tmdb_id, e)
-    if not ids and fallback_id:
-        ids = [fallback_id]
-    return ids
+    return media.series_ids_by_tmdb(series_tmdb_id, fallback_id)
 
 def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
-    """实时查某剧在 Emby 的分集集合（不读任何快照）。
+    """实时查某剧在 Emby 的分集集合（薄包装 media.series_live，不读任何快照）。
 
     返回 {'episodes': set[(季,集)], 'local_eps': int, 'share_eps': int,
           'have_eps': int, 'empty': bool}；完全查不到时返回 None。
-    ``empty=True`` 表示「查到了 Series 但集数为 0」——调用方应保留旧值而不是
-    用 0 覆盖（避免 Emby 短暂异常时把卡片打成「未入库」）。
-
-    只统计 ``emby_lib_of(path)`` 能识别的分集：与 _build_emby_library_overview
-    口径一致（只算落在本地/分享两个库根内的），顺带排除 CD2 已删源、Emby 还没
-    刷掉的幽灵条目。
+    ``empty=True`` 表示「查到了 Series 但可归属到两个库根的分集为 0」——调用方应保留
+    旧值而不是用 0 覆盖（避免 Emby 短暂异常时把卡片打成「未入库」）。
     """
-    if not series_tmdb_id:
+    live = media.series_live(series_tmdb_id, fallback_id, use_cache=use_cache)
+    if not live:
         return None
-    ck = str(series_tmdb_id)
-    if use_cache:
-        with state._live_eps_lock:
-            hit = state._live_eps_cache.get(ck)
-            if hit and time.time() - hit[0] < _LIVE_EPS_TTL:
-                return hit[1]
-
-    ids = _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id)
-    if not ids:
-        return None
-    have, local_eps, share_eps = set(), set(), set()
-    for sid in ids:
-        try:
-            data = emby.emby_request('/Items', {
-                'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-                'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,Path',
-                'Limit': 50000,
-            }) or {}
-        except Exception as e:
-            log.warning('实时集数：拉取分集失败 series=%s: %s', sid, e)
-            continue
-        for ep in (data.get('Items') or []):
-            try:
-                sn = int(ep.get('ParentIndexNumber') or 0)
-                en = int(ep.get('IndexNumber') or 0)
-                en_end = int(ep.get('IndexNumberEnd') or en)
-            except (TypeError, ValueError):
-                continue
-            if sn <= 0 or en <= 0:
-                continue
-            lib = state.emby_lib_of(ep.get('Path') or '')
-            if not lib:
-                continue  # 不在两个库根内：不算入库（与片库映射口径一致）
-            for e in range(en, max(en, en_end) + 1):
-                have.add((sn, e))
-                (local_eps if lib == 'local' else share_eps).add((sn, e))
-
-    out = {'episodes': have, 'local_eps': len(local_eps), 'share_eps': len(share_eps),
-           'have_eps': len(have), 'empty': not have}
-    if use_cache:
-        with state._live_eps_lock:
-            state._live_eps_cache[ck] = (time.time(), out)
-            # 轻量清理：只保留最近 2000 条，避免长跑进程内存无界增长
-            if len(state._live_eps_cache) > 2000:
-                for k, _v in sorted(state._live_eps_cache.items(), key=lambda kv: kv[1][0])[:500]:
-                    state._live_eps_cache.pop(k, None)
-    return out
+    local = live.get('local') or set()
+    share = live.get('share') or set()
+    have_n = len(local | share)
+    return {'episodes': live.get('episodes') or set(), 'local_eps': len(local), 'share_eps': len(share),
+            'have_eps': have_n, 'empty': have_n == 0}
 
 def _tmdb_aired_set_from_info(info):
     """从已取得的 TMDB /tv/{id} 原始响应计算已播 (季,集)，不重复请求 TMDB。"""
-    if not info:
-        return set()
-    aired_seasons = {}
-    for ss in (info.get('seasons') or []):
-        sn = ss.get('season_number')
-        if sn is None or sn <= 0:
-            continue
-        try:
-            aired_seasons[int(sn)] = int(ss.get('episode_count', 0) or 0)
-        except (TypeError, ValueError):
-            continue
-    last = info.get('last_episode_to_air') or {}
-    try:
-        last_s = int(last.get('season_number') or 0)
-        last_e = int(last.get('episode_number') or 0)
-    except (TypeError, ValueError):
-        last_s = last_e = 0
     aired = set()
-    for sn, ec in aired_seasons.items():
-        if last_s > 0 and last_e > 0:
-            if sn < last_s: n = ec
-            elif sn == last_s: n = last_e
-            else: continue
-        else:
-            n = ec
+    for sn, n in media.tmdb_aired_map(info).items():
         aired.update((sn, e) for e in range(1, n + 1))
     return aired
 
@@ -568,14 +447,15 @@ def _tmdb_series_info(tmdb_id):
             }
         last = info.get('last_episode_to_air') or {}
         aired = _tmdb_aired_set_from_info(info)
+        totals = media.tmdb_totals(info)
         return {
             'name': info.get('name'),
             'status': info.get('status', ''),
             'last_episode_to_air': last,
             'seasons': aired_seasons,
-            'total_episodes': len(aired),   # 已播集数（不含未播集 / S00）
-            'declared_total': sum(v['episode_count'] for v in aired_seasons.values()),   # 标称总集数（展示用）
-            'aired': aired,                 # {(季, 集)}
+            'total_episodes': totals['aired'],      # 已播集数（不含未播集 / S00）
+            'declared_total': totals['declared'],   # 标称总集数（展示用）
+            'aired': aired,                         # {(季, 集)}
         }
     except Exception as e:
         log.warning('TMDB 订阅查询失败 %s: %s', tmdb_id, e)

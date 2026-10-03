@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, tmdb, emby, lib, storage, tg
+from . import state, tmdb, emby, lib, storage, tg, media
 
 log = logging.getLogger('media_agent')
 
@@ -56,66 +56,23 @@ def _load_subscription_report(today_only=False):
     return data
 
 def _emby_series_latest_ep(series_tmdb_id: str):
-    """查 Emby 里某剧（按 tmdb_id）的所有副本并 union 分集。
+    """查 Emby 里某剧（按 tmdb_id）的所有副本并 union 分集（薄包装 media.series_live）。
 
-    同一剧可能同时存在本地/分享两个 Series 条目；旧版 Limit=1 会随机只取一边，
-    导致追更把另一边已有的集误报为缺集。1.6.3 对所有匹配 Series 聚合 (季,集)。
+    同一剧可能同时存在本地/分享两个 Series 条目；对所有匹配 Series 聚合 (季,集)。
+    数据访问统一走 media（含 ProviderIds 校验与幽灵过滤），这里只把结果整理成
+    追更状态机需要的形状；追更要求「现查现报」，不走 15 秒微缓存；完全查不到分集时
+    返回 None，交由 _disk_series_eps 兜底。
     """
-    if not series_tmdb_id: return None
-    items = []
-    try:
-        data = emby.emby_request('/Items', {
-            'Recursive': 'true', 'IncludeItemTypes': 'Series',
-            'Fields': 'ProviderIds,Name,Path', 'Limit': 50000,
-            'AnyProviderIdEquals': f'Tmdb.{series_tmdb_id}',
-        }) or {}
-        items = data.get('Items') or []
-    except Exception:
-        items = []
-    if not items:
-        try:
-            data = emby.emby_request('/Items', {
-                'Recursive': 'true', 'IncludeItemTypes': 'Series',
-                'Fields': 'ProviderIds,Name,Path', 'Limit': 50000,
-            }) or {}
-            items = [it for it in (data.get('Items') or [])
-                     if str((it.get('ProviderIds') or {}).get('Tmdb') or '') == str(series_tmdb_id)]
-        except Exception:
-            return None
-    if not items: return None
-    have = set(); created = {}; series_ids = []
-    names = []
-    for series in items:
-        sid = series.get('Id')
-        if not sid: continue
-        series_ids.append(sid)
-        if series.get('Name') and series.get('Name') not in names:
-            names.append(series.get('Name'))
-        try:
-            eps = emby.emby_request('/Items', {
-                'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
-                'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated,Path',
-                'Limit': 50000,
-            }) or {}
-        except Exception:
-            continue
-        for ep in eps.get('Items') or []:
-            try:
-                sn = int(ep.get('ParentIndexNumber') or 0)
-                en = int(ep.get('IndexNumber') or 0)
-                en_end = int(ep.get('IndexNumberEnd') or en)
-            except (TypeError, ValueError):
-                continue
-            if sn <= 0 or en <= 0: continue
-            for e in range(en, max(en, en_end) + 1):
-                have.add((sn, e))
-            created[(sn, en)] = max(created.get((sn, en), ''), ep.get('DateCreated') or '')
-    if not have: return None
+    live = media.series_live(series_tmdb_id, use_cache=False)
+    if not live or not live.get('episodes'):
+        return None
+    have = set(live['episodes'])
+    created = live.get('created') or {}
     sn, en = max(have)
     return {
-        'series_id': series_ids[0] if series_ids else None,
-        'series_ids': series_ids,
-        'series_name': names[0] if names else '',
+        'series_id': live.get('series_id'),
+        'series_ids': list(live.get('series_ids') or []),
+        'series_name': live.get('series_name') or '',
         'season': sn, 'episode': en,
         'date_created': created.get((sn, en), ''),
         'episodes': have,
@@ -219,7 +176,26 @@ def _fmt_ep_ranges(eps):
         parts = parts[:6] + [f'…等 {n} 集']
     return ', '.join(parts)
 
+_CHECK_LOCK = threading.Lock()
+CHECK_LOCK_TIMEOUT = 300
+
+
 def check_subscriptions(send_notify=True) -> dict:
+    """追更订阅检查入口：全局串行化，避免定时 / 网页 / bot 同时检查重复推送。
+
+    第二个调用者最多等 CHECK_LOCK_TIMEOUT 秒；拿到锁后基于第一个调用者已保存的
+    状态重新计算，通常得到「无变化」，因此不会重复发通知。等待超时返回 status='busy'。
+    """
+    if not _CHECK_LOCK.acquire(timeout=CHECK_LOCK_TIMEOUT):
+        log.warning('追更订阅检查繁忙：等待超过 %d 秒，本轮跳过', CHECK_LOCK_TIMEOUT)
+        return {'updates': [], 'total': 0, 'status': 'busy'}
+    try:
+        return _run_subscription_check(send_notify)
+    finally:
+        _CHECK_LOCK.release()
+
+
+def _run_subscription_check(send_notify=True) -> dict:
     """追更订阅检查（集合差集状态机）。
 
     核心口径（修复「吞通知 / 重复通知 / 跳集不报警」）：
