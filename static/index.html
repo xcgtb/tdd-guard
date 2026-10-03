@@ -2034,7 +2034,7 @@ function groupOf(id){
   return id;
 }
 var SET_GROUPS = [['rules','治理规则','策略 · 特别篇 · 白名单'],['auto','自动任务','入库监控 · 定时巡检'],['conn','服务连接','Emby · TMDB · Telegram']];
-var SET_MAP = ['rules','rules','auto','auto','rules','conn','conn'];
+var SET_MAP = ['rules','rules','rules','auto','auto','rules','conn','conn'];
 function buildSubnavs(){
   Object.keys(GROUPS).forEach(function(g){
     GROUPS[g].forEach(function(cur){
@@ -5829,7 +5829,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 
 .chip.active,.chip.active:hover{background:var(--accent);color:#fff;box-shadow:none;transform:none}
 .tag{background:var(--accent-soft);color:var(--accent);border-radius:8px}
 .tag .rm:hover{color:var(--err)}
-.subnav{background:var(--fill);border:0;border-radius:10px;padding:2px;-webkit-backdrop-filter:none;backdrop-filter:none;top:60px}
+.subnav{background:linear-gradient(var(--fill),var(--fill)),var(--bg);border:0;border-radius:10px;padding:2px;-webkit-backdrop-filter:none;backdrop-filter:none;top:60px}
 .subnav button{border-radius:8px;color:var(--text)}
 .subnav button.on{background:var(--seg-active);color:var(--text);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.14)}
 .map-bar{background:var(--bar);border:0;box-shadow:none;border-radius:14px;top:60px;
@@ -6118,6 +6118,10 @@ tbody tr:hover{background:var(--fill-soft)}
   .panel .btn:hover{filter:brightness(1.07)}
 }
 
+/* 白名单：添加按钮不换行；无标签时不占空位 */
+.tag-input .btn{flex:none;white-space:nowrap}
+.tag-input input{min-width:0;flex:1}
+.tag-list:empty{min-height:0;margin:0}
 </style>
 <script>
 /* 状态栏颜色跟随主题 */
