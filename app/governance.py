@@ -50,7 +50,7 @@ def _cover_strategy():
 
 
 def _cmp_versions(a_name, b_name):
-    """版本比较唯一入口（治理/去重共用）：只按 8 维画质对比规则，1(a优)/-1(b优)/0(平)。
+    """版本比较唯一入口（治理/去重共用）：只按 7 维画质对比规则，1(a优)/-1(b优)/0(平)。
     没有任何隐藏打分或兜底；平局由调用方按「平局保留本地/分享」决定。"""
     return compare_cover(a_name, b_name, _cover_strategy())
 
@@ -129,7 +129,7 @@ def _exempt_group_of(path, kws):
     return None, None
 
 def _share_wins(s_name, l_name):
-    """分享版本是否胜出：先看决策模型，再按 8 维对比，全部打平才用平局开关。"""
+    """分享版本是否胜出：先看决策模型，再按 7 维对比，全部打平才用平局开关。"""
     decision = _eng()._strategy()['decision']
     if decision == 'keep_local': return False
     if decision == 'keep_share': return True
@@ -137,7 +137,7 @@ def _share_wins(s_name, l_name):
     return r > 0 or (r == 0 and _tie_share_wins())
 
 def _ep_share_ok(s_name, l_name):
-    """剧集逐集：分享版是否「达标」——8 维分胜负；全部打平按「平局保留本地/分享」开关。
+    """剧集逐集：分享版是否「达标」——7 维分胜负；全部打平按「平局保留本地/分享」开关。
     （只用于画质优先下的逐集比较；选了「保留本地/保留分享」时剧集在 build 阶段按季直接取舍，不会走到这里。）"""
     r = _cmp_versions(s_name, l_name)
     return r > 0 or (r == 0 and _tie_share_wins())

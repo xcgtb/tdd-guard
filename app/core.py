@@ -154,13 +154,13 @@ def parse_emby_library(item: dict, is_movie: bool = False, categories: Sequence[
         return categories[6]
     return categories[9] if any(k in path for k in ['华语', '国产', '大陆', '港台']) else categories[10]
 
-# ═══════════════════ 画质对比规则（8 维，双库治理唯一的版本比较依据） ═══════════════════
+# ═══════════════════ 画质对比规则（7 维，双库治理唯一的版本比较依据） ═══════════════════
 # 对齐上游 TgtoDrive「影视整理」自定义规则。按规则顺序逐维比较：
 #   两个版本在该维度的档位序号不同 → 序号小（靠前）者胜；相同或都未识别 → 进入下一维。
 # 没有任何隐藏打分：能影响结果的只有「规则顺序 / 启用开关 / 档位顺序 / 发布组列表」。
 # 全部规则打平 = 平局，由「平局保留本地/分享」开关决定，这里不兜底。
 COVER_RULE_ORDER = ['release_group', 'source', 'resolution', 'dolby',
-                    'bitdepth', 'audio', 'fps', 'filesize']
+                    'bitdepth', 'audio', 'fps']
 
 COVER_RULE_META = {
     'release_group': {'label': '发布组优先级',
@@ -177,8 +177,6 @@ COVER_RULE_META = {
               'desc': '按文件名中识别到的最高音频规格比较；未识别格式排在最后。'},
     'fps': {'label': '帧率优先级',
             'desc': '59.94 / 29.97 / 23.976 会分别归入 60 / 30 / 24 档，未识别帧率排在最后。'},
-    'filesize': {'label': '文件大小优先级',
-                 'desc': 'STRM 取不到云端真实大小，此项在治理比较中恒被跳过（仅保留与上游一致的位置）。'},
 }
 
 COVER_TIERS_DEFAULT = {
@@ -190,13 +188,12 @@ COVER_TIERS_DEFAULT = {
     'audio': ['TrueHD Atmos / DTS:X', 'TrueHD / DTS-HD MA', 'LPCM / FLAC', 'Audio Vivid / AV3A',
               'DD+ Atmos', 'DD+ / E-AC-3', 'DTS', 'AC3 / DD', 'AAC', '其他 / 未识别'],
     'fps': ['60 / 59.94 fps', '50 fps', '30 / 29.97 fps', '25 fps', '24 / 23.976 fps', '其他 / 未识别'],
-    'filesize': ['大文件优先', '小文件优先'],
     'release_group': [],
 }
 
 COVER_ENABLED_DEFAULT = {
     'release_group': False, 'source': True, 'resolution': True, 'dolby': True,
-    'bitdepth': True, 'audio': True, 'fps': True, 'filesize': False,
+    'bitdepth': True, 'audio': True, 'fps': True,
 }
 
 
@@ -213,7 +210,7 @@ def cover_default_strategy():
 
 
 def normalize_cover(data):
-    """把任意（可能残缺/过期/来自旧版本）的配置规范成完整 8 条规则。
+    """把任意（可能残缺/过期/来自旧版本）的配置规范成完整 7 条规则。
 
     - 未知 key 丢弃，缺失的规则按默认补在末尾，重复 key 只取第一条；
     - 档位只允许「重排」：用户顺序里不存在于默认档位的项丢弃，默认里缺的项补在末尾
@@ -368,11 +365,11 @@ def _dim_rank(key, rule, dims):
 
 
 def _active_rules(cover):
-    """实际参与比较的规则：已启用、非 filesize（STRM 无真实大小）、有可比内容。"""
+    """实际参与比较的规则：已启用、有可比内容。"""
     out = []
     for r in (cover.get('rules') or []):
         key = r.get('key')
-        if r.get('enabled') is False or key == 'filesize':
+        if r.get('enabled') is False:
             continue
         if key == 'release_group':
             if not (r.get('groups') or []):
@@ -399,7 +396,7 @@ def explain_compare(a_name, b_name, cover):
 
     返回 {'result': 1|-1|0, 'decided_by': 规则key|None,
           'dims': [{key,label,a,b,verdict:'a'|'b'|'tie'|'skip', reason}...]}
-    verdict=skip 表示该维度未参与（关闭 / filesize / 发布组未维护列表）；
+    verdict=skip 表示该维度未参与（关闭 / 发布组未维护列表）；
     决出胜负之后的维度标 'after'（不再比较）。
     """
     da, db = recognize_dims(a_name), recognize_dims(b_name)
@@ -414,8 +411,7 @@ def explain_compare(a_name, b_name, cover):
         row['a'], row['b'] = ta, tb
         if id(r) not in active:
             row['verdict'] = 'skip'
-            row['reason'] = ('已关闭' if r.get('enabled') is False else
-                             'STRM 无真实大小' if key == 'filesize' else '未维护发布组列表')
+            row['reason'] = '已关闭' if r.get('enabled') is False else '未维护发布组列表'
         elif decided is not None:
             row['verdict'] = 'after'
             row['reason'] = '上一维已分胜负'

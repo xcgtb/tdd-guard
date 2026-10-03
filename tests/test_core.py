@@ -110,7 +110,7 @@ class TestTitleKey:
         assert k1 != k3
 
 
-# ═══════════════════ 画质对比规则（8 维） ═══════════════════
+# ═══════════════════ 画质对比规则（7 维） ═══════════════════
 class TestCoverCompare:
     def cov(self, **over):
         c = core.cover_default_strategy()
@@ -141,9 +141,11 @@ class TestCoverCompare:
     def test_unrecognized_ranks_last(self):
         assert core.compare_cover('a.1080p.mkv', 'a.mkv', self.cov(source=False)) == 1
 
-    def test_filesize_always_skipped(self):
-        c = self.cov(filesize=True)
-        assert core.compare_cover('a.mkv', 'b.mkv', c) == 0
+    def test_filesize_rule_removed(self):
+        assert 'filesize' not in [r['key'] for r in core.cover_default_strategy()['rules']]
+        # 旧配置里残留的 filesize 规则读取时被丢弃
+        n = core.normalize_cover({'rules': [{'key': 'filesize', 'enabled': True}]})
+        assert 'filesize' not in [r['key'] for r in n['rules']] and len(n['rules']) == 7
 
     def test_release_group_needs_list(self):
         c = self.cov()
@@ -164,7 +166,7 @@ class TestCoverCompare:
         assert e['result'] == 1 and e['decided_by'] == 'resolution'
         v = {d['key']: d['verdict'] for d in e['dims']}
         assert v['source'] == 'tie' and v['resolution'] == 'a' and v['dolby'] == 'after'
-        assert v['filesize'] == 'skip' and v['release_group'] == 'skip'
+        assert v['release_group'] == 'skip' and 'filesize' not in v
 
     def test_normalize_repairs_partial_config(self):
         n = core.normalize_cover({'allow_wash': False, 'rules': [

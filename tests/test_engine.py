@@ -959,19 +959,19 @@ class TestMatchStrategy:
 class TestCoverRulesInGovernance:
     def test_package_import_path_uses_cover_engine(self):
         """回归：容器以 `app.main` 方式加载，裸 `from core import` 会静默失效。
-        子进程里只放项目根目录（不放 app/），确认 8 维引擎真的在跑。"""
+        子进程里只放项目根目录（不放 app/），确认 7 维引擎真的在跑。"""
         import subprocess
         code = (
             "import app.governance as g, app.config as c;"
             "assert g._cmp_versions('a.1080p.BluRay.mkv','a.2160p.WEB-DL.mkv')==1;"
-            "assert len(c.get_cover_strategy()['rules'])==8;print('ok')")
+            "assert len(c.get_cover_strategy()['rules'])==7;print('ok')")
         r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
                            cwd=str(Path(__file__).parent.parent),
                            env=dict(os.environ, AGENT_DATA=str(_TMP / 'data')))
         assert r.returncode == 0 and 'ok' in r.stdout, r.stderr
 
     def test_season_tie_follows_tie_switch(self):
-        """剧集逐集 8 维全打平：默认剔除本地；开启「平局保留本地」则剔除分享"""
+        """剧集逐集 7 维全打平：默认剔除本地；开启「平局保留本地」则剔除分享"""
         for keep_local, kind in ((False, 'loc'), (True, 'shr')):
             _reset_libs()
             _patch_strategy({'multi_season_protect': 'off', 'tie_keep_local': keep_local})

@@ -26,7 +26,7 @@ def api_get_strategy():
 
 @router.get('/api/cover-strategy', dependencies=[Depends(auth)])
 def api_get_cover():
-    """画质对比规则（8 维）。"""
+    """画质对比规则（7 维）。"""
     return {'status': 'success', 'strategy': get_cover_strategy()}
 
 

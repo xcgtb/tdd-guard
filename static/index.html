@@ -4437,7 +4437,7 @@ function onTieLocalToggle(cb){
   saveStrategy();
 }
 
-/* ═══════════ 画质对比规则编辑器（8 维，对齐上游 TgtoDrive） ═══════════ */
+/* ═══════════ 画质对比规则编辑器（7 维，对齐上游 TgtoDrive） ═══════════ */
 var currentCover = null;
 async function loadCoverStrategy(){
   try {
@@ -4457,7 +4457,7 @@ function renderCoverRules(){
   var rules = currentCover.rules || [];
   el.innerHTML = rules.map(function(r, i){
     var k = jsarg(r.key);
-    var skipped = r.key === 'filesize';
+    var skipped = false;
     var body = '';
     if (r.key === 'release_group') {
       body = (r.groups || []).map(function(g, gi){

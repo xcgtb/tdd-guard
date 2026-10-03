@@ -33,7 +33,7 @@ DEFAULTS = {
     'strategy_multi_season_protect': 'compare',  # off | compare | full —— 多季合集保护档位（compare 即“开启”）
     'strategy_tie_keep_local':       os.environ.get('TIE_KEEP_LOCAL', '0'),
     'strategy_season_ratio':         '0.9',     # 剧集分享达标率阈值（0.5~1.0）：共同集里分享达标的占比 ≥ 此值才删本地
-    'strategy_cover': '',  # 画质对比规则（8 维）JSON；空 = 默认规则
+    'strategy_cover': '',  # 画质对比规则（7 维）JSON；空 = 默认规则
     'strategy_exempt_keywords':      '',
     'strategy_special_action':       'compare', # compare | ignore | delete  —— 特别篇 S00 策略
     'ingest_quiet_minutes':          '15',      # 入库静默期（分钟）：目录 15 分钟内有新入库的标题暂不进入治理队列；0 = 关闭
@@ -305,7 +305,7 @@ def get_ingest_cfg() -> dict:
         'interval_min': int(cfg.get('ingest_interval_min') or 5),
     }
 
-# ═══════════ 画质对比规则（8 维；双库治理比较版本的唯一依据） ═══════════
+# ═══════════ 画质对比规则（7 维；双库治理比较版本的唯一依据） ═══════════
 def get_cover_strategy() -> dict:
     """读取画质对比规则；无配置/解析失败时回退默认，并规范成完整 8 条。"""
     raw = load_config().get('strategy_cover') or ''
