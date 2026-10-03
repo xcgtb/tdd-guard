@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
 """双库治理：扫描 / 清理 / 计划 / 巡检 / 残留 / 手动完结（v1.7.7 自 main.py 拆出）
 
-变化点：/api/plans 列表改走 SQLite 索引（先 sync 磁盘文件再查库），
-不再逐文件读取 plan_*.json；单个计划详情仍经 engine.load_plan（文件优先、库兜底）。
+计划、手动完结标记等状态全部存 SQLite（app/storage.py），不再读写 state/ 下的 JSON 文件。
 """
-import json, time, threading
+import time, threading
 from fastapi import APIRouter, Depends, HTTPException
 
-try:
-    from app.routers.deps import auth, engine, scheduler, Args, spawn
-except ImportError:
-    from routers.deps import auth, engine, scheduler, Args, spawn
+from app import state, governance, wash, morning, storage, scheduler, sync
+from app.routers.deps import auth, Args, spawn
 
 router = APIRouter()
 
@@ -18,7 +15,7 @@ router = APIRouter()
 @router.get('/api/plan/{plan_id}', dependencies=[Depends(auth)])
 def api_get_plan(plan_id: str):
     # 查看单个 Plan 详情（白皮书 §17）
-    data = engine.load_plan(plan_id)
+    data = governance.load_plan(plan_id)
     if data is None:
         raise HTTPException(404, 'Plan 不存在或格式过旧')
     return {'status': 'success', 'plan': data}
@@ -26,20 +23,16 @@ def api_get_plan(plan_id: str):
 
 @router.get('/api/plans', dependencies=[Depends(auth)])
 def api_list_plans(limit: int = 20):
-    # 列出最近 Plan（白皮书 §17）：SQLite 索引查询，先同步磁盘上手工写入/变更的文件
+    # 列出最近 Plan（白皮书 §17）：SQLite 查询
     if limit < 1: limit = 1
     if limit > 100: limit = 100
-    try:
-        engine.db_sync_plans_from_disk()
-        plans = engine.db_list_plans(limit)
-    except Exception:
-        plans = []
+    plans = storage.db_list_plans(limit)
     return {'status': 'success', 'plans': plans}
 
 
 @router.post('/api/check', dependencies=[Depends(auth)])
 def api_check():
-    t = spawn('inter_check', engine.ACTIONS['inter_check'], Args())
+    t = spawn('inter_check', governance.action_inter_check, Args())
     return {'task_id': t.id, 'status': 'success'}
 
 
@@ -50,27 +43,12 @@ def api_clean(body: dict = None):
     dry = bool(body.get('dry_run', False))
     if not plan_id:
         raise HTTPException(400, '必须提供 plan_id（请先执行诊断）')
-    t = spawn('inter_clean', engine.ACTIONS['inter_clean'], Args(plan=plan_id, dry_run=dry))
+    t = spawn('inter_clean', governance.action_inter_clean, Args(plan=plan_id, dry_run=dry))
     return {'task_id': t.id, 'dry_run': dry, 'status': 'success'}
 
 
-_manual_done_lock = threading.Lock()
-
-
-def _manual_done_path():
-    return engine.MANUAL_DONE_FILE
-
-
 def _read_manual_done() -> dict:
-    return engine.read_manual_done()
-
-
-def _write_manual_done(data: dict):
-    p = _manual_done_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix('.tmp')
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(p)
+    return morning.read_manual_done()
 
 
 @router.get('/api/manual_done', dependencies=[Depends(auth)])
@@ -85,16 +63,22 @@ def api_set_manual_done(body: dict = None):
     sid = str(body.get('id') or '').strip()
     if not sid:
         return {'status': 'error', 'message': '缺少剧集 id'}
-    with _manual_done_lock:
-        data = _read_manual_done()
-        if body.get('done', True):
-            data[sid] = {'name': str(body.get('name') or '')[:200], 'ts': int(time.time())}
+    done = bool(body.get('done', True))
+    name = str(body.get('name') or '')[:200]
+
+    def _apply(data):
+        data = data if isinstance(data, dict) else {}
+        if done:
+            data[sid] = {'name': name, 'ts': int(time.time())}
         else:
             data.pop(sid, None)
-        try:
-            _write_manual_done(data)
-        except OSError as e:
-            return {'status': 'error', 'message': '保存失败：%s' % e}
+        return data
+    # 原子读-改-写（替代原来的进程内锁 + 整文件重写）；库不可用时返回 None
+    data = storage.db_doc_update(storage.DOC_MANUAL_DONE, _apply, None)
+    if data is None:
+        return {'status': 'error', 'message': '保存失败（数据库不可用）'}
+    # 「已完结」标记影响探索页/片库映射的完结判断：广播 library（蕴含 explore）
+    sync.bump('library', reason='manual_done')
     return {'status': 'success', 'items': data}
 
 
@@ -107,7 +91,7 @@ def api_orphans(max_depth: int = 3):
     if not _orphan_lock.acquire(blocking=False):
         return {'status': 'busy', 'message': '已有孤儿扫描任务在跑，请稍候'}
     try:
-        return engine.action_scan_orphans(Args(max_depth=max_depth))
+        return wash.action_scan_orphans(Args(max_depth=max_depth))
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
     finally:
@@ -120,7 +104,7 @@ def api_clean_orphan_dirs(body: dict = None):
     body = body or {}
     paths = body.get('paths') or []
     dry_run = bool(body.get('dry_run', True))
-    return engine.clean_orphan_dirs(paths, dry_run=dry_run)
+    return wash.clean_orphan_dirs(paths, dry_run=dry_run)
 
 
 @router.post('/api/wash/empty-dirs/scan', dependencies=[Depends(auth)])
@@ -134,7 +118,7 @@ def api_wash_empty_scan(body: dict = None):
     if not _orphan_lock.acquire(blocking=False):
         raise HTTPException(409, '有扫描/清理正在进行，请稍后再试')
     try:
-        return engine.scan_empty_dirs(path, limit=limit)
+        return wash.scan_empty_dirs(path, limit=limit)
     finally:
         _orphan_lock.release()
 
@@ -149,25 +133,25 @@ def api_wash_empty_clean(body: dict = None):
     if not _orphan_lock.acquire(blocking=False):
         raise HTTPException(409, '有扫描/清理正在进行，请稍后再试')
     try:
-        return engine.clean_empty_dirs(paths)
+        return wash.clean_empty_dirs(paths)
     finally:
         _orphan_lock.release()
 
 
 @router.get('/api/governance/latest', dependencies=[Depends(auth)])
 def api_gov_latest():
-    d = engine.load_latest_scan()
+    d = governance.load_latest_scan()
     if not d or not isinstance(d.get('result'), dict):
         return {'status': 'success', 'found': False}
     ts = float(d.get('ts') or 0)
     age = time.time() - ts
-    ttl = engine.PLAN_TTL
+    ttl = state.PLAN_TTL
     pid = d.get('plan_id')
     usable, reason = True, ''
     if age > ttl:
         usable, reason = False, 'expired'
     elif pid:
-        p = engine.load_plan(pid)
+        p = governance.load_plan(pid)
         st = (p or {}).get('state') if p else 'missing'
         if st == 'executing':
             usable, reason = False, 'running'
@@ -184,24 +168,24 @@ def api_governance_summary():
     """双库治理单一事实入口：扫描事实 + 片库快照 + 入库事实 + 当前规则指纹。
     页面不再分别拼接多个接口后自行判断口径。"""
     try:
-        latest = engine.load_latest_scan() or {}
+        latest = governance.load_latest_scan() or {}
         result = latest.get('result') if isinstance(latest.get('result'), dict) else {}
-        consistency = engine.daily_consistency_snapshot(force_refresh=False)
+        consistency = morning.daily_consistency_snapshot(force_refresh=False)
         ts = float(latest.get('ts') or 0)
         age = max(0, time.time() - ts) if ts else None
-        ttl = engine.PLAN_TTL
+        ttl = state.PLAN_TTL
         pid = latest.get('plan_id') or result.get('plan_id')
-        plan = engine.load_plan(pid) if pid else None
-        state = (plan or {}).get('state') if plan else ('missing' if pid else 'none')
+        plan = governance.load_plan(pid) if pid else None
+        plan_state = (plan or {}).get('state') if plan else ('missing' if pid else 'none')
         current_rule_sig = str((consistency or {}).get('rule_sig') or '')
         scan_rule_sig = str(latest.get('rule_sig') or result.get('rule_sig') or '')
         rule_aligned = (not scan_rule_sig or not current_rule_sig or scan_rule_sig == current_rule_sig)
         if plan and plan.get('rule_sig') and current_rule_sig:
             rule_aligned = rule_aligned and plan.get('rule_sig') == current_rule_sig
-        usable = bool(latest) and bool(ts) and age <= ttl and (state in ('pending', 'none')) and rule_aligned
+        usable = bool(latest) and bool(ts) and age <= ttl and (plan_state in ('pending', 'none')) and rule_aligned
         return {'status':'success', 'schema_version':2,
                 'scan': {'found': bool(latest), 'ts': ts, 'age_sec': int(age or 0),
-                         'plan_id': pid or '', 'plan_state': state, 'usable': usable,
+                         'plan_id': pid or '', 'plan_state': plan_state, 'usable': usable,
                          'ttl_sec': int(ttl), 'remaining_sec': max(0, int(ttl-(age or 0))) if ts else 0,
                          'rule_sig': scan_rule_sig, 'current_rule_sig': current_rule_sig,
                          'rule_aligned': rule_aligned,
@@ -218,4 +202,6 @@ def api_get_gov_auto():
 
 @router.post('/api/governance/auto', dependencies=[Depends(auth)])
 def api_set_gov_auto(body: dict = None):
-    return {'status': 'success', 'settings': scheduler.gov_auto_update(body or {})}
+    settings = scheduler.gov_auto_update(body or {})
+    sync.bump('governance', reason='gov_auto')
+    return {'status': 'success', 'settings': settings}

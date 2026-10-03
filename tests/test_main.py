@@ -19,14 +19,6 @@ import tempfile
 import time
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_main_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-os.environ['INGEST_QUIET_MINUTES'] = '0'
 os.environ['WEB_USER'] = 'admin'
 os.environ['WEB_PASSWORD'] = 'test-pass-123'
 
@@ -121,7 +113,7 @@ class TestImportHasNoSideEffects:
 # ═══════════════════ 生命周期 + 任务总线（HTTP 层） ═══════════════════
 import threading  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from app import scheduler, tasks  # noqa: E402
+from app import governance, scheduler, tasks  # noqa: E402
 
 _AUTH = ('admin', 'test-pass-123')
 
@@ -150,8 +142,9 @@ class TestLifespan:
 class TestTaskBus:
     def test_second_scan_is_rejected_with_429(self):
         gate = threading.Event()
-        orig = main.engine.ACTIONS['inter_check']
-        main.engine.ACTIONS['inter_check'] = lambda args: gate.wait(5) and {'status': 'success'}
+        # 路由在调用时取 governance.action_inter_check，替身打在所属模块上
+        orig = governance.action_inter_check
+        governance.action_inter_check = lambda args: gate.wait(5) and {'status': 'success'}
         try:
             c = TestClient(main.app)
             r1 = c.post('/api/check', auth=_AUTH)
@@ -163,7 +156,7 @@ class TestTaskBus:
             assert cur['id'] == tid and cur['source'] == 'web'
         finally:
             gate.set()
-            main.engine.ACTIONS['inter_check'] = orig
+            governance.action_inter_check = orig
         assert tasks.manager.get(tid).done.wait(5)
         assert c.get(f'/api/task/{tid}', auth=_AUTH).json()['status'] == 'success'
 

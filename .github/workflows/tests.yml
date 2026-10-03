@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest httpx
 
-      - name: Static check (undefined names / broken _eng() refs)
+      - name: Static check (undefined names / _eng / dual imports / module attrs)
         run: python3 scripts/static_check.py
 
       - name: Release check

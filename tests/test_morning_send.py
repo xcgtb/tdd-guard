@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import app.morning as morning
+from app import morning, tg
 
 
 class _Cfg:
@@ -9,7 +9,7 @@ class _Cfg:
         self.marked.append(value)
 
 
-class _Eng:
+class _Tg:
     def __init__(self):
         self.sent = []
     def notify_telegram(self, text):
@@ -18,25 +18,25 @@ class _Eng:
 
 
 def _run(mark_sent):
-    cfg = _Cfg(); eng = _Eng()
-    old_cfg, old_eng, old_build = morning._cfg, morning._eng, morning.build_morning_report
+    cfg = _Cfg(); fake_tg = _Tg()
+    old_cfg, old_notify, old_build = morning._cfg, tg.notify_telegram, morning.build_morning_report
     try:
         morning._cfg = cfg
-        morning._eng = lambda: eng
+        tg.notify_telegram = fake_tg.notify_telegram   # morning 在调用时取 tg.notify_telegram
         morning.build_morning_report = lambda items, force_refresh=False: 'cached'
         assert morning.send_morning_report(['stats'], force_refresh=False, mark_sent=mark_sent) is True
-        return cfg, eng
+        return cfg, fake_tg
     finally:
-        morning._cfg, morning._eng, morning.build_morning_report = old_cfg, old_eng, old_build
+        morning._cfg, tg.notify_telegram, morning.build_morning_report = old_cfg, old_notify, old_build
 
 
 def test_manual_send_does_not_mark_daily_send():
-    cfg, eng = _run(False)
+    cfg, fake_tg = _run(False)
     assert cfg.marked == []
-    assert eng.sent == ['cached']
+    assert fake_tg.sent == ['cached']
 
 
 def test_scheduled_send_marks_daily_send():
-    cfg, eng = _run(True)
+    cfg, fake_tg = _run(True)
     assert len(cfg.marked) == 1
-    assert eng.sent == ['cached']
+    assert fake_tg.sent == ['cached']

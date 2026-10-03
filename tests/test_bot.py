@@ -12,18 +12,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_bot_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-os.environ['TG_ALLOWED_USERS'] = ''  # 白名单从 config.json 读，不从这个环境变量的默认值读
-
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import bot  # noqa: E402
-import config  # noqa: E402
+from app import bot, config, engine, storage, morning, subscribe
+from app.tgmsg import html as th
+from app.tgmsg import transport as tg_transport
 
 
 class TestIsAllowed:
@@ -76,8 +67,8 @@ class TestRestartDoesNotLeakPollers:
                 return {'ok': True, 'result': {'username': 'test_bot'}}
             return {'ok': True, 'result': {}}
 
-        orig_api, orig_cfg = bot._api, bot.load_config
-        bot._api = fake_api
+        orig_api, orig_cfg = tg_transport.api, bot.load_config
+        tg_transport.api = fake_api
         bot.load_config = lambda: {'telegram_bot_token': 'x', 'telegram_allowed_users': ''}
         try:
             bot.start()
@@ -90,7 +81,7 @@ class TestRestartDoesNotLeakPollers:
         finally:
             bot.stop()
             _time.sleep(2.5)
-            bot._api, bot.load_config = orig_api, orig_cfg
+            tg_transport.api, bot.load_config = orig_api, orig_cfg
         assert _alive('tg-bot') == 0
 
 
@@ -113,23 +104,19 @@ class TestCleanResultRendering:
 
 class TestLatestPendingPlan:
     def test_picks_newest_pending_not_newest_file(self):
-        """计划被标记 done/expired 时会重写文件、mtime 变新；/clean 不能因此选中已执行过的计划"""
-        engine = bot.engine
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        for f in engine.STATE_DIR.glob('plan_*.json'):
-            f.unlink()
+        """计划被标记 done/expired 时会更新记录；/clean 不能因此选中已执行过的计划"""
+        storage.db_purge_plans(float('inf'))
         now = _time.time()
 
         def write(pid, state, ts):
-            (engine.STATE_DIR / f'plan_{pid}.json').write_text(_json.dumps({
+            storage.db_save_plan({
                 'schema_version': 2, 'id': pid, 'ts': ts, 'state': state,
-                'stats': {}, 'actions': []}), encoding='utf-8')
+                'stats': {}, 'actions': []})
         write('aaaa1111', 'pending', now - 100)
         write('cccc3333', 'pending', now - engine.PLAN_TTL - 60)  # 已过期
-        write('bbbb2222', 'done', now - 50)                        # 最后写入、mtime 最新
+        write('bbbb2222', 'done', now - 50)                        # 最后写入、更新时间最新
         assert bot._latest_pending_plan_id() == 'aaaa1111'
-        for f in engine.STATE_DIR.glob('plan_*.json'):
-            f.unlink()
+        storage.db_purge_plans(float('inf'))
         assert bot._latest_pending_plan_id() is None
 
 
@@ -181,12 +168,10 @@ class TestBotUsesSharedTaskBus:
 
 # ═══════════════════ 卡片生命周期 / 命令删除 / 状态 ═══════════════════
 def _write_plan(pid, state='pending', age=0, rule_sig=None):
-    engine = bot.engine
-    engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (engine.STATE_DIR / f'plan_{pid}.json').write_text(_json.dumps({
+    assert storage.db_save_plan({
         'schema_version': 2, 'id': pid, 'ts': _time.time() - age, 'state': state,
-        'rule_sig': rule_sig if rule_sig is not None else bot.engine._current_rule_snapshot()['sig'],
-        'stats': {}, 'actions': [{'action_id': 'a', 'text': 'x'}]}), encoding='utf-8')
+        'rule_sig': rule_sig if rule_sig is not None else engine._current_rule_snapshot()['sig'],
+        'stats': {}, 'actions': [{'action_id': 'a', 'text': 'x'}]})
 
 
 class _Rec:
@@ -219,7 +204,7 @@ class TestPlanCardLifecycle:
     def test_expired_plan_clean_do_shows_rescan_instead_of_hanging(self):
         """核心回归：计划过期后点「确认执行」，卡片必须就地变成「已过期 + 重新扫描」，
         不能停在「正在执行清理...」"""
-        _write_plan('eeee0001', age=bot.engine.PLAN_TTL + 60)
+        _write_plan('eeee0001', age=engine.PLAN_TTL + 60)
         r = _Rec()
         try:
             bot._handle_callback('tok', _cb('clean_do:eeee0001'))
@@ -231,7 +216,7 @@ class TestPlanCardLifecycle:
         assert 'cmd:check' in _buttons(kb) and 'dismiss' in _buttons(kb)
         assert not any('正在执行' in e[1] for e in r.edits)
         # 并且落盘成 expired，不会再被当成可执行计划
-        assert bot.engine.load_plan('eeee0001')['state'] == 'expired'
+        assert engine.load_plan('eeee0001')['state'] == 'expired'
 
     def test_clean_ask_on_used_plan_is_blocked(self):
         _write_plan('eeee0002', state='done')
@@ -289,7 +274,7 @@ class TestPlanCardLifecycle:
     def test_plan_ttl_left_tracks_expiry(self):
         _write_plan('eeee0004', age=100)
         left = bot._plan_ttl_left('eeee0004')
-        assert bot.engine.PLAN_TTL - 110 <= left <= bot.engine.PLAN_TTL - 90
+        assert engine.PLAN_TTL - 110 <= left <= engine.PLAN_TTL - 90
         assert bot._plan_ttl_left('ffffffff', default=123) == 123
 
 
@@ -338,12 +323,13 @@ class TestDeleteQueue:
     def test_cleanup_does_not_hold_lock_during_network_delete(self):
         """以前 deleteMessage 的网络调用在 _DELETE_LOCK 里；网络一卡，_send / status() 全部被堵死"""
         started, release = _threading.Event(), _threading.Event()
-        saved = (bot._try_delete, bot.load_config)
+        saved = (bot._try_delete, bot.load_config, bot._state.get('token'))
 
         def slow_delete(token, chat_id, mid):
             started.set(); release.wait(5); return True
         bot._try_delete = slow_delete
-        bot.load_config = lambda: {'telegram_bot_token': 'tok'}
+        # 清理线程用 _state 里缓存的 token（不再每 2 秒 load_config），这里直接注入
+        bot._state['token'] = 'tok'
         with bot._DELETE_LOCK:
             bot._delete_queue[:] = [(_time.time() - 1, 1, 4242)]
         bot._state['running'] = True
@@ -361,7 +347,7 @@ class TestDeleteQueue:
             release.set()
             bot._state['running'] = False
             t.join(5)
-            bot._try_delete, bot.load_config = saved
+            bot._try_delete, bot.load_config, bot._state['token'] = saved
             with bot._DELETE_LOCK:
                 bot._delete_queue[:] = []
 
@@ -414,3 +400,111 @@ class TestBotStatus:
         assert bot._is_timeout(TimeoutError('x'))
         assert bot._is_timeout(Exception('The read operation timed out'))
         assert not bot._is_timeout(Exception('HTTP Error 409: Conflict'))
+
+
+# ═══════════════════ 命令表 / 任务总线 / 转义 / 线程池 ═══════════════════
+def _cmd(text, patches=()):
+    """驱动一条命令，返回 (send 文本列表, 还原函数)。"""
+    out = []
+    saved = (bot._send, bot._edit, bot.load_config)
+    bot._send = lambda token, chat_id, t, *a, **k: (out.append(t), {'ok': True})[1]
+    bot._edit = lambda token, chat_id, m, t, kb=None, **k: (out.append(t), {'ok': True})[1]
+    bot.load_config = lambda: {'telegram_bot_token': 'tok', 'telegram_allowed_users': '1'}
+    originals = [((obj, name), getattr(obj, name)) for obj, name, _v in patches]
+    for obj, name, val in patches:
+        setattr(obj, name, val)
+    try:
+        bot._handle_command('tok', {'chat': {'id': 1}, 'from': {'id': 1},
+                                    'text': text, 'message_id': 1})
+    finally:
+        bot._send, bot._edit, bot.load_config = saved
+        for (obj, name), val in originals:
+            setattr(obj, name, val)
+    return out
+
+
+class TestCommandTable:
+    def test_status_is_registered(self):
+        assert '/status' in ['/' + c['command'] for c in bot.COMMANDS]
+        assert any(c['command'] == 'status' for c in bot.MY_COMMANDS)
+
+    def test_unknown_command_reply_is_valid_html(self):
+        out = _cmd('/<x>')
+        assert out, '未知命令应回复'
+        reply = str(out[-1])
+        assert th.tg_html_problems(reply) == [], reply
+        assert '<script>' not in reply
+
+    def test_dispatch_table_covers_commands(self):
+        for c in bot.COMMANDS:
+            assert c['action'] in bot._ACTIONS or c.get('special') == 'search'
+
+
+class TestMorningCommand:
+    def test_morning_does_not_mark_daily_sent(self):
+        calls = {}
+        orig = morning.send_morning_report
+        morning.send_morning_report = (
+            lambda items, force_refresh=False, mark_sent=True:
+            (calls.update(items=items, force_refresh=force_refresh, mark_sent=mark_sent), True)[1])
+        try:
+            _cmd('/morning', patches=[(bot._cfg, 'get_morning_report', lambda: {'items': ['stats']})])
+            deadline = _time.time() + 5
+            while 'mark_sent' not in calls and _time.time() < deadline:
+                _time.sleep(0.05)
+        finally:
+            morning.send_morning_report = orig
+        assert calls.get('mark_sent') is False, calls
+        assert calls.get('force_refresh') is False, calls
+
+
+class TestSubCheckUsesTaskBus:
+    def test_sub_check_spawns_task(self):
+        spawned = []
+        orig_spawn = bot.tasks.manager.spawn
+        orig_check = subscribe.check_subscriptions
+
+        def spy(kind, fn, *a, **k):
+            spawned.append(kind)
+            return orig_spawn(kind, fn, *a, **k)
+        bot.tasks.manager.spawn = spy
+        subscribe.check_subscriptions = lambda send_notify=True: {'updates': [], 'total': 0}
+        try:
+            _cmd('/sub check')
+            deadline = _time.time() + 5
+            while not spawned and _time.time() < deadline:
+                _time.sleep(0.05)
+            # 任务跑完再放行，避免污染后续用例的「忙碌中」状态
+            while bot.tasks.manager.running() is not None and _time.time() < deadline:
+                _time.sleep(0.05)
+        finally:
+            bot.tasks.manager.spawn = orig_spawn
+            subscribe.check_subscriptions = orig_check
+        assert spawned == ['bot_sub_check'], spawned
+
+
+class TestUpdatePool:
+    def test_many_concurrent_updates_use_at_most_four_workers(self):
+        gate = _threading.Event()
+        seen = []
+        orig = bot._handle_update
+
+        def slow(token, upd):
+            seen.append(upd)
+            gate.wait(5)
+        bot._handle_update = slow
+        try:
+            for i in range(50):
+                bot._submit_update('tok', {'update_id': i})
+            _time.sleep(0.6)
+            workers = [t for t in _threading.enumerate()
+                       if t.name.startswith('tg-update') and t.is_alive()]
+            assert 0 < len(workers) <= 4, [t.name for t in workers]
+            assert len(seen) <= bot.MAX_PENDING_UPDATES
+        finally:
+            gate.set()
+            bot._handle_update = orig
+            deadline = _time.time() + 5
+            while bot._pending_updates and _time.time() < deadline:
+                _time.sleep(0.05)
+        assert bot._pending_updates == 0

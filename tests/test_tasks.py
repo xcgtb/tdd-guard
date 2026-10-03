@@ -13,8 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import tasks  # noqa: E402
+from app import tasks
 
 
 def _wait(t, timeout=5):

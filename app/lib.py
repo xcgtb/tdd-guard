@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """磁盘扫描与治理身份（Lib 类 + 双库遍历缓存 + tmdb 磁盘索引），从 engine.py 拆出。
 
-注意：L_ROOT / S_ROOT / _CATEGORY_NAMES 是 engine 里的运行时可变全局，这里一律通过
-_engine_ns() 惰性访问，保证 reload_config / monkeypatch 能穿透。
+注意：L_ROOT / S_ROOT / _CATEGORY_NAMES 是 state 里的运行时可变全局，这里一律在调用时
+取 state.X，保证 reload_config / monkeypatch 能穿透。
 """
 import os
 import re
@@ -12,27 +12,10 @@ import threading
 from pathlib import Path
 from collections import defaultdict
 
+from .core import (parse_season_dir, get_ep, governance_title_key)
+from . import state
+
 log = logging.getLogger('media_agent')
-
-try:
-    from .core import parse_season_dir, get_ep, governance_title_key
-except ImportError:
-    from core import parse_season_dir, get_ep, governance_title_key
-
-
-def _engine_ns():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
-
-
-_eng = _engine_ns  # 兼容后续修复中的简写
 
 
 class Lib:
@@ -102,7 +85,7 @@ def _disk_tmdb_lookup():
     """
     lookup = {}
     try:
-        for lib in (_get_lib(_engine_ns().L_ROOT), _get_lib(_engine_ns().S_ROOT)):
+        for lib in (_get_lib(state.L_ROOT), _get_lib(state.S_ROOT)):
             lookup.update(lib.path_tmdb)
     except Exception as e:
         log.warning('磁盘 tmdb 兜底表构建失败: %s', e)
@@ -117,7 +100,7 @@ def _disk_eps_by_tmdb():
     """
     out = defaultdict(lambda: {'episodes': set(), 'local_eps': set(), 'share_eps': set()})
     try:
-        for lib, tag in ((_get_lib(_engine_ns().L_ROOT), 'local'), (_get_lib(_engine_ns().S_ROOT), 'share')):
+        for lib, tag in ((_get_lib(state.L_ROOT), 'local'), (_get_lib(state.S_ROOT), 'share')):
             for key, tid in lib.key_tmdb_tv.items():
                 for sn, files in lib.tv.get(key, {}).items():
                     if sn <= 0:
@@ -172,7 +155,7 @@ def _get_lib(root: Path) -> Lib:
         hit = _lib_cache.get(key)
         if hit and now - hit[0] < LIB_CACHE_TTL:
             return hit[1]
-    lib = _eng().Lib(root)
+    lib = Lib(root)
     with _lib_cache_lock:
         _lib_cache[key] = (now, lib)
     return lib
@@ -235,4 +218,4 @@ def _under_tv_category(d, root):
         parts = d.relative_to(root).parts
     except ValueError:
         return False
-    return any(p in _engine_ns()._CATEGORY_NAMES and '剧' in p for p in parts)
+    return any(p in state._CATEGORY_NAMES and '剧' in p for p in parts)

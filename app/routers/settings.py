@@ -3,38 +3,30 @@
 import os, json, logging, urllib.parse, urllib.request
 from fastapi import APIRouter, Depends, HTTPException
 
-try:
-    from app.routers.deps import auth, engine, bot, _cfg
-    from app.config import (load_config, save_config, EDITABLE_KEYS,
-                            SENSITIVE_KEYS, mask_config, is_masked_value,
-                            get_strategy, update_strategy,
-                            get_cover_strategy, update_cover_strategy)
-except ImportError:
-    from routers.deps import auth, engine, bot, _cfg
-    from config import (load_config, save_config, EDITABLE_KEYS,
-                        SENSITIVE_KEYS, mask_config, is_masked_value,
-                        get_strategy, update_strategy,
-                        get_cover_strategy, update_cover_strategy)
+from app import config as _cfg
+from app import state, governance, morning, bot
+from app.tgmsg import transport as tg_transport
+from app.routers.deps import auth
 
 router = APIRouter()
 
 
 @router.get('/api/strategy', dependencies=[Depends(auth)])
 def api_get_strategy():
-    return {'status': 'success', 'strategy': get_strategy()}
+    return {'status': 'success', 'strategy': _cfg.get_strategy()}
 
 
 @router.get('/api/cover-strategy', dependencies=[Depends(auth)])
 def api_get_cover():
     """画质对比规则（7 维）。"""
-    return {'status': 'success', 'strategy': get_cover_strategy()}
+    return {'status': 'success', 'strategy': _cfg.get_cover_strategy()}
 
 
 @router.post('/api/cover-strategy', dependencies=[Depends(auth)])
 def api_set_cover(body: dict = None):
     body = body or {}
     try:
-        result = update_cover_strategy(body.get('strategy') or {})
+        result = _cfg.update_cover_strategy(body.get('strategy') or {})
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {'status': 'success', 'strategy': result}
@@ -47,7 +39,7 @@ def api_cover_compare(body: dict = None):
     a, b = str(body.get('a') or '').strip(), str(body.get('b') or '').strip()
     if not a or not b:
         raise HTTPException(400, '需要 a、b 两个文件名')
-    return {'status': 'success', 'compare': engine._compare_meta(a, b)}
+    return {'status': 'success', 'compare': governance._compare_meta(a, b)}
 
 
 @router.post('/api/strategy', dependencies=[Depends(auth)])
@@ -94,18 +86,18 @@ def api_set_strategy(body: dict = None):
         if sa not in ('compare', 'ignore', 'delete'):
             raise HTTPException(400, 'special_action 必须是 compare / ignore / delete')
         kwargs['special_action'] = sa
-    result = update_strategy(**kwargs)
-    engine.reload_config()
+    result = _cfg.update_strategy(**kwargs)
+    state.reload_config()
     return {'status': 'success', 'strategy': result}
 
 
 @router.get('/api/exempt/scan', dependencies=[Depends(auth)])
 def api_scan_exempt():
     try:
-        matches = engine.scan_exempt_matches()
+        matches = morning.scan_exempt_matches()
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
-    return {'status': 'success', 'matches': matches, 'keywords': engine._exempt_keywords()}
+    return {'status': 'success', 'matches': matches, 'keywords': governance._exempt_keywords()}
 
 
 def _env_overridden_keys() -> list:
@@ -113,37 +105,43 @@ def _env_overridden_keys() -> list:
     return [k for k, env_name in _cfg.ENV_OVERRIDE_KEYS.items() if os.environ.get(env_name)]
 
 
+def _public_config(cfg: dict) -> dict:
+    # 迁移前的旧落盘键（如 subscriptions，已移到 SQLite）不对外暴露
+    return {k: v for k, v in cfg.items() if k not in _cfg.LEGACY_KEYS}
+
+
 @router.get('/api/config', dependencies=[Depends(auth)])
 def api_get_config(reveal: int = 0):
-    cfg = load_config()
+    cfg = _public_config(_cfg.load_config())
     env_overridden = _env_overridden_keys()
     if reveal:
         return {'status': 'success', 'config': cfg, 'masked': False, 'env_overridden': env_overridden}
-    return {'status': 'success', 'config': mask_config(cfg), 'masked': True,
-            'sensitive_keys': SENSITIVE_KEYS, 'env_overridden': env_overridden}
+    return {'status': 'success', 'config': _cfg.mask_config(cfg), 'masked': True,
+            'sensitive_keys': _cfg.SENSITIVE_KEYS, 'env_overridden': env_overridden}
 
 
 @router.post('/api/config', dependencies=[Depends(auth)])
 def api_set_config(body: dict = None):
     body = body or {}
-    cfg = load_config()
     env_overridden = set(_env_overridden_keys())
     skipped_env = []
-    for k in EDITABLE_KEYS:
-        if k not in body: continue
-        if k in env_overridden:
-            # yml 已经显式指定了这个字段，Web 页提交的值落盘也没用，直接跳过并告知前端
-            skipped_env.append(k)
-            continue
-        new_val = str(body[k]).strip()
-        if k in SENSITIVE_KEYS and is_masked_value(new_val):
-            continue
-        cfg[k] = new_val
-    saved = save_config(cfg)
-    engine.reload_config()
+
+    def _apply(cfg):
+        for k in _cfg.EDITABLE_KEYS:
+            if k not in body: continue
+            if k in env_overridden:
+                # yml 已经显式指定了这个字段，Web 页提交的值落盘也没用，直接跳过并告知前端
+                skipped_env.append(k)
+                continue
+            new_val = str(body[k]).strip()
+            if k in _cfg.SENSITIVE_KEYS and _cfg.is_masked_value(new_val):
+                continue
+            cfg[k] = new_val
+    saved = _public_config(_cfg.update_config(_apply))
+    state.reload_config()
     try: bot.restart()
     except Exception as e: logging.getLogger('media_agent').warning('Bot 重启失败: %s', e)
-    return {'status': 'success', 'config': mask_config(saved), 'masked': True,
+    return {'status': 'success', 'config': _cfg.mask_config(saved), 'masked': True,
             'env_overridden': list(env_overridden), 'skipped_env': skipped_env}
 
 
@@ -151,14 +149,14 @@ def api_set_config(body: dict = None):
 def api_test_emby(body: dict = None):
     body = body or {}
     raw_host = (body.get('emby_host') or '').strip()
-    host_overridden = bool(raw_host) and raw_host.rstrip('/') != (engine.EMBY_HOST or '').rstrip('/')
-    host = (raw_host or engine.EMBY_HOST or '').rstrip('/')
+    host_overridden = bool(raw_host) and raw_host.rstrip('/') != (state.EMBY_HOST or '').rstrip('/')
+    host = (raw_host or state.EMBY_HOST or '').rstrip('/')
     key = body.get('emby_key') or ''
-    if not key or is_masked_value(key):
+    if not key or _cfg.is_masked_value(key):
         if host_overridden:
             # 换了地址就不能偷用旧地址保存的 Key 去测——否则真实 Key 会被发往调用方指定的任意 host
             return {'status': 'error', 'message': '更换地址后请填写完整的 API Key，不能沿用已保存的旧 Key'}
-        key = engine.EMBY_KEY or ''
+        key = state.EMBY_KEY or ''
     if not host or not key:
         return {'status': 'error', 'message': '请填写 Emby 地址和 API Key'}
     try:
@@ -168,8 +166,8 @@ def api_test_emby(body: dict = None):
             data = json.loads(r.read().decode('utf-8'))
         msg = f"✅ 连接成功\n服务器: {data.get('ServerName', '?')}\n版本: {data.get('Version', '?')}"
         # 设置页未保存的路径也拿来比对，方便边改边测；没传就用当前生效的配置
-        pm = engine.emby_path_map(body.get('emby_local_path', engine.EMBY_PATHS.local),
-                                body.get('emby_share_path', engine.EMBY_PATHS.share))
+        pm = state.emby_path_map(body.get('emby_local_path', state.EMBY_PATHS.local),
+                                body.get('emby_share_path', state.EMBY_PATHS.share))
         return {'status': 'success', 'message': msg + _emby_lib_paths_hint(host, key, pm)}
     except Exception as e:
         return {'status': 'error', 'message': f'❌ 连接失败: {e}'}
@@ -213,7 +211,7 @@ def _emby_lib_paths_hint(host, key, pm):
 def api_test_tmdb(body: dict = None):
     body = body or {}
     key = body.get('tmdb_key') or ''
-    if not key or is_masked_value(key): key = engine.RUNTIME_CFG.get('tmdb_key') or ''
+    if not key or _cfg.is_masked_value(key): key = state.RUNTIME_CFG.get('tmdb_key') or ''
     if not key: return {'status': 'error', 'message': '请填写 TMDB API Key'}
     try:
         params = {'language': 'zh-CN'}; headers = {}
@@ -234,18 +232,14 @@ def api_test_telegram(body: dict = None):
     body = body or {}
     token = (body.get('telegram_bot_token') or '').strip()
     chat_id = (body.get('telegram_chat_id') or '').strip()
-    if not token or is_masked_value(token): token = engine.RUNTIME_CFG.get('telegram_bot_token') or ''
-    if not chat_id: chat_id = engine.RUNTIME_CFG.get('telegram_chat_id') or ''
+    if not token or _cfg.is_masked_value(token): token = state.RUNTIME_CFG.get('telegram_bot_token') or ''
+    if not chat_id: chat_id = state.RUNTIME_CFG.get('telegram_chat_id') or ''
     if not token or not chat_id:
         return {'status': 'error', 'message': '请填写 Bot Token 和 Chat ID'}
     try:
-        text = '✅ <b>TTD Guard</b> 测试消息\n如果你看到这条消息，说明 Telegram 通知已配置成功。'
-        url = f'https://api.telegram.org/bot{token}/sendMessage'
-        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as r:
-            resp = json.loads(r.read().decode('utf-8'))
-        if resp.get('ok'): return {'status': 'success', 'message': '✅ 已发送测试消息，请查看 Telegram'}
-        return {'status': 'error', 'message': f"❌ 发送失败: {resp.get('description', '未知错误')}"}
+        ok, desc = tg_transport.send_test(token, chat_id)
+        if ok:
+            return {'status': 'success', 'message': '✅ 已发送测试消息，请查看 Telegram'}
+        return {'status': 'error', 'message': f'❌ 发送失败: {desc}'}
     except Exception as e:
         return {'status': 'error', 'message': f'❌ 发送失败: {e}'}

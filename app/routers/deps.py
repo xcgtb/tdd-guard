@@ -3,21 +3,15 @@
 
 所有 APIRouter 共用同一个 auth/spawn/会话签名实现，保证拆路由前后行为一致。
 WEB_PASSWORD 的启动检查保留在本模块导入时执行（与旧 main.py 的导入时序一致：
-engine 等模块先导入，密码检查后执行），子进程测试依赖这一行为。
+state/bot 等业务模块先导入，密码检查后执行），子进程测试依赖这一行为。
 """
 import os, secrets, logging
 from pathlib import Path
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-try:
-    from app import engine, bot, logger, scheduler, tasks  # noqa: F401
-    from app import config as _cfg  # noqa: F401
-    from app import security as _sec
-except ImportError:
-    import engine, bot, logger, scheduler, tasks  # noqa: F401
-    import config as _cfg  # noqa: F401
-    import security as _sec
+from app import state, bot, logger, scheduler, tasks  # noqa: F401
+from app import security as _sec
 
 
 WEB_USER = (os.environ.get('WEB_USER', '').strip() or 'admin')

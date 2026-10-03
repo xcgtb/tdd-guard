@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app import engine, bot, logger, scheduler, tasks  # noqa: F401  (兼容旧测试/脚本：main.engine 等)
+from app import state, storage, bot, logger, scheduler, tasks  # noqa: F401
+from app import engine  # noqa: F401  (兼容壳：仅为保留 main.engine 旧导入路径)
 from app import config as _cfg  # noqa: F401
 from app import security as _sec
 from app.routers.deps import (  # noqa: F401
@@ -34,7 +35,7 @@ def _cd2_ready():
     """检查 CD2 是否就绪"""
     check_dirs = {'电影', '剧集', '儿童节目', '综艺', '动漫', '纪录片', '演唱会'}
     try:
-        cd2 = engine.CLOUD_L_ROOT
+        cd2 = state.CLOUD_L_ROOT
         if not cd2.exists():
             return False
         dirs = {i.name for i in cd2.iterdir() if i.is_dir()}
@@ -47,7 +48,7 @@ def _cd2_watchdog(max_wait=60, max_retries=5):
     """CD2 启动守门员：未就绪则退出容器让 Docker 重启"""
     import time as _t
     _logger = logging.getLogger('media_agent')
-    counter_file = engine.DATA_DIR / '.cd2_retry_count'
+    counter_file = state.DATA_DIR / '.cd2_retry_count'
 
     count = 0
     if counter_file.exists():
@@ -91,19 +92,19 @@ def _cd2_watchdog(max_wait=60, max_retries=5):
 def _startup():
     """进程级副作用统一在这里启动（以前散落在模块导入时，测试/工具一 import 就起线程）"""
     _log = logging.getLogger('media_agent')
+    # SQLite 存储层一次性迁移：旧版 state/*.json、audit.jsonl、配置里的订阅列表 → 库（逐文件标记，幂等）
+    try:
+        _m = storage.db_migrate()
+        if any(_m.values()):
+            _log.info('SQLite 存储层迁移: %s', _m)
+    except Exception as e:
+        _log.warning('存储层迁移失败（不影响启动）: %s', e)
     try:
         _n = logger.migrate_legacy()
         if _n:
-            _log.info('迁移旧日志 %d 条到 JSONL', _n)
+            _log.info('迁移旧日志 %d 条到执行记录', _n)
     except Exception as e:
         _log.warning('日志迁移失败: %s', e)
-    # SQLite 存储层一次性迁移：既有计划/订阅状态/审计 JSON → 库（幂等）
-    try:
-        _m = engine.db_migrate()
-        if any(_m.values()):
-            _log.info('SQLite 存储层迁移完成: %s', _m)
-    except Exception as e:
-        _log.warning('存储层迁移失败（不影响启动）: %s', e)
     # CD2 启动守门员：仅在显式开启时运行
     if os.environ.get('ENABLE_CD2_WATCHDOG', '0').strip().lower() in ('1', 'true', 'yes', 'on'):
         threading.Thread(target=_cd2_watchdog, daemon=True, name='cd2-watchdog').start()

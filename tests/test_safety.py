@@ -15,18 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_safety_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-os.environ['INGEST_QUIET_MINUTES'] = '0'
-
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import engine  # noqa: E402
-import core  # noqa: E402
+from app import core, engine, governance, storage, wash
 
 
 def _reset():
@@ -36,9 +25,8 @@ def _reset():
             shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
     engine._invalidate_lib_cache()
-    if engine.WASH_RESIDUAL_FILE.exists():
-        engine.WASH_RESIDUAL_FILE.unlink()
-    engine._strategy = lambda: {
+    storage.db_doc_delete(storage.DOC_WASH_RESIDUALS)
+    governance._strategy = lambda: {
         'decision': 'quality_first', 'multi_season_protect': 'compare',
         'tie_keep_local': False, 'exempt_keywords': [], 'special_action': 'compare',
     }
@@ -102,14 +90,14 @@ class TestPlanFilesAreConfirmed:
 
         def boom(*args, **kwargs):
             raise OSError('删除挂载掉了')
-        engine.safe_delete_files = boom
+        wash.safe_delete_files = boom
         try:
             engine.action_inter_clean(_Args(plan=pid))
             assert False, '异常应该继续抛出，由任务系统记录'
         except OSError:
             pass
         finally:
-            engine.safe_delete_files = orig
+            wash.safe_delete_files = orig
         assert engine.load_plan(pid)['state'] == 'failed'
 
 
@@ -289,11 +277,11 @@ class TestPlanExecutionDoesNotRescan:
         def boom():
             raise AssertionError('执行治理单不应再次 build_plan')
         orig = engine.build_plan
-        engine.build_plan = boom
+        governance.build_plan = boom
         try:
             res = engine.action_inter_clean(_Args(plan=pid))
         finally:
-            engine.build_plan = orig
+            governance.build_plan = orig
         assert res['status'] == 'success', res
         assert not f.exists()
         assert engine.load_plan(pid)['state'] == 'done'

@@ -8,8 +8,7 @@ core.py 单元测试
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import core  # noqa: E402
+from app import core
 
 
 # ═══════════════════ parse_season_dir ═══════════════════
@@ -278,10 +277,13 @@ class TestParseEmbyLibrary:
         assert core.parse_emby_library(item, is_movie=False) == core.DEFAULT_CATEGORIES[6]
 
 
-# ═══════════════════ esc (Markdown 转义) ═══════════════════
+# ═══════════════════ md_esc (Markdown 转义) ═══════════════════
 class TestEsc:
     def test_escapes_markdown_special_chars(self):
+        # 主名 md_esc；esc 是保留的兼容别名（历史模块仍按旧名导入）
+        assert core.md_esc('a_b*c`d[e') == r'a\_b\*c\`d\[e'
         assert core.esc('a_b*c`d[e') == r'a\_b\*c\`d\[e'
+        assert core.esc is core.md_esc
 
     def test_non_string_input(self):
-        assert core.esc(123) == '123'
+        assert core.md_esc(123) == '123'

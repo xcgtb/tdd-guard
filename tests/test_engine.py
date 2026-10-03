@@ -21,20 +21,10 @@ import tempfile
 import time
 from pathlib import Path
 
-# 在 import engine 之前把三个媒体根目录和数据目录都指到临时目录，
-# 避免测试误碰到真实 NAS 上的 /media /data。
-_TMP = Path(tempfile.mkdtemp(prefix='ttdguard_test_'))
-os.environ['L_ROOT'] = str(_TMP / 'local')
-os.environ['S_ROOT'] = str(_TMP / 'share')
-os.environ['CLOUD_L_ROOT'] = str(_TMP / 'cloud')
-os.environ['AGENT_DATA'] = str(_TMP / 'data')
-os.environ['TMDB_KEY'] = ''
-os.environ['TG_BOT_TOKEN'] = ''
-# 测试里的 STRM 都是刚创建的，先关掉「入库静默期」，静默期本身在 TestIngestQuietPeriod 里单独测
-os.environ['INGEST_QUIET_MINUTES'] = '0'
+# 媒体根目录 / 数据目录由 tests/conftest.py 统一指到会话级临时目录
+_TMP = Path(os.environ['AGENT_DATA']).parent
 
-sys.path.insert(0, str(Path(__file__).parent.parent / 'app'))
-import engine  # noqa: E402
+from app import config, engine, governance, lib, state, storage, wash  # noqa: E402
 
 
 def _strm(root: Path, folder: str, filename: str):
@@ -64,7 +54,7 @@ def _patch_strategy(monkeypatch_dict):
         'special_action': 'compare',
     }
     base.update(monkeypatch_dict)
-    engine._strategy = lambda: base
+    governance._strategy = lambda: base
 
 
 def _acts_for_title(acts, title_substr):
@@ -382,11 +372,11 @@ class TestCloudVideoConfidence:
         _strm(engine.L_ROOT, '云源测试 (2020)/Season 01', 'E01.1080p.strm')
         f = next(engine.L_ROOT.rglob('*.strm'))
         orig = engine.cloud_videos
-        engine.cloud_videos = lambda *a, **k: (vids or [], conf)
+        wash.cloud_videos = lambda *a, **k: (vids or [], conf)
         return f, orig
 
     def _teardown(self, orig):
-        engine.cloud_videos = orig
+        wash.cloud_videos = orig
 
     def test_exact_allows_deletion(self):
         f, orig = self._setup('exact', [])
@@ -462,9 +452,8 @@ class TestPlanLifecycle:
         acts = engine.build_plan()
         pid = engine.save_plan(acts)
         assert pid is not None
-        pf = engine.STATE_DIR / f'plan_{pid}.json'
-        assert pf.exists()
-        data = _json.loads(pf.read_text(encoding='utf-8'))
+        data = storage.db_load_plan(pid)
+        assert data is not None
         assert data.get('schema_version') == 2
         assert data.get('state') == 'pending'
         assert isinstance(data.get('actions'), list)
@@ -478,8 +467,8 @@ class TestPlanLifecycle:
         _patch_strategy({'exempt_keywords': []})
         _strm(engine.L_ROOT, '规则指纹剧 (2020)/Season 01', 'E01.1080p.strm')
         _strm(engine.S_ROOT, '规则指纹剧 (2020)/Season 01', 'E01.1080p.strm')
-        monkeypatch.setattr(engine._cfg, 'load_config', lambda: {'strategy_exempt_keywords': ''})
-        monkeypatch.setattr(engine._cfg, 'get_strategy', lambda: {'decision': 'quality_first'})
+        monkeypatch.setattr(config, 'load_config', lambda: {'strategy_exempt_keywords': ''})
+        monkeypatch.setattr(config, 'get_strategy', lambda: {'decision': 'quality_first'})
         acts = engine.build_plan()
         pid = engine.save_plan(acts)
         data = engine.load_plan(pid)
@@ -491,8 +480,8 @@ class TestPlanLifecycle:
         _strm(engine.L_ROOT, '规则变化剧 (2020)/Season 01', 'E01.1080p.strm')
         _strm(engine.S_ROOT, '规则变化剧 (2020)/Season 01', 'E01.1080p.strm')
         state = {'decision': 'quality_first'}
-        monkeypatch.setattr(engine._cfg, 'load_config', lambda: {'strategy_exempt_keywords': state['decision']})
-        monkeypatch.setattr(engine._cfg, 'get_strategy', lambda: {'decision': state['decision']})
+        monkeypatch.setattr(config, 'load_config', lambda: {'strategy_exempt_keywords': state['decision']})
+        monkeypatch.setattr(config, 'get_strategy', lambda: {'decision': state['decision']})
         pid = engine.save_plan(engine.build_plan())
         state['decision'] = 'keep_local'
 
@@ -504,15 +493,15 @@ class TestPlanLifecycle:
         assert engine.load_plan(pid).get('state') == 'stale'
 
     def test_load_plan_rejects_old_schema(self):
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        old_pf = engine.STATE_DIR / 'plan_deadbeef.json'
-        old_pf.write_text(_json.dumps({
-            'id': 'deadbeef', 'ts': _time.time(), 'keys': ['loc|x']
-        }), encoding='utf-8')
+        # 旧 schema 的计划写不进库（db_save_plan 拒绝）；库里已有的旧行读出来也必须被拒
+        old = {'id': 'deadbeef', 'ts': _time.time(), 'keys': ['loc|x']}
+        assert storage.db_save_plan(old) is False
+        storage._execute('INSERT OR REPLACE INTO plans (id, ts, state, payload, updated_at) VALUES (?,?,?,?,?)',
+                         ('deadbeef', old['ts'], 'pending', _json.dumps(old), old['ts']))
         try:
             assert engine.load_plan('deadbeef') is None
         finally:
-            old_pf.unlink(missing_ok=True)
+            storage.db_delete_plan('deadbeef')
 
     def test_expired_plan_rejected(self):
         _reset_libs()
@@ -522,10 +511,9 @@ class TestPlanLifecycle:
         acts = engine.build_plan()
         pid = engine.save_plan(acts)
         assert pid is not None
-        pf = engine.STATE_DIR / f'plan_{pid}.json'
-        data = _json.loads(pf.read_text(encoding='utf-8'))
+        data = storage.db_load_plan(pid)
         data['ts'] = _time.time() - (engine.PLAN_TTL + 3600)
-        pf.write_text(_json.dumps(data, ensure_ascii=False), encoding='utf-8')
+        assert storage.db_save_plan(data)
 
         class A: pass
         a = A(); a.plan = pid; a.dry_run = False
@@ -717,11 +705,11 @@ class TestScanSingleTraversal:
                 built.append(str(root))
                 super().__init__(root)
 
-        engine.Lib = CountingLib
+        lib.Lib = CountingLib
         try:
             engine.action_inter_check(self._Args())
         finally:
-            engine.Lib = orig_lib
+            lib.Lib = orig_lib
 
         assert sorted(built) == sorted([str(engine.L_ROOT), str(engine.S_ROOT)]), built
 
@@ -875,15 +863,16 @@ class TestNoTrashRetention:
     def test_purge_old_still_cleans_expired_plans(self):
         """移除回收站后，purge_old 仍须清理过期治理计划"""
         _reset_libs()
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        stale = engine.STATE_DIR / 'plan_stale.json'
-        stale.write_text('{}', encoding='utf-8')
-        old = time.time() - 8 * 86400
-        os.utime(stale, (old, old))
+        old = {'schema_version': 2, 'id': '5a1e0001', 'ts': time.time() - 8 * 86400, 'state': 'done',
+               'stats': {}, 'actions': []}
+        fresh = dict(old, id='5a1e0002', ts=time.time() - 86400)
+        assert storage.db_save_plan(old) and storage.db_save_plan(fresh)
 
         engine.purge_old()
 
-        assert not stale.exists(), '超过 7 天的治理计划应被清理'
+        assert storage.db_load_plan('5a1e0001') is None, '超过 7 天的治理计划应被清理'
+        assert storage.db_load_plan('5a1e0002') is not None
+        storage.db_delete_plan('5a1e0002')
 
 
 def test_same_tmdb_different_title_year_never_cross_matches():
