@@ -346,6 +346,7 @@ def check_subscriptions(send_notify=True) -> dict:
             'notified_episodes': sorted(_eps_to_keys(notified | set(new_eps))),
             'missing_episodes': sorted(_eps_to_keys(missing_eps)),
             'tmdb_total': (tmdb_info or {}).get('total_episodes', prev.get('tmdb_total') or 0),
+            'tmdb_declared': (tmdb_info or {}).get('declared_total', prev.get('tmdb_declared') or 0),
             'tmdb_status': (tmdb_info or {}).get('status', ''),
             'updated_at': now_str,
         }

@@ -28,6 +28,7 @@ def api_get_subs():
         info['latest_ep'] = (state.get(sid) or {}).get('latest_ep', '')
         info['updated_at'] = (state.get(sid) or {}).get('updated_at', '')
         info['tmdb_total'] = (state.get(sid) or {}).get('tmdb_total', 0)
+        info['tmdb_declared'] = (state.get(sid) or {}).get('tmdb_declared', 0)
         info['tmdb_status'] = (state.get(sid) or {}).get('tmdb_status', '')
         out.append(info)
     cfg = load_config()
@@ -90,7 +91,8 @@ def api_subs_settings(body: dict = None):
 @router.post('/api/subscriptions/check', dependencies=[Depends(auth)])
 def api_subs_check_now():
     try:
-        r = engine.check_subscriptions(send_notify=False)
+        # 手动「立即检查」同样推送 Telegram；推送成功才记账，之后定时检查不会重复推同一批集
+        r = engine.check_subscriptions(send_notify=True)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
     return {'status': 'success', **r}

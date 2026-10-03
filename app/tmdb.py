@@ -259,6 +259,7 @@ def action_explore(args):
     # 直接问 Emby「这部剧现在有哪些集」，逐集与本地/分享路径分库统计。
     # 结果只覆盖集数，不改 in_emby / 海报：海报仍走索引缓存，避免多打一次请求。
     live_eps = {}
+    live_total = {}
     if media != 'movie':
         targets = []
         for item in page_items:
@@ -272,6 +273,16 @@ def action_explore(args):
         if targets:
             def _one(target):
                 tid, eid = target
+                # TMDB 标称总集数：直接取 /tv/{id}（24h 缓存，命中即零成本），不再依赖
+                # 30 分钟的统一快照，避免「Emby 是新的、TMDB 总数是旧的」造成 18/16 这类错位。
+                try:
+                    _info = t.get(f'/tv/{tid}', ttl=_eng().TMDB_INFO_TTL) or {}
+                    _tot = sum(int(x.get('episode_count') or 0) for x in (_info.get('seasons') or [])
+                               if (x.get('season_number') or 0) > 0)
+                    if _tot > 0:
+                        live_total[tid] = _tot
+                except Exception as e:
+                    log.warning('探索页 TMDB 总集数失败 %s: %s', tid, e)
                 try:
                     return tid, _emby_series_live_eps(tid, eid)
                 except Exception as e:
@@ -314,7 +325,8 @@ def action_explore(args):
         if item_media == 'tv' and in_emby:
             e = eps_map.get(tmdb_id) or {'local_eps': 0, 'share_eps': 0, 'have_eps': 0}
             tmdb_info_cached = tmdb_map.get(tmdb_id) or {}
-            tmdb_total = int(tmdb_info_cached.get('tmdb_total') or 0)
+            # 展示口径与上游一致：优先 TMDB 标称总集数（如 18/24）；旧快照没有该字段时退回已播集数
+            tmdb_total = int(live_total.get(tmdb_id) or tmdb_info_cached.get('declared_total') or tmdb_info_cached.get('tmdb_total') or 0)
             live = live_eps.get(tmdb_id)
             if live:
                 e = {'local_eps': live['local_eps'], 'share_eps': live['share_eps'],
@@ -347,7 +359,7 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
     local_total = sum(local_map.values())
     if not tmdb_info:
         return {'match_status': 'unmatched', 'tmdb_status': None,
-                'local_total': local_total, 'tmdb_total': None, 'diff': None,
+                'local_total': local_total, 'tmdb_total': None, 'declared_total': None, 'diff': None,
                 'seasons': [{'season': sn, 'local': local_map[sn], 'tmdb': None, 'diff': None, 'status': 'unknown'} for sn in sorted(local_map)]}
     tmdb_status = tmdb_info.get('status', '') or ''
     tmdb_map = {}
@@ -360,6 +372,8 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
         if ec <= 0:
             continue
         tmdb_map[int(sn)] = ec
+    # 标称总集数（含未播集，与上游 TgtoDrive 显示口径一致，如 18/24）；仅用于展示，缺集判断仍按已播集
+    declared_total = sum(tmdb_map.values())
     # 对于正在播出的最后一季，只统计 last_episode_to_air 之前已经播出的集；
     # 更后的季直接忽略。没有该字段时保留旧口径。
     last = tmdb_info.get('last_episode_to_air') or {}
@@ -388,7 +402,7 @@ def classify_series_by_tmdb(local_seasons, tmdb_info):
         elif local_total < tmdb_total: status = 'missing'
         else: status = 'extra'
     return {'match_status': status, 'tmdb_status': tmdb_status,
-            'local_total': local_total, 'tmdb_total': tmdb_total,
+            'local_total': local_total, 'tmdb_total': tmdb_total, 'declared_total': declared_total,
             'diff': local_total - tmdb_total, 'seasons': season_diff}
 
 def _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id=None):
@@ -541,6 +555,7 @@ def _tmdb_series_info(tmdb_id):
             'last_episode_to_air': last,
             'seasons': aired_seasons,
             'total_episodes': len(aired),   # 已播集数（不含未播集 / S00）
+            'declared_total': sum(v['episode_count'] for v in aired_seasons.values()),   # 标称总集数（展示用）
             'aired': aired,                 # {(季, 集)}
         }
     except Exception as e:

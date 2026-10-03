@@ -753,8 +753,8 @@ pre.out{
   box-shadow:0 4px 14px rgba(0,122,255,.15),inset 0 0 0 1px var(--brand);
 }
 .strategy-option .t{font-size:13px;font-weight:600;color:var(--text)}
-.strategy-option .d{font-size:11px;color:var(--text;color:var(--text-dim);margin-top:6px}
-.progress-info .stage{color:-dim);margin-top:2px}
+.strategy-option .d{font-size:11px;color:var(--text-dim);margin-top:6px}
+.progress-info .stage{color:var(--text-dim);margin-top:2px}
 
 .check-item{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13px;cursor:pointer;color:var(--text)}
 .check-item input{width:auto;cursor:pointer}
@@ -3559,7 +3559,7 @@ function renderSeriesCard(s){
 
   var epInfo = (s.total_seasons || 0) + ' 季 · ' + (s.total_episodes || 0) + ' 集';
   // 入库进度：已入库 have/total（TMDB 总数），分库时显示 本地/分享
-  var tmdbTotal = ti.tmdb_total || 0;
+  var tmdbTotal = ti.declared_total || ti.tmdb_total || 0;
   var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
   if (tmdbTotal > 0) {
     epInfo = '已入库 ' + have + '/' + tmdbTotal + ' 集';
@@ -3699,7 +3699,7 @@ function showEmbyDetailById(id){
   html += '<div style="margin-top:8px;font-size:12px;color:#6b7280">';
   if (ti.tmdb_total != null && ti.tmdb_total > 0) {
     var have = s.have_eps != null ? s.have_eps : (s.total_episodes || 0);
-    html += '已入库 ' + have + '/' + ti.tmdb_total + ' 集';
+    html += '已入库 ' + have + '/' + (ti.declared_total || ti.tmdb_total) + ' 集';
     // 弹窗数据来自「片库映射」的全量对照缓存，可能滞后于刚入库的集
     html += ' <span style="color:#9ca3af">（对照缓存，刚入库的集可能未反映）</span>';
   } else if (s.in_local && s.in_share) {
@@ -3974,7 +3974,8 @@ async function loadSubscriptions(){
         } else {
           poster = '<img src="' + esc(s.poster) + '" loading="lazy" onerror="this.style.display=\'none\'">';
         }
-        var tmdbExtra = s.tmdb_total ? ' · TMDB ' + s.tmdb_total + ' 集' : '';
+        var subTot = s.tmdb_declared || s.tmdb_total;
+        var tmdbExtra = subTot ? ' · TMDB ' + subTot + ' 集' : '';
         var st = s.tmdb_status ? ' · ' + s.tmdb_status : '';
         return '<div class="sub-item">'
           + '<div class="p">' + poster + '</div>'
