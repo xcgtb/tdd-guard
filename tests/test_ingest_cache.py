@@ -1,7 +1,7 @@
 """入库缓存：分页、失败时保留旧缓存、不把残缺结果当成「0 新增」。"""
 import json
 
-from app import emby, engine, ingest
+from app import emby, engine, ingest, storage
 
 
 def _item(i, kind='Movie'):
@@ -26,7 +26,7 @@ def test_paged_items_follows_total(monkeypatch):
 
 def test_fetch_failure_keeps_old_cache(monkeypatch, isolated_state):
     good = {'ts': 1.0, 'ok': True, 'stats': {'movies': 7, 'series': 2, 'episodes': 30}, 'tree': {}}
-    (isolated_state / 'ingest_cache.json').write_text(json.dumps(good))
+    storage.db_doc_put(storage.DOC_INGEST, good)
 
     def boom(*a, **k):
         raise TimeoutError('timed out')
@@ -35,7 +35,7 @@ def test_fetch_failure_keeps_old_cache(monkeypatch, isolated_state):
     out = engine.refresh_ingest_cache()
     assert out['stats']['movies'] == 7
     assert 'timed out' in out['stale_error']
-    on_disk = json.loads((isolated_state / 'ingest_cache.json').read_text())
+    on_disk = storage.db_doc_get(storage.DOC_INGEST)
     assert on_disk['stats']['movies'] == 7 and on_disk['ts'] == 1.0
 
 

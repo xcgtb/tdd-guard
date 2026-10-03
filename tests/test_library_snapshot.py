@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from app import config, emby, engine, morning, state
+from app import config, emby, engine, morning, state, storage
 
 
 class TestUnifiedLibrarySnapshot:
@@ -83,39 +83,30 @@ class TestUnifiedLibrarySnapshot:
         assert got['diff'] == -30
         assert got['match_status'] == 'missing'
 
-    def test_governance_snapshot_updates_even_when_plan_is_empty(self):
-        old_file = engine.GOV_LATEST_FILE
-        tmp = Path(tempfile.mkdtemp(prefix='ttdguard_gov_')) / 'gov_latest.json'
-        state.GOV_LATEST_FILE = tmp
-        try:
-            engine.save_latest_scan(None, {
-                'status': 'success', 'total_clean_cnt': 0,
-                'del_local_cnt': 0, 'del_share_cnt': 0,
-                'del_local_files': 0, 'del_share_files': 0,
-                'protected_items': [], 'exempted_count': 0,
-                'reason_counts': {}, 'quiet_skipped': 0,
-            })
-            data = engine.load_latest_scan()
-            assert data and data['plan_id'] is None
-            assert data['result']['total_clean_cnt'] == 0
-            assert data['result']['scan_ts'] == data['ts']
-            assert len(data.get('rule_sig', '')) == 16
-        finally:
-            state.GOV_LATEST_FILE = old_file
+    def test_governance_snapshot_updates_even_when_plan_is_empty(self, isolated_state):
+        engine.save_latest_scan(None, {
+            'status': 'success', 'total_clean_cnt': 0,
+            'del_local_cnt': 0, 'del_share_cnt': 0,
+            'del_local_files': 0, 'del_share_files': 0,
+            'protected_items': [], 'exempted_count': 0,
+            'reason_counts': {}, 'quiet_skipped': 0,
+        })
+        data = engine.load_latest_scan()
+        assert data and data['plan_id'] is None
+        assert data['result']['total_clean_cnt'] == 0
+        assert data['result']['scan_ts'] == data['ts']
+        assert len(data.get('rule_sig', '')) == 16
 
 
-    def test_health_snapshot_applies_manual_done(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(state, 'LIBRARY_SNAPSHOT_FILE', tmp_path / 'library_snapshot.json')
-        monkeypatch.setattr(state, 'EMBY_LIB_CACHE_FILE', tmp_path / 'emby_library_with_tmdb.json')
-        monkeypatch.setattr(state, 'MANUAL_DONE_FILE', tmp_path / 'manual_done.json')
-        (tmp_path / 'emby_library_with_tmdb.json').write_text(json.dumps({
+    def test_health_snapshot_applies_manual_done(self, isolated_state):
+        storage.db_doc_put(storage.DOC_EMBY_LIB, {
             'ts': time.time(), 'series': [{
                 'id': 's1', 'series_ids': ['s1'], 'name': '使徒行者', 'have_eps': 31,
                 'total_episodes': 31, 'tmdb_id': '100',
                 'tmdb_info': {'match_status': 'missing', 'tmdb_total': 60, 'diff': -29}
             }], 'movies': []
-        }))
-        (tmp_path / 'manual_done.json').write_text(json.dumps({'s1': {'name': '使徒行者', 'ts': time.time()}}))
+        })
+        storage.db_doc_put(storage.DOC_MANUAL_DONE, {'s1': {'name': '使徒行者', 'ts': time.time()}})
         snap = engine.unified_health()
         assert snap['stats']['aligned'] == 1
         assert snap['stats']['missing'] == 0
@@ -142,10 +133,7 @@ class TestUnifiedLibrarySnapshot:
         assert out['stats']['episodes'] == 2
 
 
-def test_daily_consistency_snapshot_exposes_shared_rule_signature(monkeypatch, tmp_path):
-    monkeypatch.setattr(state, 'STATE_DIR', tmp_path)
-    monkeypatch.setattr(state, 'INGEST_CACHE_FILE', tmp_path / 'ingest_cache.json')
-    monkeypatch.setattr(state, 'GOV_LATEST_FILE', tmp_path / 'gov_latest.json')
+def test_daily_consistency_snapshot_exposes_shared_rule_signature(monkeypatch, isolated_state):
     monkeypatch.setattr(morning, 'load_library_snapshot', lambda max_age=None, background_refresh=True: {
         'ts': 100.0, 'stats': {'series': 2, 'movies': 1}, 'episode_total': 12,
         'top_missing': [{'name': 'A', 'missing': 3}], 'series': [], 'movies': []
@@ -163,10 +151,8 @@ def test_daily_consistency_snapshot_exposes_shared_rule_signature(monkeypatch, t
     assert snap['ingest']['stats'] == {}
 
 
-def test_ingest_refill_auto_refreshes_mapping_cache_without_full_tmdb_scan(monkeypatch, tmp_path):
+def test_ingest_refill_auto_refreshes_mapping_cache_without_full_tmdb_scan(monkeypatch, isolated_state):
     """补齐新集后只重算受影响剧集，不要求重新执行整库 TMDB 对照。"""
-    monkeypatch.setattr(state, 'EMBY_LIB_CACHE_FILE', tmp_path / 'emby_library_with_tmdb.json')
-    monkeypatch.setattr(state, 'LIBRARY_SNAPSHOT_FILE', tmp_path / 'library_snapshot.json')
 
     cached = {
         'ts': 100.0,
@@ -183,7 +169,7 @@ def test_ingest_refill_auto_refreshes_mapping_cache_without_full_tmdb_scan(monke
         'stats': {'total_series': 1, 'missing': 1, 'aligned': 0,
                   'extra': 0, 'ongoing': 0, 'unmatched': 0, 'no_tmdb': 0},
     }
-    engine.EMBY_LIB_CACHE_FILE.write_text(json.dumps(cached, ensure_ascii=False))
+    storage.db_doc_put(storage.DOC_EMBY_LIB, cached)
 
     calls = []
     monkeypatch.setattr(morning, '_live_series_episodes',
@@ -204,7 +190,7 @@ def test_ingest_refill_auto_refreshes_mapping_cache_without_full_tmdb_scan(monke
         'episodes_raw': [{'series_id': 'series-1', 'episode': 10}],
     })
 
-    saved = json.loads(engine.EMBY_LIB_CACHE_FILE.read_text())
+    saved = storage.db_doc_get(storage.DOC_EMBY_LIB)
     assert out['status'] == 'updated'
     assert out['affected'] == 1 and out['updated'] == 1
     assert saved['series'][0]['tmdb_info']['match_status'] == 'aligned'

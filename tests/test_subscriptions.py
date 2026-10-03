@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from app import config, emby, engine, state, tg, tmdb
+from app import config, emby, engine, state, subscribe, tg, tmdb
 
 TMDB_ID = '9999'
 
@@ -86,34 +86,33 @@ class _Env:
                 pass
 
         self._orig = (engine.emby_request, engine.Tmdb, engine.notify_telegram,
-                      engine.SUB_STATE_FILE, config.get_subscriptions())
+                      state.SUB_STORE, subscribe.get_subscriptions())
         self._orig_cfg = {k: config.load_config().get(k)
                           for k in ('subscribe_enabled', 'subscribe_check_tmdb')}
         emby.emby_request = self._emby
         tmdb.Tmdb = FakeTmdb
         tg.notify_telegram = self._notify
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        state.SUB_STATE_FILE = engine.STATE_DIR / 'subscriptions_state_test.json'
-        if engine.SUB_STATE_FILE.exists():
-            engine.SUB_STATE_FILE.unlink()
-        cfg = config.load_config()
-        cfg['subscribe_enabled'] = '1'
-        cfg['subscribe_check_tmdb'] = '1'
-        config.save_config(cfg)
-        config.set_subscriptions([{'id': 'sub1', 'tmdb_id': TMDB_ID, 'name': '测试剧', 'enabled': True}])
+        state.SUB_STORE = 'subscriptions_state_test'
+        subscribe.reset_sub_state()
+
+        def _on(cfg):
+            cfg['subscribe_enabled'] = '1'
+            cfg['subscribe_check_tmdb'] = '1'
+        config.update_config(_on)
+        subscribe.set_subscriptions([{'id': 'sub1', 'tmdb_id': TMDB_ID, 'name': '测试剧', 'enabled': True}])
         return self
 
     def __exit__(self, *exc):
-        if engine.SUB_STATE_FILE.exists():
-            engine.SUB_STATE_FILE.unlink()
+        subscribe.reset_sub_state()
         (emby.emby_request, tmdb.Tmdb, tg.notify_telegram,
-         state.SUB_STATE_FILE, subs) = self._orig
-        cfg = config.load_config()
-        for k, v in self._orig_cfg.items():
-            if v is None: cfg.pop(k, None)
-            else: cfg[k] = v
-        config.save_config(cfg)
-        config.set_subscriptions(subs)
+         state.SUB_STORE, subs) = self._orig
+
+        def _restore(cfg):
+            for k, v in self._orig_cfg.items():
+                if v is None: cfg.pop(k, None)
+                else: cfg[k] = v
+        config.update_config(_restore)
+        subscribe.set_subscriptions(subs)
         return False
 
     def run(self, send_notify=False):

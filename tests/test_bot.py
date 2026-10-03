@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from app import bot, config, engine
+from app import bot, config, engine, storage
 
 
 class TestIsAllowed:
@@ -102,22 +102,19 @@ class TestCleanResultRendering:
 
 class TestLatestPendingPlan:
     def test_picks_newest_pending_not_newest_file(self):
-        """计划被标记 done/expired 时会重写文件、mtime 变新；/clean 不能因此选中已执行过的计划"""
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        for f in engine.STATE_DIR.glob('plan_*.json'):
-            f.unlink()
+        """计划被标记 done/expired 时会更新记录；/clean 不能因此选中已执行过的计划"""
+        storage.db_purge_plans(float('inf'))
         now = _time.time()
 
         def write(pid, state, ts):
-            (engine.STATE_DIR / f'plan_{pid}.json').write_text(_json.dumps({
+            storage.db_save_plan({
                 'schema_version': 2, 'id': pid, 'ts': ts, 'state': state,
-                'stats': {}, 'actions': []}), encoding='utf-8')
+                'stats': {}, 'actions': []})
         write('aaaa1111', 'pending', now - 100)
         write('cccc3333', 'pending', now - engine.PLAN_TTL - 60)  # 已过期
-        write('bbbb2222', 'done', now - 50)                        # 最后写入、mtime 最新
+        write('bbbb2222', 'done', now - 50)                        # 最后写入、更新时间最新
         assert bot._latest_pending_plan_id() == 'aaaa1111'
-        for f in engine.STATE_DIR.glob('plan_*.json'):
-            f.unlink()
+        storage.db_purge_plans(float('inf'))
         assert bot._latest_pending_plan_id() is None
 
 
@@ -169,11 +166,10 @@ class TestBotUsesSharedTaskBus:
 
 # ═══════════════════ 卡片生命周期 / 命令删除 / 状态 ═══════════════════
 def _write_plan(pid, state='pending', age=0, rule_sig=None):
-    engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (engine.STATE_DIR / f'plan_{pid}.json').write_text(_json.dumps({
+    assert storage.db_save_plan({
         'schema_version': 2, 'id': pid, 'ts': _time.time() - age, 'state': state,
         'rule_sig': rule_sig if rule_sig is not None else engine._current_rule_snapshot()['sig'],
-        'stats': {}, 'actions': [{'action_id': 'a', 'text': 'x'}]}), encoding='utf-8')
+        'stats': {}, 'actions': [{'action_id': 'a', 'text': 'x'}]})
 
 
 class _Rec:

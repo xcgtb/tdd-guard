@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """双库治理：扫描 / 清理 / 计划 / 巡检 / 残留 / 手动完结（v1.7.7 自 main.py 拆出）
 
-变化点：/api/plans 列表改走 SQLite 索引（先 sync 磁盘文件再查库），
-不再逐文件读取 plan_*.json；单个计划详情仍经 governance.load_plan（文件优先、库兜底）。
+计划、手动完结标记等状态全部存 SQLite（app/storage.py），不再读写 state/ 下的 JSON 文件。
 """
-import json, time, threading
+import time, threading
 from fastapi import APIRouter, Depends, HTTPException
 
 from app import state, governance, wash, morning, storage, scheduler
@@ -24,14 +23,10 @@ def api_get_plan(plan_id: str):
 
 @router.get('/api/plans', dependencies=[Depends(auth)])
 def api_list_plans(limit: int = 20):
-    # 列出最近 Plan（白皮书 §17）：SQLite 索引查询，先同步磁盘上手工写入/变更的文件
+    # 列出最近 Plan（白皮书 §17）：SQLite 查询
     if limit < 1: limit = 1
     if limit > 100: limit = 100
-    try:
-        storage.db_sync_plans_from_disk()
-        plans = storage.db_list_plans(limit)
-    except Exception:
-        plans = []
+    plans = storage.db_list_plans(limit)
     return {'status': 'success', 'plans': plans}
 
 
@@ -52,23 +47,8 @@ def api_clean(body: dict = None):
     return {'task_id': t.id, 'dry_run': dry, 'status': 'success'}
 
 
-_manual_done_lock = threading.Lock()
-
-
-def _manual_done_path():
-    return state.MANUAL_DONE_FILE
-
-
 def _read_manual_done() -> dict:
     return morning.read_manual_done()
-
-
-def _write_manual_done(data: dict):
-    p = _manual_done_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix('.tmp')
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(p)
 
 
 @router.get('/api/manual_done', dependencies=[Depends(auth)])
@@ -83,16 +63,20 @@ def api_set_manual_done(body: dict = None):
     sid = str(body.get('id') or '').strip()
     if not sid:
         return {'status': 'error', 'message': '缺少剧集 id'}
-    with _manual_done_lock:
-        data = _read_manual_done()
-        if body.get('done', True):
-            data[sid] = {'name': str(body.get('name') or '')[:200], 'ts': int(time.time())}
+    done = bool(body.get('done', True))
+    name = str(body.get('name') or '')[:200]
+
+    def _apply(data):
+        data = data if isinstance(data, dict) else {}
+        if done:
+            data[sid] = {'name': name, 'ts': int(time.time())}
         else:
             data.pop(sid, None)
-        try:
-            _write_manual_done(data)
-        except OSError as e:
-            return {'status': 'error', 'message': '保存失败：%s' % e}
+        return data
+    # 原子读-改-写（替代原来的进程内锁 + 整文件重写）；库不可用时返回 None
+    data = storage.db_doc_update(storage.DOC_MANUAL_DONE, _apply, None)
+    if data is None:
+        return {'status': 'error', 'message': '保存失败（数据库不可用）'}
     return {'status': 'success', 'items': data}
 
 

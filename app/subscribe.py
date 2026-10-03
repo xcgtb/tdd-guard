@@ -17,79 +17,43 @@ from . import state, tmdb, emby, lib, storage, tg
 log = logging.getLogger('media_agent')
 
 
+def get_subscriptions() -> list:
+    """订阅列表（SQLite subscriptions 表，按保存顺序）。规范接口：config.get_subscriptions 只是兼容壳。"""
+    return storage.db_subs_list()
+
+
+def set_subscriptions(subs: list) -> list:
+    """整份替换订阅列表，返回实际保存的列表。"""
+    return storage.db_subs_replace(subs)
+
+
 def _load_sub_state() -> dict:
-    """读取订阅状态。
-    - 文件有效：直接返回（并回填 SQLite 索引，失败静默）；
-    - 文件损坏：从 SQLite 兜底自愈（回写文件）；
-    - 文件缺失：视为「主动重置」返回空 dict（测试隔离/用户手删的语义），
-      同时清掉库里的残留，防止旧状态复活。"""
-    p = state.SUB_STATE_FILE
-    store = p.name
-    try:
-        raw = p.read_text(encoding='utf-8')
-    except OSError:
-        try:
-            storage.db_clear_sub_state(store)
-        except Exception:
-            pass
-        return {}
-    try:
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            raise ValueError('not a dict')
-    except ValueError:
-        try:
-            data = storage.db_load_sub_state(store) or {}
-        except Exception:
-            data = {}
-        if data:
-            try:
-                _save_sub_state(data)
-            except Exception:
-                pass
-        return data
-    try:
-        storage.db_save_sub_state(store, data)
-    except Exception:
-        pass
-    return data
+    """读取订阅状态（SQLite sub_state 表，store = state.SUB_STORE）。
+    旧版「删除状态文件即重置」的语义改为 reset_sub_state()。"""
+    return storage.db_load_sub_state(state.SUB_STORE)
 
 
 load_sub_state = _load_sub_state  # 公开名（bot / 路由用这个）
 
 def _save_sub_state(sub_state: dict):
-    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = state.SUB_STATE_FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(sub_state, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(state.SUB_STATE_FILE)
-    try:
-        storage.db_save_sub_state(state.SUB_STATE_FILE.name, sub_state)   # 先文件后库
-    except Exception:
-        pass
+    if not storage.db_save_sub_state(state.SUB_STORE, sub_state):
+        log.warning('保存追更状态失败')
 
-def _subscription_report_file():
-    return state.STATE_DIR / 'subscription_report.json'
+def reset_sub_state():
+    """清空全部追更状态（下一轮检查按首次运行处理）。"""
+    return storage.db_clear_sub_state(state.SUB_STORE)
 
 def _save_subscription_report(updates):
-    """保存最近一次真正成功推送的追更汇报。晨报只引用这份实际汇报。"""
-    try:
-        p = _subscription_report_file()
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        payload = {'ts': time.time(), 'date': time.strftime('%Y-%m-%d', time.localtime()), 'updates': updates or []}
-        tmp = p.with_suffix('.tmp')
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(p)
-    except (OSError, TypeError) as e:
-        log.warning('保存追更实际汇报失败: %s', e)
+    """保存最近一次真正成功推送的追更汇报（SQLite 文档 subscription_report）。晨报只引用这份实际汇报。"""
+    payload = {'ts': time.time(), 'date': time.strftime('%Y-%m-%d', time.localtime()), 'updates': updates or []}
+    if not storage.db_doc_put(storage.DOC_SUB_REPORT, payload):
+        log.warning('保存追更实际汇报失败')
 
 def _load_subscription_report(today_only=False):
-    try:
-        data = json.loads(_subscription_report_file().read_text(encoding='utf-8'))
-        if not isinstance(data, dict): return None
-        if today_only and data.get('date') != time.strftime('%Y-%m-%d', time.localtime()): return None
-        return data
-    except (OSError, ValueError):
-        return None
+    data = storage.db_doc_get(storage.DOC_SUB_REPORT)
+    if not isinstance(data, dict): return None
+    if today_only and data.get('date') != time.strftime('%Y-%m-%d', time.localtime()): return None
+    return data
 
 def _emby_series_latest_ep(series_tmdb_id: str):
     """查 Emby 里某剧（按 tmdb_id）的所有副本并 union 分集。
@@ -274,7 +238,7 @@ def check_subscriptions(send_notify=True) -> dict:
     cfg = _cfg.load_config()
     if cfg.get('subscribe_enabled', '1') != '1':
         return {'updates': [], 'skipped': 'disabled'}
-    subs = _cfg.get_subscriptions()
+    subs = get_subscriptions()
     if not subs:
         return {'updates': [], 'total': 0}
 

@@ -24,11 +24,9 @@ LOG_TXT = DATA_DIR / '媒体治理明细.log'
 STATE_DIR = DATA_DIR / 'state'
 LOCK_FILE = DATA_DIR / 'agent.lock'
 REPORT_DIR = DATA_DIR / 'reports'
-SUB_STATE_FILE = STATE_DIR / 'subscriptions_state.json'
-EMBY_LIB_CACHE_FILE = STATE_DIR / 'emby_library_with_tmdb.json'
-INGEST_CACHE_FILE = STATE_DIR / 'ingest_cache.json'
-WASH_RESIDUAL_FILE = STATE_DIR / 'wash_residuals.json'
-LIBRARY_SNAPSHOT_FILE = STATE_DIR / 'library_snapshot.json'
+# state/ 下的运行状态全部存 SQLite（STATE_DIR/ttd-guard.db，见 storage.py）；旧 JSON 文件位置见 storage.LEGACY_*。
+# 追更状态在 sub_state 表里的 store 键（测试可改成别的键做隔离）
+SUB_STORE = 'subscriptions_state.json'
 
 # ═══════════════ 目录生命周期 / 孤儿治理（白皮书 §15+§16）═══════════════
 _CATEGORY_NAMES = {
@@ -177,22 +175,14 @@ _ep_lock = threading.Lock()
 _QUIET_LAST = {'n': 0}
 
 
-GOV_LATEST_FILE = STATE_DIR / 'gov_latest.json'
-
-
 _emby_index_cache = {'ts': 0, 'data': None}
-_EMBY_INDEX_CACHE_FILE = STATE_DIR / 'emby_index_cache.json'
 _emby_index_refresh_lock = threading.Lock()
 
 
 _emby_lib_cache = {'ts': 0, 'data': None}
 
 
-_EMBY_OVERVIEW_CACHE_FILE = STATE_DIR / 'emby_overview_cache.json'
 _overview_refresh_lock = threading.Lock()
-
-
-MANUAL_DONE_FILE = STATE_DIR / 'manual_done.json'
 
 
 # ═══════════════ 探索页实时集数（绕过统一快照）═══════════════
@@ -220,5 +210,4 @@ _lib_stats_cache = {'ts': 0, 'data': None}
 _CACHE_TTL = 300
 
 
-_STRM_COUNT_CACHE_FILE = STATE_DIR / 'strm_count_cache.json'
 _strm_count_refreshing = threading.Lock()

@@ -5,12 +5,11 @@
 （FastAPI lifespan）显式 start()/stop()，Web 层只负责 HTTP。
 """
 import hashlib
-import json
 import threading
 import time
 from argparse import Namespace
 
-from app import state, bot, governance, ingest, morning, subscribe, tasks
+from app import state, bot, governance, ingest, morning, subscribe, tasks, storage
 from app import config as _cfg
 
 TICK_SEC = 30
@@ -27,7 +26,7 @@ _bg_state = {
 
 
 # ═══════════════════ 双库治理：定时巡检（只扫描+通知，不自动清理） ═══════════════════
-GOV_AUTO_FILE = state.DATA_DIR / 'gov_auto.json'
+# 设置与运行状态存 SQLite 文档 storage.DOC_GOV_AUTO（旧版 DATA_DIR/gov_auto.json 由 db_migrate 导入）
 _GOV_AUTO_DEFAULT = {
     'enabled': False,
     'interval_hours': 6,
@@ -43,22 +42,16 @@ _gov_auto_running = {'v': False}
 
 def gov_auto_load() -> dict:
     d = dict(_GOV_AUTO_DEFAULT)
-    try:
-        d.update(json.loads(GOV_AUTO_FILE.read_text(encoding='utf-8')))
-    except (OSError, ValueError):
-        pass
+    saved = storage.db_doc_get(storage.DOC_GOV_AUTO)
+    if isinstance(saved, dict):
+        d.update(saved)
     return d
 
 
 def gov_auto_save(d: dict):
     with _gov_auto_lock:
-        try:
-            state.DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = GOV_AUTO_FILE.with_suffix('.tmp')
-            tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding='utf-8')
-            tmp.replace(GOV_AUTO_FILE)
-        except OSError as e:
-            state.log.warning('保存治理巡检设置失败: %s', e)
+        if not storage.db_doc_put(storage.DOC_GOV_AUTO, d):
+            state.log.warning('保存治理巡检设置失败')
 
 
 def _gov_auto_sig(res: dict) -> str:

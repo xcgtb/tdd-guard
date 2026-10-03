@@ -43,6 +43,13 @@ def main():
     ap.add_argument('--plan', default='')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
+    # CLI 也可能是升级后的第一个入口：先做一次性存储迁移（幂等，失败不阻断）
+    try:
+        mig = storage.db_migrate()
+        if any(mig.values()):
+            state.log.info('SQLite 存储层迁移: %s', mig)
+    except Exception as e:
+        state.log.warning('存储层迁移失败: %s', e)
     # 互斥锁统一由 action_inter_clean 自己持有，CLI / Web / Telegram Bot 三个入口共用同一把锁。
     try:
         res = ACTIONS[args.action](args)

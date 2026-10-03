@@ -24,7 +24,7 @@ from pathlib import Path
 # 媒体根目录 / 数据目录由 tests/conftest.py 统一指到会话级临时目录
 _TMP = Path(os.environ['AGENT_DATA']).parent
 
-from app import config, engine, governance, lib, state, wash  # noqa: E402
+from app import config, engine, governance, lib, state, storage, wash  # noqa: E402
 
 
 def _strm(root: Path, folder: str, filename: str):
@@ -452,9 +452,8 @@ class TestPlanLifecycle:
         acts = engine.build_plan()
         pid = engine.save_plan(acts)
         assert pid is not None
-        pf = engine.STATE_DIR / f'plan_{pid}.json'
-        assert pf.exists()
-        data = _json.loads(pf.read_text(encoding='utf-8'))
+        data = storage.db_load_plan(pid)
+        assert data is not None
         assert data.get('schema_version') == 2
         assert data.get('state') == 'pending'
         assert isinstance(data.get('actions'), list)
@@ -494,15 +493,15 @@ class TestPlanLifecycle:
         assert engine.load_plan(pid).get('state') == 'stale'
 
     def test_load_plan_rejects_old_schema(self):
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        old_pf = engine.STATE_DIR / 'plan_deadbeef.json'
-        old_pf.write_text(_json.dumps({
-            'id': 'deadbeef', 'ts': _time.time(), 'keys': ['loc|x']
-        }), encoding='utf-8')
+        # 旧 schema 的计划写不进库（db_save_plan 拒绝）；库里已有的旧行读出来也必须被拒
+        old = {'id': 'deadbeef', 'ts': _time.time(), 'keys': ['loc|x']}
+        assert storage.db_save_plan(old) is False
+        storage._execute('INSERT OR REPLACE INTO plans (id, ts, state, payload, updated_at) VALUES (?,?,?,?,?)',
+                         ('deadbeef', old['ts'], 'pending', _json.dumps(old), old['ts']))
         try:
             assert engine.load_plan('deadbeef') is None
         finally:
-            old_pf.unlink(missing_ok=True)
+            storage.db_delete_plan('deadbeef')
 
     def test_expired_plan_rejected(self):
         _reset_libs()
@@ -512,10 +511,9 @@ class TestPlanLifecycle:
         acts = engine.build_plan()
         pid = engine.save_plan(acts)
         assert pid is not None
-        pf = engine.STATE_DIR / f'plan_{pid}.json'
-        data = _json.loads(pf.read_text(encoding='utf-8'))
+        data = storage.db_load_plan(pid)
         data['ts'] = _time.time() - (engine.PLAN_TTL + 3600)
-        pf.write_text(_json.dumps(data, ensure_ascii=False), encoding='utf-8')
+        assert storage.db_save_plan(data)
 
         class A: pass
         a = A(); a.plan = pid; a.dry_run = False
@@ -865,15 +863,16 @@ class TestNoTrashRetention:
     def test_purge_old_still_cleans_expired_plans(self):
         """移除回收站后，purge_old 仍须清理过期治理计划"""
         _reset_libs()
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        stale = engine.STATE_DIR / 'plan_stale.json'
-        stale.write_text('{}', encoding='utf-8')
-        old = time.time() - 8 * 86400
-        os.utime(stale, (old, old))
+        old = {'schema_version': 2, 'id': '5a1e0001', 'ts': time.time() - 8 * 86400, 'state': 'done',
+               'stats': {}, 'actions': []}
+        fresh = dict(old, id='5a1e0002', ts=time.time() - 86400)
+        assert storage.db_save_plan(old) and storage.db_save_plan(fresh)
 
         engine.purge_old()
 
-        assert not stale.exists(), '超过 7 天的治理计划应被清理'
+        assert storage.db_load_plan('5a1e0001') is None, '超过 7 天的治理计划应被清理'
+        assert storage.db_load_plan('5a1e0002') is not None
+        storage.db_delete_plan('5a1e0002')
 
 
 def test_same_tmdb_different_title_year_never_cross_matches():

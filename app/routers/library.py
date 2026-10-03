@@ -146,16 +146,17 @@ def api_get_ingest_settings():
 @router.post('/api/ingest/settings', dependencies=[Depends(auth)])
 def api_set_ingest_settings(body: dict = None):
     body = body or {}
-    cfg = _cfg.load_config()
-    if 'enabled' in body:
-        cfg['ingest_enabled'] = '1' if body['enabled'] else '0'
-    if 'interval_min' in body:
-        try:
-            v = max(1, min(1440, int(body['interval_min'])))
-        except (ValueError, TypeError):
-            v = 5
-        cfg['ingest_interval_min'] = str(v)
-    _cfg.save_config(cfg)
+
+    def _apply(cfg):
+        if 'enabled' in body:
+            cfg['ingest_enabled'] = '1' if body['enabled'] else '0'
+        if 'interval_min' in body:
+            try:
+                v = max(1, min(1440, int(body['interval_min'])))
+            except (ValueError, TypeError):
+                v = 5
+            cfg['ingest_interval_min'] = str(v)
+    _cfg.update_config(_apply)
     state.reload_config()
     return {'status': 'success', 'settings': _cfg.get_ingest_cfg()}
 

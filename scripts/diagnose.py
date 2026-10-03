@@ -461,14 +461,23 @@ state_dir = data_dir / 'state'
 if state_dir.exists():
     files = list(state_dir.glob('*'))
     ok(f'state 目录存在，{len(files)} 个文件')
-    for name in ('ingest_cache.json', 'subscriptions_state.json', 'tmdb_cache.json'):
-        f = state_dir / name
-        if f.exists():
-            try:
-                json.loads(f.read_text(encoding='utf-8'))
-                ok(f'{name} 合法')
-            except json.JSONDecodeError:
-                fail(f'{name} 格式错误')
+    # 运行状态全部在 SQLite（旧 JSON 已迁移改名 *.migrated）
+    db = state_dir / 'ttd-guard.db'
+    if db.exists():
+        import sqlite3
+        try:
+            con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+            res = con.execute('PRAGMA quick_check').fetchone()[0]
+            docs = con.execute('SELECT COUNT(*) FROM docs').fetchone()[0]
+            con.close()
+            (ok if res == 'ok' else fail)(f'ttd-guard.db quick_check={res}，文档 {docs} 份')
+        except sqlite3.Error as e:
+            fail('ttd-guard.db 无法读取', str(e))
+    else:
+        warn('ttd-guard.db 不存在（首次启动会创建）')
+    leftovers = [f.name for f in state_dir.glob('*.json')]
+    if leftovers:
+        warn(f'state 目录仍有未迁移的 JSON：{leftovers}（重启服务会自动迁移）')
 else:
     warn('state 目录不存在')
 

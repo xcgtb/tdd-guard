@@ -202,6 +202,9 @@ def _check_file(path, root, cache):
                         s = tab.lookup(al)
                     except KeyError:
                         continue
+                    # 函数内 `from . import X` 惰性导入（避免导入环）绑定的仍是同一个模块，不算遮蔽
+                    if s.is_imported():
+                        continue
                     if not s.is_global() and (s.is_local() or s.is_free() or s.is_parameter()):
                         loc.add(al)
                 if loc:

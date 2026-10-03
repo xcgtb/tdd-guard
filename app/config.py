@@ -2,6 +2,7 @@
 """运行时配置管理：/data/config.json 优先，内置默认值兜底"""
 import os
 import json
+import threading
 from pathlib import Path
 
 from . import core as _core
@@ -43,7 +44,7 @@ DEFAULTS = {
     'subscribe_enabled':         '1',
     'subscribe_interval_min':    '30',
     'subscribe_check_tmdb':      '1',   # 是否对照 TMDB 已播集
-    'subscriptions':             '[]',
+    # 订阅列表已移到 SQLite（storage.subscriptions 表），不再存配置
 
     # 晨报
     'morning_report_enabled':    '0',
@@ -76,7 +77,9 @@ ENV_OVERRIDE_KEYS = {
 }
 
 INTERNAL_KEYS = {'tmdb_scan_last_ts', 'morning_prescan_last_date',
-                 'morning_report_last_date', 'subscriptions'}
+                 'morning_report_last_date'}
+# 旧版落盘、已迁出配置的键：storage.db_migrate 导入后才删除，迁移前任何 save_config 都原样保留，防止丢数据
+LEGACY_KEYS = ('subscriptions',)
 EDITABLE_KEYS = [k for k in DEFAULTS if k not in INTERNAL_KEYS]
 SENSITIVE_KEYS = ['emby_key', 'tmdb_key', 'telegram_bot_token']
 ALL_SENSITIVE = SENSITIVE_KEYS
@@ -106,6 +109,8 @@ def is_masked_value(v: str) -> bool:
 # 按文件 mtime 缓存：扫描双库时每个文件都会取一次策略，
 # 以前每次都读盘 + 解析 JSON，8 万个 STRM 就是 8 万次读盘，是扫描慢的主因之一。
 _CFG_CACHE = {'sig': None, 'data': None}
+# 配置写入锁：所有「读-改-写」必须经 update_config()，否则并发保存会互相覆盖对方改的键
+_CFG_LOCK = threading.RLock()
 
 
 def _cfg_signature():
@@ -144,12 +149,24 @@ def save_config(cfg: dict) -> dict:
     for k in DEFAULTS:
         if k in cfg:
             clean[k] = str(cfg.get(k, '')).strip()
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = CONFIG_FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(CONFIG_FILE)
-    _CFG_CACHE['data'] = None  # 落盘后强制下次重新读取
+    for k in LEGACY_KEYS:
+        if cfg.get(k) is not None:
+            clean[k] = str(cfg[k])
+    with _CFG_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding='utf-8')
+        tmp.replace(CONFIG_FILE)
+        _CFG_CACHE['data'] = None  # 落盘后强制下次重新读取
     return clean
+
+
+def update_config(fn) -> dict:
+    """加锁的读-改-写：fn(cfg) 就地修改 cfg（返回值忽略），落盘后返回保存的 dict。"""
+    with _CFG_LOCK:
+        cfg = load_config()
+        fn(cfg)
+        return save_config(cfg)
 
 
 # ═══════════════════ 结构化访问 ═══════════════════
@@ -202,7 +219,11 @@ def get_strategy() -> dict:
 
 
 def update_strategy(**kwargs) -> dict:
-    cfg = load_config()
+    update_config(lambda cfg: _apply_strategy(cfg, kwargs))
+    return get_strategy()
+
+
+def _apply_strategy(cfg, kwargs):
     if 'decision' in kwargs:
         d = str(kwargs['decision'])
         if d == 'balanced':
@@ -237,24 +258,19 @@ def update_strategy(**kwargs) -> dict:
             sa = 'ignore'
         if sa in ('compare', 'ignore', 'delete'):
             cfg['strategy_special_action'] = sa
-    save_config(cfg)
-    return get_strategy()
 
 
 def get_subscriptions() -> list:
-    cfg = load_config()
-    try:
-        data = json.loads(cfg.get('subscriptions') or '[]')
-        return data if isinstance(data, list) else []
-    except (ValueError, TypeError):
-        return []
+    """兼容入口：订阅列表已移到 SQLite，规范接口是 subscribe.get_subscriptions()。
+    这里在函数内导入 storage，避免 config → storage → state → config 的导入环。"""
+    from . import storage
+    return storage.db_subs_list()
 
 
 def set_subscriptions(subs: list) -> list:
-    cfg = load_config()
-    cfg['subscriptions'] = json.dumps(subs, ensure_ascii=False)
-    save_config(cfg)
-    return subs
+    """兼容入口：见 get_subscriptions()。"""
+    from . import storage
+    return storage.db_subs_replace(subs)
 
 
 def get_morning_report() -> dict:
@@ -271,7 +287,11 @@ def get_morning_report() -> dict:
 
 
 def update_morning_report(**kwargs) -> dict:
-    cfg = load_config()
+    update_config(lambda cfg: _apply_morning_report(cfg, kwargs))
+    return get_morning_report()
+
+
+def _apply_morning_report(cfg, kwargs):
     if 'enabled' in kwargs: cfg['morning_report_enabled'] = '1' if kwargs['enabled'] else '0'
     if 'hour' in kwargs: cfg['morning_report_hour'] = str(int(kwargs['hour']))
     if 'minute' in kwargs: cfg['morning_report_minute'] = str(int(kwargs['minute']))
@@ -279,20 +299,14 @@ def update_morning_report(**kwargs) -> dict:
         items = kwargs['items']
         cfg['morning_report_items'] = ','.join(str(x).strip() for x in items if str(x).strip()) if isinstance(items, list) else str(items)
     if 'prescan_min' in kwargs: cfg['morning_prescan_min'] = str(int(kwargs['prescan_min']))
-    save_config(cfg)
-    return get_morning_report()
 
 
 def mark_morning_report_sent(date_str: str):
-    cfg = load_config()
-    cfg['morning_report_last_date'] = date_str
-    save_config(cfg)
+    update_config(lambda cfg: cfg.__setitem__('morning_report_last_date', date_str))
 
 
 def mark_morning_prescan(date_str: str):
-    cfg = load_config()
-    cfg['morning_prescan_last_date'] = date_str
-    save_config(cfg)
+    update_config(lambda cfg: cfg.__setitem__('morning_prescan_last_date', date_str))
 
 
 def get_ingest_cfg() -> dict:
@@ -320,10 +334,9 @@ def update_cover_strategy(strategy: dict) -> dict:
     if not isinstance(strategy, dict) or not isinstance(strategy.get('rules'), list):
         raise ValueError('画质对比规则格式错误')
     out = _core.normalize_cover(strategy) if strategy['rules'] else _core.cover_default_strategy()
-    cfg = load_config()
-    cfg['strategy_cover'] = json.dumps(
+    raw = json.dumps(
         {'rules': [{'key': r['key'], 'enabled': r['enabled'], 'tiers': r['tiers'], 'groups': r['groups']}
                    for r in out['rules']]},
         ensure_ascii=False, separators=(',', ':'))
-    save_config(cfg)
+    update_config(lambda cfg: cfg.__setitem__('strategy_cover', raw))
     return out

@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, governance, morning, emby, lib
+from . import state, governance, morning, emby, lib, storage
 
 log = logging.getLogger('media_agent')
 
@@ -176,19 +176,14 @@ def refresh_ingest_cache(hours=24) -> dict:
     return data
 
 def _write_ingest_cache(data):
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = state.INGEST_CACHE_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(state.INGEST_CACHE_FILE)
-    except OSError as e:
-        log.warning('入库缓存写入失败: %s', e)
+    """入库缓存（SQLite 文档 ingest_cache，年龄看内嵌的 ts）"""
+    if not storage.db_doc_put(storage.DOC_INGEST, data):
+        log.warning('入库缓存写入失败')
 
 def read_ingest_cache(max_age=None) -> dict:
     """读缓存；max_age 为 None 时不做时效判断，返回 None 表示无缓存"""
-    try:
-        data = json.loads(state.INGEST_CACHE_FILE.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+    data = storage.db_doc_get(storage.DOC_INGEST)
+    if not isinstance(data, dict):
         return None
     if max_age is not None and time.time() - data.get('ts', 0) > max_age:
         return None

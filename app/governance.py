@@ -946,7 +946,6 @@ def save_plan(acts):
     todo = [a for a in acts if a.kind not in ('keep', 'exempt') and a.action_id]
     if not todo:
         return None
-    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.time()
     ids = sorted(a.action_id for a in todo)
     pid = hashlib.md5(('\n'.join(ids) + str(ts)).encode()).hexdigest()[:8]
@@ -982,94 +981,45 @@ def save_plan(acts):
         'executed_at': None,
         'executed_result': None,
     }
-    (state.STATE_DIR / f'plan_{pid}.json').write_text(
-        json.dumps(payload, ensure_ascii=False), encoding='utf-8')
-    try:
-        storage.db_save_plan(payload)   # SQLite 索引（先文件后库，文件仍是导出格式）
-    except Exception as ex:
-        log.debug('计划落库失败（已保留 JSON 文件）: %s', ex)
+    if not storage.db_save_plan(payload):
+        # 与旧版写文件失败一致：直接报错，不能假装「没有待处理项」
+        raise OSError(f'计划 {pid} 写入数据库失败')
     return pid
 
+def _safe_plan_id(plan_id):
+    return re.sub(r'[^0-9a-f]', '', str(plan_id or ''))
+
 def load_plan(plan_id):
-    if not plan_id:
-        return None
-    safe = re.sub(r'[^0-9a-f]', '', str(plan_id))
+    safe = _safe_plan_id(plan_id)
     if not safe:
         return None
-    pf = state.STATE_DIR / f'plan_{safe}.json'
-    if pf.exists():
-        # 文件优先：测试/运维直接改文件的场景必须读到最新内容
-        try:
-            data = json.loads(pf.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            return None
-        if data.get('schema_version') != 2:
-            return None
-        try:
-            storage.db_save_plan(data)   # 回填索引，失败不影响读取
-        except Exception:
-            pass
-        return data
-    # 文件不在（被清理/丢失）→ SQLite 兜底
-    try:
-        return storage.db_load_plan(safe)
-    except Exception:
-        return None
+    return storage.db_load_plan(safe)
 
 def save_plan_state(plan_id, new_state, extra=None):
-    if not plan_id:
-        return False
-    safe = re.sub(r'[^0-9a-f]', '', str(plan_id))
+    safe = _safe_plan_id(plan_id)
     if not safe:
         return False
-    pf = state.STATE_DIR / f'plan_{safe}.json'
-    if not pf.exists():
-        return False
-    try:
-        data = json.loads(pf.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return False
-    data['state'] = new_state
-    if extra:
-        data.update(extra)
-    try:
-        tmp = pf.with_suffix('.tmp')
-        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(pf)
-        try:
-            storage.db_save_plan(data)   # 同步 SQLite 索引（payload 已含新 state/extra）
-        except Exception:
-            pass
-        return True
-    except OSError:
-        return False
+    return storage.db_save_plan_state(safe, new_state, extra)
 
 def save_latest_scan(plan_id, result):
-    """保存最近一次治理扫描的统一快照。
+    """保存最近一次治理扫描的统一快照（SQLite 文档 gov_latest）。
 
-    ``gov_latest.json`` 是治理总览的事实来源；即使本次 0 待处理也必须更新，
+    它是治理总览的事实来源；即使本次 0 待处理也必须更新，
     这样“上次扫描”不会错误地停留在旧 plan。
     """
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        ts = time.time()
-        meta = dict(result or {})
-        meta['scan_ts'] = ts
-        meta['scan_id'] = plan_id
-        rule_sig = _current_rule_snapshot()['sig']
-        meta['rule_sig'] = rule_sig
-        tmp = state.GOV_LATEST_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'schema_version': 2, 'ts': ts, 'plan_id': plan_id,
-                                   'rule_sig': rule_sig, 'result': meta}, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(state.GOV_LATEST_FILE)
-    except OSError as ex:
-        log.warning('保存最近扫描结果失败: %s', ex)
+    ts = time.time()
+    meta = dict(result or {})
+    meta['scan_ts'] = ts
+    meta['scan_id'] = plan_id
+    rule_sig = _current_rule_snapshot()['sig']
+    meta['rule_sig'] = rule_sig
+    if not storage.db_doc_put(storage.DOC_GOV_LATEST, {'schema_version': 2, 'ts': ts, 'plan_id': plan_id,
+                                                       'rule_sig': rule_sig, 'result': meta}):
+        log.warning('保存最近扫描结果失败')
 
 def load_latest_scan():
-    try:
-        return json.loads(state.GOV_LATEST_FILE.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return None
+    data = storage.db_doc_get(storage.DOC_GOV_LATEST)
+    return data if isinstance(data, dict) else None
 
 def action_inter_check(args):
     acts, S_lib, L_lib = _build_plan_with_libs()

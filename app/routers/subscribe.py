@@ -12,7 +12,7 @@ router = APIRouter()
 
 @router.get('/api/subscriptions', dependencies=[Depends(auth)])
 def api_get_subs():
-    subs = _cfg.get_subscriptions()
+    subs = subscribe.get_subscriptions()
     state = subscribe.load_sub_state()
     out = []
     for s in subs:
@@ -51,29 +51,30 @@ def api_save_subs(body: dict = None):
             'enabled': bool(s.get('enabled', True)),
             'added_at': s.get('added_at') or time.strftime('%Y-%m-%d %H:%M:%S'),
         })
-    _cfg.set_subscriptions(clean)
+    subscribe.set_subscriptions(clean)
     try:
         subscribe.check_subscriptions(send_notify=False)
     except Exception:
         pass
-    return {'status': 'success', 'subscriptions': _cfg.get_subscriptions()}
+    return {'status': 'success', 'subscriptions': subscribe.get_subscriptions()}
 
 
 @router.post('/api/subscriptions/settings', dependencies=[Depends(auth)])
 def api_subs_settings(body: dict = None):
     body = body or {}
-    cfg = _cfg.load_config()
-    if 'enabled' in body:
-        cfg['subscribe_enabled'] = '1' if body['enabled'] else '0'
-    if 'interval_min' in body:
-        try:
-            v = max(5, min(1440, int(body['interval_min'])))
-        except (ValueError, TypeError):
-            v = 30
-        cfg['subscribe_interval_min'] = str(v)
-    if 'check_tmdb' in body:
-        cfg['subscribe_check_tmdb'] = '1' if body['check_tmdb'] else '0'
-    _cfg.save_config(cfg)
+
+    def _apply(cfg):
+        if 'enabled' in body:
+            cfg['subscribe_enabled'] = '1' if body['enabled'] else '0'
+        if 'interval_min' in body:
+            try:
+                v = max(5, min(1440, int(body['interval_min'])))
+            except (ValueError, TypeError):
+                v = 30
+            cfg['subscribe_interval_min'] = str(v)
+        if 'check_tmdb' in body:
+            cfg['subscribe_check_tmdb'] = '1' if body['check_tmdb'] else '0'
+    cfg = _cfg.update_config(_apply)
     state.reload_config()
     return {'status': 'success',
             'enabled': cfg['subscribe_enabled'] == '1',

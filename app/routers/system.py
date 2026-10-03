@@ -4,7 +4,7 @@ import time, threading
 from fastapi import APIRouter, Depends, HTTPException
 
 from app import config as _cfg
-from app import state, governance, morning, ingest, emby, stats, bot, tasks
+from app import state, governance, morning, ingest, emby, stats, bot, tasks, subscribe
 from app.routers.deps import auth, _current_task_dict, APP_VERSION
 
 router = APIRouter()
@@ -57,7 +57,7 @@ def dashboard():
         emby_ok = dashboard._emby_cache['ok']
         tmdb_ok = bool(state.RUNTIME_CFG.get('tmdb_key'))
         tg_ok = bool(state.RUNTIME_CFG.get('telegram_bot_token')) and bool(state.RUNTIME_CFG.get('telegram_chat_id'))
-        subs = _cfg.get_subscriptions()
+        subs = subscribe.get_subscriptions()
         mr = _cfg.get_morning_report()
         ing = _cfg.get_ingest_cfg()
 

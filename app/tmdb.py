@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, morning, emby, lib
+from . import state, morning, emby, lib, storage
 
 log = logging.getLogger('media_agent')
 
@@ -58,20 +58,21 @@ GENRE_MAP = {
     '电视电影': {'movie': 10770, 'tv': None},
 }
 _LIVE_EPS_TTL = 15
+_PRUNE_INTERVAL = 3600          # tmdb_cache 表过期清理：每小时最多一次
+_last_prune = {'ts': 0.0}
 
 
 class TmdbError(Exception):
     pass
 
 class Tmdb:
+    """TMDB 客户端。响应缓存两级：实例内存（本轮扫描）+ SQLite tmdb_cache 表（每个请求一行，
+    请求成功立即落库——多个 Tmdb 实例并发也不会互相覆盖）。"""
+
     def __init__(self):
         self.key = (state.RUNTIME_CFG.get('tmdb_key') or '').strip()
-        self.cache_file = state.STATE_DIR / 'tmdb_cache.json'
         self.calls = self.hits = 0
-        try:
-            self.cache = json.loads(self.cache_file.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            self.cache = {}
+        self.cache = {}
 
     def get(self, path, ttl=6 * 3600, **params):
         params.setdefault('language', TMDB_LANG)
@@ -80,6 +81,10 @@ class Tmdb:
         if hit and time.time() - hit['ts'] < ttl:
             self.hits += 1
             return hit['data']
+        cached = storage.db_tmdb_get(ck, ttl)
+        if cached is not None:      # 库内命中不回填内存：内存里的 ts 会比库里新，绕过调用方更短的 ttl
+            self.hits += 1
+            return cached
         headers = {}
         if self.key.startswith('eyJ'):
             headers['Authorization'] = f'Bearer {self.key}'
@@ -104,38 +109,32 @@ class Tmdb:
                 time.sleep(1.5)
         if data is None: raise TmdbError('TMDB 多次请求失败')
         self.cache[ck] = {'ts': time.time(), 'data': data}
+        storage.db_tmdb_put(ck, data)
         self.calls += 1
         time.sleep(0.03)
         return data
 
     def save(self):
-        try:
-            state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-            cut = time.time() - 86400
-            self.cache = {k: v for k, v in self.cache.items() if v['ts'] > cut}
-            tmp = self.cache_file.with_suffix('.tmp')
-            tmp.write_text(json.dumps(self.cache, ensure_ascii=False), encoding='utf-8')
-            tmp.replace(self.cache_file)
-        except OSError as e:
-            log.warning('TMDB 缓存写入失败: %s', e)
+        """兼容旧调用点：数据已在 get() 时逐条落库，这里只做过期清理（每小时最多一次，保留 24 小时）。"""
+        now = time.time()
+        if now - _last_prune['ts'] < _PRUNE_INTERVAL:
+            return
+        _last_prune['ts'] = now
+        storage.db_tmdb_prune(storage.TMDB_MAX_AGE)
 
 def _load_emby_index_disk():
-    try:
-        raw = json.loads(state._EMBY_INDEX_CACHE_FILE.read_text(encoding='utf-8'))
-        data = raw.get('data')
-        if isinstance(data, dict): return {'ts': float(raw.get('ts', 0)), 'data': data}
-    except (OSError, ValueError):
-        pass
+    """探索页 Emby 索引持久缓存（SQLite 文档 emby_index，结构 {'ts', 'data'}）"""
+    raw = storage.db_doc_get(storage.DOC_EMBY_INDEX)
+    if isinstance(raw, dict) and isinstance(raw.get('data'), dict):
+        try:
+            return {'ts': float(raw.get('ts', 0)), 'data': raw['data']}
+        except (TypeError, ValueError):
+            pass
     return None
 
 def _save_emby_index_disk(data):
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = state._EMBY_INDEX_CACHE_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'ts': time.time(), 'data': data}, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(state._EMBY_INDEX_CACHE_FILE)
-    except (OSError, TypeError) as e:
-        log.warning('Emby 探索索引缓存写入失败: %s', e)
+    if not storage.db_doc_put(storage.DOC_EMBY_INDEX, {'ts': time.time(), 'data': data}):
+        log.warning('Emby 探索索引缓存写入失败')
 
 def _build_emby_library_index():
     out = {}

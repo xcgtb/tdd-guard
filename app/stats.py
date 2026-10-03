@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, lib
+from . import state, lib, storage
 
 log = logging.getLogger('media_agent')
 
@@ -104,21 +104,16 @@ def action_library_stats(args):
     return _recompute_all_stats()
 
 def _load_strm_count_disk():
+    """STRM 计数持久缓存（SQLite 文档 strm_count）：(local, share, ts) 或 None"""
+    data = storage.db_doc_get(storage.DOC_STRM_COUNT)
     try:
-        data = json.loads(state._STRM_COUNT_CACHE_FILE.read_text(encoding='utf-8'))
         return int(data.get('local', 0)), int(data.get('share', 0)), float(data.get('ts', 0))
-    except (OSError, ValueError):
+    except (AttributeError, TypeError, ValueError):
         return None
 
 def _save_strm_count_disk(local, share):
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = state._STRM_COUNT_CACHE_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'ts': time.time(), 'local': local, 'share': share}),
-                       encoding='utf-8')
-        tmp.replace(state._STRM_COUNT_CACHE_FILE)
-    except OSError as e:
-        log.warning('STRM 计数缓存写入失败: %s', e)
+    if not storage.db_doc_put(storage.DOC_STRM_COUNT, {'ts': time.time(), 'local': local, 'share': share}):
+        log.warning('STRM 计数缓存写入失败')
 
 def _strm_count_bg_refresh():
     """后台重算统计（单飞）。走 _recompute_all_stats 统一遍历，

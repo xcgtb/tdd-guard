@@ -104,9 +104,14 @@ def _env_overridden_keys() -> list:
     return [k for k, env_name in _cfg.ENV_OVERRIDE_KEYS.items() if os.environ.get(env_name)]
 
 
+def _public_config(cfg: dict) -> dict:
+    # 迁移前的旧落盘键（如 subscriptions，已移到 SQLite）不对外暴露
+    return {k: v for k, v in cfg.items() if k not in _cfg.LEGACY_KEYS}
+
+
 @router.get('/api/config', dependencies=[Depends(auth)])
 def api_get_config(reveal: int = 0):
-    cfg = _cfg.load_config()
+    cfg = _public_config(_cfg.load_config())
     env_overridden = _env_overridden_keys()
     if reveal:
         return {'status': 'success', 'config': cfg, 'masked': False, 'env_overridden': env_overridden}
@@ -117,20 +122,21 @@ def api_get_config(reveal: int = 0):
 @router.post('/api/config', dependencies=[Depends(auth)])
 def api_set_config(body: dict = None):
     body = body or {}
-    cfg = _cfg.load_config()
     env_overridden = set(_env_overridden_keys())
     skipped_env = []
-    for k in _cfg.EDITABLE_KEYS:
-        if k not in body: continue
-        if k in env_overridden:
-            # yml 已经显式指定了这个字段，Web 页提交的值落盘也没用，直接跳过并告知前端
-            skipped_env.append(k)
-            continue
-        new_val = str(body[k]).strip()
-        if k in _cfg.SENSITIVE_KEYS and _cfg.is_masked_value(new_val):
-            continue
-        cfg[k] = new_val
-    saved = _cfg.save_config(cfg)
+
+    def _apply(cfg):
+        for k in _cfg.EDITABLE_KEYS:
+            if k not in body: continue
+            if k in env_overridden:
+                # yml 已经显式指定了这个字段，Web 页提交的值落盘也没用，直接跳过并告知前端
+                skipped_env.append(k)
+                continue
+            new_val = str(body[k]).strip()
+            if k in _cfg.SENSITIVE_KEYS and _cfg.is_masked_value(new_val):
+                continue
+            cfg[k] = new_val
+    saved = _public_config(_cfg.update_config(_apply))
     state.reload_config()
     try: bot.restart()
     except Exception as e: logging.getLogger('media_agent').warning('Bot 重启失败: %s', e)

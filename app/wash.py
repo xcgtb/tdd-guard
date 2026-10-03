@@ -146,18 +146,14 @@ def _is_sidecar_of(stem, other_stem):
     return other_stem.startswith(stem) and other_stem[len(stem)] in _SIDECAR_SEPS
 
 def _load_wash_residuals():
-    try:
-        raw = json.loads(state.WASH_RESIDUAL_FILE.read_text(encoding='utf-8'))
-        items = raw.get('items') if isinstance(raw, dict) else raw
-        return items if isinstance(items, list) else []
-    except (OSError, ValueError, TypeError):
-        return []
+    """删除血缘（SQLite 文档 wash_residuals，结构 {'version': 1, 'items': [...]}）"""
+    raw = storage.db_doc_get(storage.DOC_WASH_RESIDUALS)
+    items = raw.get('items') if isinstance(raw, dict) else raw
+    return items if isinstance(items, list) else []
 
 def _save_wash_residuals(items):
-    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = state.WASH_RESIDUAL_FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps({'version': 1, 'items': items}, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(state.WASH_RESIDUAL_FILE)
+    if not storage.db_doc_put(storage.DOC_WASH_RESIDUALS, {'version': 1, 'items': items}):
+        log.warning('洗版残留血缘写入失败')
 
 def _record_wash_residuals(records):
     if not records:
@@ -178,7 +174,7 @@ def _remove_strm(f):
 
     返回 ``{'sidecars_removed': n, 'sidecars_failed': [...]} ``。
     关键点：sidecar 删除失败不再静默吞掉；STRM 本体删除成功后会写入
-    wash_residuals.json，后续「洗版残留」只认这份删除血缘，不再把任意
+    删除血缘（wash_residuals 文档），后续「洗版残留」只认这份删除血缘，不再把任意
     metadata-only 目录猜成残留。
     """
     stem = f.stem
@@ -699,18 +695,7 @@ def action_clean_orphan_dirs(args):
 
 def purge_old():
     """清理过期治理计划（保留 7 天供审计）。"""
-    if state.STATE_DIR.exists():
-        plan_cut = time.time() - 7 * 86400
-        for f in state.STATE_DIR.glob('plan_*.json'):
-            try:
-                if f.stat().st_mtime < plan_cut:
-                    f.unlink()
-            except OSError:
-                pass
-        try:
-            storage.db_purge_plans(plan_cut)   # SQLite 索引同步清理
-        except Exception:
-            pass
+    storage.db_purge_plans(time.time() - storage.PLAN_KEEP_DAYS * 86400)
 
 
 # ═══════════ 目录级残留清理（照搬上游 TgtoDrive「Emby 洗版残留清理」） ═══════════

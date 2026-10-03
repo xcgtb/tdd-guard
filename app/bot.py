@@ -59,32 +59,26 @@ _DELETE_RETRY = 3
 _DELETE_RETRY_DELAY = 20
 
 
-def _queue_file():
-    return state.STATE_DIR / 'bot_delete_queue.json'
-
-
 def _persist_queue_locked():
-    """落盘待删队列（调用方须已持有 _DELETE_LOCK）。以前队列只在内存，重启一次，
-    所有卡片 / 命令消息的删除计划全部丢失，消息就永远留在聊天里。"""
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _queue_file().with_suffix('.tmp')
-        tmp.write_text(json.dumps(_delete_queue), encoding='utf-8')
-        tmp.replace(_queue_file())
-    except Exception as e:
-        log.debug('保存待删队列失败: %s', e)
+    """持久化待删队列（SQLite 文档 bot_delete_queue；调用方须已持有 _DELETE_LOCK）。以前队列只在内存，
+    重启一次，所有卡片 / 命令消息的删除计划全部丢失，消息就永远留在聊天里。"""
+    storage.db_doc_put(storage.DOC_BOT_DELETE_QUEUE, [list(x) for x in _delete_queue])
 
 
 def _load_queue():
-    try:
-        data = json.loads(_queue_file().read_text(encoding='utf-8'))
-    except Exception:
+    data = storage.db_doc_get(storage.DOC_BOT_DELETE_QUEUE)
+    if not isinstance(data, list):
         return
     with _DELETE_LOCK:
         known = {m for (_, _, m) in _delete_queue}
-        for d, c, m in data:
+        for item in data:
+            try:
+                d, c, m = item
+                d = float(d)
+            except (TypeError, ValueError):
+                continue
             if m not in known:
-                _delete_queue.append((float(d), c, m))
+                _delete_queue.append((d, c, m))
 
 
 def _schedule_delete(chat_id, message_id, delay):
@@ -424,18 +418,8 @@ def _spawn_and_watch(kind, action_fn, chat_id, message_id=None,
 
 
 def _latest_pending_plan_id():
-    """最近一份仍可执行的计划。不能只按文件 mtime 取最新：计划被标记 done/expired 时会重写文件，
-    mtime 变新，按 mtime 会选中一份已执行过的旧计划。"""
-    best = None
-    for f in state.STATE_DIR.glob('plan_*.json'):
-        data = governance.load_plan(f.stem.replace('plan_', ''))
-        if not data or data.get('state') != 'pending':
-            continue
-        if time.time() - float(data.get('ts') or 0) > state.PLAN_TTL:
-            continue
-        if best is None or data.get('ts', 0) > best.get('ts', 0):
-            best = data
-    return best.get('id') if best else None
+    """最近一份仍可执行（pending 且未过期）的计划：按计划生成时间 ts 取最新，不看更新时间。"""
+    return storage.db_latest_pending_plan(state.PLAN_TTL)
 
 
 # ═══════════════════ 菜单 ═══════════════════
@@ -547,7 +531,7 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
                     _send(token, chat_id, f'❌ 检查失败: {e}')
             threading.Thread(target=_do_check, daemon=True).start()
         else:
-            subs = _cfg.get_subscriptions()
+            subs = subscribe.get_subscriptions()
             state = subscribe.load_sub_state()
             if not subs:
                 _send(token, chat_id,

@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from app import core, engine, governance, wash
+from app import core, engine, governance, storage, wash
 
 
 def _reset():
@@ -25,8 +25,7 @@ def _reset():
             shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
     engine._invalidate_lib_cache()
-    if engine.WASH_RESIDUAL_FILE.exists():
-        engine.WASH_RESIDUAL_FILE.unlink()
+    storage.db_doc_delete(storage.DOC_WASH_RESIDUALS)
     governance._strategy = lambda: {
         'decision': 'quality_first', 'multi_season_protect': 'compare',
         'tie_keep_local': False, 'exempt_keywords': [], 'special_action': 'compare',

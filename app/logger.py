@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""执行记录存储：SQLite 主读 + JSONL 双写导出（自动轮转 + 旧日志迁移）"""
-import os, re, sys, json, time, threading
+"""执行记录（审计）：只存 SQLite audit 表（旧版 records/audit.jsonl 由 storage.db_migrate 一次性导入）"""
+import os, re
 from pathlib import Path
 from datetime import datetime
 
@@ -8,22 +8,11 @@ from . import storage as _storage
 
 # 数据目录固定为 /data；AGENT_DATA 仅供测试使用，不对用户开放
 DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))
-RECORDS_DIR = DATA_DIR / 'records'
-RECORDS_FILE = RECORDS_DIR / 'audit.jsonl'
 LEGACY_LOG = DATA_DIR / '媒体治理明细.log'
-
-MAX_SIZE = 5 * 1024 * 1024      # 5MB 自动轮转
-KEEP_BACKUPS = 3                 # 保留 3 个历史备份
-READ_TAIL_BYTES = 2 * 1024 * 1024  # 读取时最多读末尾 2MB
-_LOCK = threading.Lock()
-
-
-def _ensure_dir():
-    RECORDS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def write(category: str, title: str, details=None, rule_sig=None):
-    """追加一条记录（纯追加，不重写整个文件）"""
+    """追加一条记录（落库失败由存储层记告警，不影响调用方）"""
     rec = {
         'schema_version': 2,
         'ts': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -32,77 +21,12 @@ def write(category: str, title: str, details=None, rule_sig=None):
         'details': [str(d) for d in (details or [])],
         'rule_sig': str(rule_sig or ''),
     }
-    line = json.dumps(rec, ensure_ascii=False) + '\n'
-    with _LOCK:
-        _ensure_dir()
-        _rotate_if_needed()
-        try:
-            with open(RECORDS_FILE, 'a', encoding='utf-8') as f:
-                f.write(line)
-        except OSError as e:
-            print(f'[logger] write failed: {e}', file=sys.stderr)
-    # SQLite 主读路径（JSONL 保留为可 grep 的导出）；落库失败不影响审计写入
-    if _storage is not None:
-        try:
-            _storage.db_add_audit(rec)
-        except Exception:
-            pass
-
-
-def _rotate_if_needed():
-    if not RECORDS_FILE.exists():
-        return
-    try:
-        if RECORDS_FILE.stat().st_size < MAX_SIZE:
-            return
-    except OSError:
-        return
-    stamp = time.strftime('%Y%m%d-%H%M%S')
-    backup = RECORDS_DIR / f'audit.{stamp}.jsonl'
-    try:
-        RECORDS_FILE.rename(backup)
-    except OSError:
-        return
-    # 清理过旧的备份
-    backups = sorted(RECORDS_DIR.glob('audit.*.jsonl'), reverse=True)
-    for old in backups[KEEP_BACKUPS:]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
+    _storage.db_add_audit(rec)
 
 
 def read_recent(limit: int = 50) -> list:
-    """最近 N 条（新→旧）。SQLite 有数据时优先读库（索引查询、不受轮转 5MB 上限影响），
-    库里没有（旧部署未迁移 / 库不可用）回退到 JSONL 文件末尾读取。"""
-    if _storage is not None:
-        try:
-            rows = _storage.db_recent_audit(limit)
-            if rows:
-                return rows
-        except Exception:
-            pass
-    if not RECORDS_FILE.exists():
-        return []
-    try:
-        size = RECORDS_FILE.stat().st_size
-        chunk = min(size, READ_TAIL_BYTES)
-        with open(RECORDS_FILE, 'rb') as f:
-            f.seek(-chunk, 2)
-            raw = f.read().decode('utf-8', errors='ignore')
-        lines = [ln for ln in raw.split('\n') if ln.strip()]
-        # 如果截断，第一条可能不完整，丢弃
-        if size > chunk:
-            lines = lines[1:]
-        records = []
-        for ln in lines[-limit:][::-1]:  # 倒序：最新在前
-            try:
-                records.append(json.loads(ln))
-            except ValueError:
-                continue
-        return records
-    except OSError:
-        return []
+    """最近 N 条（新→旧）。"""
+    return _storage.db_recent_audit(limit)
 
 
 def to_text(limit: int = 50) -> str:
@@ -120,16 +44,20 @@ def to_text(limit: int = 50) -> str:
 
 
 def migrate_legacy():
-    """把旧的 媒体治理明细.log 一次性迁移到 JSONL"""
+    """把更早期的 媒体治理明细.log 一次性导入 audit 表（导入后改名 .migrated）"""
     if not LEGACY_LOG.exists():
         return 0
-    if RECORDS_FILE.exists() and RECORDS_FILE.stat().st_size > 0:
+    # 与旧版一致：已经有执行记录（库里有 / 还没迁移的 audit.jsonl 非空）就不再导入更老的日志
+    legacy_jsonl = DATA_DIR / 'records' / 'audit.jsonl'
+    try:
+        if _storage.db_audit_count() > 0 or (legacy_jsonl.exists() and legacy_jsonl.stat().st_size > 0):
+            return 0
+    except OSError:
         return 0
     try:
         text = LEGACY_LOG.read_text(encoding='utf-8')
     except OSError:
         return 0
-    _ensure_dir()
     records = []
     for block in text.split('\n\n'):
         block = block.strip()
@@ -143,14 +71,12 @@ def migrate_legacy():
         ts, cat, title = m.group(1), m.group(2), m.group(3).strip()
         details = [ln.strip() for ln in lines[1:] if ln.strip()]
         records.append({'ts': ts, 'category': cat, 'title': title, 'details': details})
-    if not records:
-        return 0
-    with open(RECORDS_FILE, 'w', encoding='utf-8') as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + '\n')
+    n = sum(1 for r in records if _storage.db_add_audit(r))
+    if records and not n:
+        return 0          # 库不可用：保留旧文件，下次启动重试
     # 备份旧文件
     try:
         LEGACY_LOG.rename(DATA_DIR / '媒体治理明细.log.migrated')
     except OSError:
         pass
-    return len(records)
+    return n

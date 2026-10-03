@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg
+from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg, storage
 
 log = logging.getLogger('media_agent')
 
@@ -26,24 +26,20 @@ MORNING_INGEST_TOP = 60  # 晨报里最多列出多少条入库明细（最近�
 
 
 def _save_overview_disk(out):
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = state._EMBY_OVERVIEW_CACHE_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'ts': time.time(), 'data': out}, ensure_ascii=False),
-                       encoding='utf-8')
-        tmp.replace(state._EMBY_OVERVIEW_CACHE_FILE)
-    except (OSError, TypeError) as e:
-        log.warning('片库映射缓存写入失败: %s', e)
+    """片库映射持久缓存（SQLite 文档 emby_overview，结构 {'ts', 'data'}）"""
+    if not storage.db_doc_put(storage.DOC_EMBY_OVERVIEW, {'ts': time.time(), 'data': out}):
+        log.warning('片库映射缓存写入失败')
 
 def _load_overview_disk():
     """返回 {'ts': float, 'data': {...}} 或 None"""
-    try:
-        raw = json.loads(state._EMBY_OVERVIEW_CACHE_FILE.read_text(encoding='utf-8'))
+    raw = storage.db_doc_get(storage.DOC_EMBY_OVERVIEW)
+    if isinstance(raw, dict):
         data = raw.get('data')
         if isinstance(data, dict) and 'series' in data:
-            return {'ts': float(raw.get('ts', 0)), 'data': data}
-    except (OSError, ValueError):
-        pass
+            try:
+                return {'ts': float(raw.get('ts', 0)), 'data': data}
+            except (TypeError, ValueError):
+                pass
     return None
 
 def _overview_bg_refresh():
@@ -247,11 +243,8 @@ def read_manual_done() -> dict:
     """人工标记「已完结」的剧集：Emby 条目 id → {name, ts}。
     TMDB 季数 / 集数与实际不符（如国产剧只有一季而 TMDB 有很多季）时手动标记，
     仅影响缺集统计与提示，不改动任何文件。由 Web「片库映射」弹窗里的「手动完结」写入。"""
-    try:
-        data = json.loads(state.MANUAL_DONE_FILE.read_text(encoding='utf-8'))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    data = storage.db_doc_get(storage.DOC_MANUAL_DONE)
+    return data if isinstance(data, dict) else {}
 
 def _apply_manual_done_to_series(series):
     """统一应用手动完结标记，并返回不修改原对象的健康统计。"""
@@ -300,18 +293,12 @@ def build_library_health_snapshot(max_age=1800):
     return snapshot
 
 def save_library_snapshot(snapshot):
-    try:
-        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = state.LIBRARY_SNAPSHOT_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(state.LIBRARY_SNAPSHOT_FILE)
-    except (OSError, TypeError) as e:
-        log.warning('统一片库快照写入失败: %s', e)
+    if not storage.db_doc_put(storage.DOC_LIB_SNAPSHOT, snapshot):
+        log.warning('统一片库快照写入失败')
 
 def load_library_snapshot(max_age=None, background_refresh=True):
-    try:
-        data = json.loads(state.LIBRARY_SNAPSHOT_FILE.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+    data = storage.db_doc_get(storage.DOC_LIB_SNAPSHOT)
+    if not isinstance(data, dict):
         return None
     if max_age is not None and time.time() - float(data.get('ts') or 0) > max_age:
         if background_refresh:
@@ -844,18 +831,16 @@ def patch_emby_lib_cache_after_movie_delete(tmdb_id: str, target: str):
     return removed[0]
 
 def save_emby_lib_cache(data: dict, keep_ts: bool = False):
-    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    """TMDB 对照结果缓存（SQLite 文档 emby_library_with_tmdb，年龄看内嵌的 ts）"""
     data = dict(data)
     if not (keep_ts and data.get('ts')):
         data['ts'] = time.time()
-    tmp = state.EMBY_LIB_CACHE_FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(state.EMBY_LIB_CACHE_FILE)
+    if not storage.db_doc_put(storage.DOC_EMBY_LIB, data):
+        log.warning('TMDB 对照缓存写入失败')
 
 def read_emby_lib_cache(max_age=None):
-    try:
-        data = json.loads(state.EMBY_LIB_CACHE_FILE.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+    data = storage.db_doc_get(storage.DOC_EMBY_LIB)
+    if not isinstance(data, dict):
         return None
     if max_age is not None and time.time() - data.get('ts', 0) > max_age:
         return None
@@ -938,9 +923,7 @@ def _refresh_tmdb_scan():
                'tmdb_errors': tmdb_errors, 'with_tmdb': True, 'emby_host': state.EMBY_HOST}
         save_emby_lib_cache(res)
         save_library_snapshot(build_library_health_snapshot())
-        cfg = _cfg.load_config()
-        cfg['tmdb_scan_last_ts'] = str(time.time())
-        _cfg.save_config(cfg)
+        _cfg.update_config(lambda c: c.__setitem__('tmdb_scan_last_ts', str(time.time())))
         state._tmdb_scan_progress.update({'running': False, 'finished_at': time.time(),
                                     'stage': '完成', 'stats': stats})
         log.info('TMDB 对照完成：对齐 %d / 缺集 %d / 超集 %d / 在更 %d',
