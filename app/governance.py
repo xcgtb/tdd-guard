@@ -630,34 +630,56 @@ def _build_plan_with_libs():
     _eng()._QUIET_LAST['n'] = gate.skipped
     # 为每一条治理动作补齐「为什么匹配到」的证据，供 Web 详情/审计使用。
     # 这里不改变决策结果，只增加可追溯信息。
+    #
+    # 性能注意：旧实现对「每一条动作」都完整遍历 S.meta / L.meta，再把同标题
+    # 的所有文件重新聚合；动作多时会变成 O(动作数 × 标题数)，大库上会把一次
+    # 15 秒级扫描拖到分钟级。这里先建立标题索引，再按标题 O(1) 取文件。
+    def _evidence_index(lib):
+        idx = defaultdict(list)
+        for key, mm in lib.meta.items():
+            disp, base, _year = mm
+            if key in lib.mov:
+                files = lib.mov[key]
+            elif key in lib.tv:
+                files = [f for sm in lib.tv[key].values() for f in sm]
+            else:
+                continue
+            idx[disp].extend(files)
+            idx[base].extend(files)
+        return idx
+
+    S_evidence = _evidence_index(S)
+    L_evidence = _evidence_index(L)
+    evidence_cache = {}
+
     for a in acts:
         if a.kind not in ('loc', 'shr', 'keep', 'exempt'):
             continue
         title = a.meta.get('title') or ''
         year = a.meta.get('year')
-        sf, lf = [], []
-        # 当前动作的文件只代表待处理一侧；根据治理标题重新从两库取同身份目录。
-        # 这一步仅查内存 _eng().Lib，不会再次遍历磁盘。
-        for key, mm in S.meta.items():
-            if mm[0] == title or mm[1] == re.sub(r'\s*\(\d{4}\)$', '', title).strip():
-                if key in S.mov:
-                    sf.extend(S.mov.get(key, []))
-                if key in S.tv:
-                    sf.extend(f for sm in S.tv[key].values() for f in sm)
-        for key, mm in L.meta.items():
-            if mm[0] == title or mm[1] == re.sub(r'\s*\(\d{4}\)$', '', title).strip():
-                if key in L.mov:
-                    lf.extend(L.mov.get(key, []))
-                if key in L.tv:
-                    lf.extend(f for sm in L.tv[key].values() for f in sm)
-        if not year:
-            # meta 中没有年份时，从任一实际标题目录补充。
-            for f in (sf + lf + list(a.files)):
-                folder = _media_title_folder(f)
-                y = re.search(r'(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)', folder or '')
-                if y:
-                    year = y.group(1); break
-        a.meta = _attach_governance_evidence(a.meta, title, year, sf or ([f for f in a.files] if a.kind == 'shr' else []), lf or ([f for f in a.files] if a.kind == 'loc' else []))
+        cache_key = (title, year)
+        cached = evidence_cache.get(cache_key)
+        if cached is None:
+            sf = list(dict.fromkeys(S_evidence.get(title, ())))
+            lf = list(dict.fromkeys(L_evidence.get(title, ())))
+            # 兼容历史动作标题带年份括号的情况。
+            if not sf and not lf:
+                base_title = re.sub(r'\s*\(\d{4}\)$', '', title).strip()
+                sf = list(dict.fromkeys(S_evidence.get(base_title, ())))
+                lf = list(dict.fromkeys(L_evidence.get(base_title, ())))
+            if not year:
+                for f in (sf + lf + list(a.files)):
+                    folder = _media_title_folder(f)
+                    y = re.search(r'(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)', folder or '')
+                    if y:
+                        year = y.group(1); break
+            cached = (sf, lf, year)
+            evidence_cache[cache_key] = cached
+        sf, lf, year = cached
+        a.meta = _attach_governance_evidence(
+            a.meta, title, year,
+            sf or ([f for f in a.files] if a.kind == 'shr' else []),
+            lf or ([f for f in a.files] if a.kind == 'loc' else []))
         if s.get('match_strategy', 'title_year') == 'tmdb_first':
             a.meta['identity_source'] = 'tmdb_first'
             a.meta['tmdb_role'] = '优先匹配键；同 TMDB 多身份列为冲突不处理'
@@ -1074,8 +1096,9 @@ def action_inter_check(args):
         log.info('扫描后刷新 STRM 计数: local=%d share=%d', L_lib.strm_count, S_lib.strm_count)
     except Exception as e:
         log.warning('刷新 STRM 计数缓存失败: %s', e)
-    # 扫描后失效 _eng().Lib 缓存：后续「执行清理」会重新 build_plan 二次校验，
-    # 必须基于最新磁盘状态，不能复用扫描时的快照（清理是删文件操作，宁可多扫一次）。
+    # 扫描后失效 _eng().Lib 缓存。执行阶段不再重新 build_plan：
+    # 治理单已经经过 15 分钟入库静默期并由用户确认，执行只消费这份已确认快照。
+    # 这样避免点击「执行清理」时再次全量遍历双库。
     _eng()._invalidate_lib_cache()
     loc = [a for a in acts if a.kind == 'loc']
     shr = [a for a in acts if a.kind == 'shr']
@@ -1137,12 +1160,43 @@ def _action_inter_clean_locked(args):
         raise
 
 def _confirmed_files(cur, old_act):
-    """二次校验的文件级收敛：只删「用户确认过的计划」和「当前重扫」都要删的文件。
-    以前直接用重扫结果的文件列表，扫描后新出现的文件（例如洗版进来一个更高版本，
-    原来的最优版变成了低版本）会在用户没看到的情况下被一起删掉。"""
+    """兼容旧调用方的文件收敛辅助；治理单执行本身不再调用它。"""
     planned = set(old_act.get('files') or [])
     keep = [f for f in cur.files if str(f) in planned]
     return keep, len(cur.files) - len(keep)
+
+
+def _plan_action_to_act(old_act):
+    """把已保存的治理单动作还原为执行对象。
+
+    执行阶段只消费用户已经确认的治理单，不重新 build_plan。
+    文件列表就是扫描+静默期过滤后的确认快照；新文件不会被带入本次执行。
+    """
+    kind = str(old_act.get('kind') or '')
+    if kind not in ('loc', 'shr'):
+        return None
+    files = []
+    root = _eng().L_ROOT if kind == 'loc' else _eng().S_ROOT
+    for raw in old_act.get('files') or []:
+        try:
+            p = Path(str(raw))
+            # 计划文件可能来自历史运行环境；只允许删除仍位于对应库根下的路径。
+            p.relative_to(root)
+        except (TypeError, ValueError, OSError):
+            continue
+        # 文件在扫描后消失：跳过即可；绝不为了确认它而重新扫描整个库。
+        if p.exists() and p.is_file():
+            files.append(p)
+    if not files:
+        return None
+    meta = dict(old_act.get('meta') or {})
+    meta.setdefault('reason', old_act.get('reason', ''))
+    meta.setdefault('reason_label', old_act.get('reason_label', ''))
+    meta.setdefault('title', old_act.get('title', ''))
+    if old_act.get('season') is not None:
+        meta.setdefault('season', old_act.get('season'))
+    return Act(kind, str(old_act.get('text') or ''), str(old_act.get('detail') or ''), files, meta)
+
 
 def _run_inter_clean(args):
     skipped_details = []
@@ -1177,33 +1231,22 @@ def _run_inter_clean(args):
         if not args.dry_run:
             save_plan_state(args.plan, 'executing')
 
-        _eng()._invalidate_lib_cache()  # 二次校验必须基于最新磁盘状态，不能复用 30 秒内的 _eng().Lib 快照
-        current = _eng().build_plan()
-        current_by_id = {a.action_id: a for a in current
-                         if a.kind not in ('keep', 'exempt') and a.action_id}
+        # 重要：执行治理单不再重新 build_plan。
+        # 扫描阶段已经执行 15 分钟入库静默过滤，随后生成治理单并由用户确认。
+        # 这里直接执行治理单保存的 files 快照：
+        #   - 扫描后新出现的文件不会进入本次执行；
+        #   - 扫描后已经消失的文件自然跳过；
+        #   - 不再为了二次校验全量遍历双库，避免执行阶段再耗时一轮。
         old_actions = {act.get('action_id', ''): act
                        for act in plan.get('actions', []) if act.get('action_id')}
         todo = []
         for aid, old_act in old_actions.items():
-            cur = current_by_id.get(aid)
+            cur = _plan_action_to_act(old_act)
             if cur is None:
                 skipped_details.append(
-                    '%s → 当前扫描已无此动作' % old_act.get('text', '?'))
+                    '%s → 计划中的待删文件已不存在或路径不在对应片库' % old_act.get('text', '?'))
                 continue
-            old_reason = old_act.get('reason', '')
-            cur_reason = cur.meta.get('reason', '')
-            if old_reason != cur_reason:
-                skipped_details.append(
-                    '%s → 决策原因变化: %s → %s' % (
-                        old_act.get('text', '?'), old_reason, cur_reason))
-                continue
-            files, extra = _confirmed_files(cur, old_act)
-            if not files:
-                skipped_details.append(
-                    '%s → 待删文件与计划不一致' % old_act.get('text', '?'))
-                continue
-            unconfirmed += extra
-            todo.append(dataclasses.replace(cur, files=files))
+            todo.append(cur)
         skipped = len(old_actions) - len(todo)
     else:
         todo = [a for a in _eng().build_plan() if a.kind not in ('keep', 'exempt')]
@@ -1239,11 +1282,11 @@ def _run_inter_clean(args):
         _eng()._lib_stats_cache['ts'] = 0
         _eng()._lib_stats_cache['data'] = None
     if skipped:
-        detail.append(f'├─ ⏭ 有 {skipped} 项二次验证未通过，已跳过')
+        detail.append(f'├─ ⏭ 有 {skipped} 项计划文件已不存在/路径无效，已跳过')
         for s in skipped_details[:5]:
             detail.append(f'│   · {s}')
     if unconfirmed:
-        detail.append(f'├─ ⏭ 有 {unconfirmed} 个文件是扫描后才出现的，不在已确认的计划里，本次未删除')
+        detail.append(f'├─ ⏭ 有 {unconfirmed} 个文件未在已确认治理单快照中，本次未删除')
     if not args.dry_run:
         _eng().purge_old()
         write_audit_log('执行跨库清理',

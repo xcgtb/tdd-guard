@@ -123,8 +123,8 @@ def api_preview_morning(body: dict = None):
     items = body.get('items') or mr.get('items') or []
     force = bool(body.get('force', False))
     try:
-        # force=true → 立即现场扫描入库
-        text = engine.build_morning_report(items, force_refresh=force)
+        # 缓存预览严格只读已有缓存；现场扫严格重建，二者不再互相兜底。
+        text = engine.build_morning_report(items, force_refresh=force, cache_only=not force)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
     import re as _re, html as _html

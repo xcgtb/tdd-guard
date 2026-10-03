@@ -344,18 +344,50 @@ def refresh_library_snapshot_background():
         log.warning('统一片库快照刷新失败: %s', e)
 
 def unified_health(max_age=1800):
-    """统一健康数据入口。优先磁盘快照；过期只返回旧快照并后台刷新，保证 Web 秒开。"""
-    snap = _eng().load_library_snapshot(max_age=max_age)
-    if snap:
-        return snap
-    snap = build_library_health_snapshot()
-    if snap.get('series') or snap.get('movies'):
-        save_library_snapshot(snap)
-    return snap
+    """统一健康数据入口。只读已有快照，不在晨报请求线程里触发全量 Emby 扫描。
+
+    晨报的「现场扫」由后面的 gap_report 独立负责；如果片库快照尚未建立，
+    这里返回空快照，让晨报继续生成，而不是因为一次 Emby 异常导致预览/发送整体失败。
+    """
+    try:
+        snap = _eng().load_library_snapshot(max_age=max_age)
+        if snap:
+            return snap
+        # 兼容已有 Emby→TMDB 对照缓存：只从缓存重建轻量健康快照，绝不触发网络扫描。
+        cached = read_emby_lib_cache(max_age=None)
+        if cached:
+            series = _apply_manual_done_to_series(cached.get('series') or [])
+            movies = cached.get('movies') or []
+            stats = {'total_series': len(series), 'total_movies': len(movies),
+                     'aligned': 0, 'missing': 0, 'extra': 0, 'ongoing': 0,
+                     'unmatched': 0, 'no_tmdb': 0, 'manual_done': 0}
+            top = []
+            for row in series:
+                st = (row.get('tmdb_info') or {}).get('match_status', 'unmatched')
+                if st in stats:
+                    stats[st] += 1
+                if row.get('_md'):
+                    stats['manual_done'] += 1
+                if st == 'missing':
+                    ti = row.get('tmdb_info') or {}
+                    top.append({'name': row.get('name'), 'year': row.get('year'),
+                                'diff': abs(int(ti.get('diff') or 0)),
+                                'tot': int(ti.get('tmdb_total') or 0),
+                                'have': int(row.get('have_eps') or row.get('total_episodes') or 0)})
+            top.sort(key=lambda x: x['diff'], reverse=True)
+            return {'schema_version': 1, 'ts': cached.get('ts') or 0,
+                    'series': series, 'movies': movies, 'stats': stats,
+                    'episodes': sum(int(x.get('have_eps') or x.get('total_episodes') or 0) for x in series),
+                    'top_missing': top[:10], 'source': 'emby_tmdb_cache'}
+        return {}
+    except Exception as e:
+        log.warning('读取统一片库快照失败: %s', e)
+        return {}
 
 def daily_consistency_snapshot(force_refresh: bool = False) -> dict:
     """轻量统一事实快照：晨报、总览、执行记录口径使用同一批缓存与规则指纹。"""
-    ingest = _eng().refresh_ingest_cache(hours=24) if force_refresh else (_eng().read_ingest_cache() or {})
+    # 晨报只引用后台 5 分钟轮询维护的 24h 入库缓存；生成晨报时绝不再次查询。
+    ingest = _eng().read_ingest_cache() or {}
     health = unified_health(max_age=1800) or {}
     gov = _eng().load_latest_scan() or {}
     rule_snapshot = _eng()._current_rule_snapshot()
@@ -369,15 +401,18 @@ def daily_consistency_snapshot(force_refresh: bool = False) -> dict:
         'rules': rule_snapshot['rules'],
     }
 
-def gap_report(max_age=30 * 60):
-    """缺集检测的统一口径：与网页「片库映射 → 缺集」一致，按 TMDB 对照判断。
-    优先读网页同一份对照缓存；缓存过期/不存在时现场对照一次。
-    返回 {'missing': [...], 'stats': {...}, 'from_cache': bool, 'cache_ts': float}"""
-    data = read_emby_lib_cache(max_age=max_age)
+def gap_report(max_age=30 * 60, force_refresh=False, cache_only=False):
+    """缺集检测统一口径。
+
+    cache_only=True：严格只读现有 Emby→TMDB 缓存，绝不触发网络扫描；
+    force_refresh=True：严格现场重建，绕过内存/磁盘片库缓存。
+    普通调用仍允许在缓存缺失时补建一次，兼容定时任务。
+    """
+    data = None if force_refresh else read_emby_lib_cache(max_age=max_age)
     from_cache = bool(data)
-    if not data:
+    if not data and not cache_only:
         from argparse import Namespace as _NS
-        data = action_emby_library(_NS(force=False, with_tmdb=True))
+        data = action_emby_library(_NS(force=force_refresh, with_tmdb=True))
         if data.get('status') == 'error':
             return {'status': 'error', 'message': data.get('message', '')}
         try:
@@ -385,6 +420,9 @@ def gap_report(max_age=30 * 60):
             data['ts'] = time.time()
         except Exception:
             pass
+    if not data:
+        return {'status': 'empty', 'message': '暂无可用的片库对照缓存，请先执行「预览（现场扫）」或等待后台片库扫描完成。',
+                'missing': [], 'stats': {}, 'movies_total': 0, 'from_cache': False, 'cache_ts': 0}
     series = _apply_manual_done_to_series(data.get('series') or [])
     save_library_snapshot(build_library_health_snapshot(max_age=max_age))
     stats = {'total': len(series), 'aligned': 0, 'missing': 0, 'extra': 0,
@@ -484,8 +522,8 @@ def action_emby_library(args):
             log.warning('保存统一片库对照缓存失败: %s', e)
     return result
 
-def build_morning_report(items: list, force_refresh: bool = False) -> str:
-    now = datetime.datetime.now()
+def build_morning_report(items: list, force_refresh: bool = False, cache_only: bool = False) -> str:
+    now = datetime.datetime.fromtimestamp(time.time())
     lines = [_eng().tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_eng()._WEEK[now.weekday()]}')]
     snap = daily_consistency_snapshot(force_refresh=force_refresh)
     lines.append(f"🧭 <i>统一快照 · 规则 {html.escape(str(snap.get('rule_sig') or ''))}</i>")
@@ -497,7 +535,7 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
                       f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
                       f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
             # 折叠明细（对齐 Web 入库汇报）：最近入库置顶，TG 里点开即看，不用回 Web
-            ing = _eng().get_ingest(hours=24)
+            ing = _eng().read_ingest_cache() or {}
             tree = ing.get('tree') or {}
             tvd = tree.get('tv_detail') or {}
             movd = tree.get('mov_detail') or {}
@@ -525,9 +563,10 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
 
     if 'subscriptions' in items:
         try:
-            r = _eng().check_subscriptions(send_notify=False)
-            lines += ['', f"🔔 <b>订阅更新</b>　<i>{r.get('total', 0)} 部订阅</i>"]
-            ups = r.get('updates') or []
+            # 晨报只引用当天「追更订阅」真正成功推送的汇报；不重新执行订阅检查。
+            rep = _eng()._load_subscription_report(today_only=True)
+            ups = (rep or {}).get('updates') or []
+            lines += ['', f"🔔 <b>订阅更新</b>　<i>{len(ups)} 部</i>"]
             if ups:
                 for u in ups[:10]:
                     name = html.escape(str(u.get('name') or ''))
@@ -540,15 +579,19 @@ def build_morning_report(items: list, force_refresh: bool = False) -> str:
                 if len(ups) > 10:
                     lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
             else:
-                lines.append('✅ 无变化')
+                lines.append('0')
         except Exception as e:
-            lines += ['', f'🔔 订阅检查失败: {html.escape(str(e))}']
+            lines += ['', f'🔔 订阅汇报读取失败: {html.escape(str(e))}']
 
     if 'emby_gap' in items:
         try:
-            rep = gap_report()
+            # 手动「现场扫」必须绕过缺集缓存；定时晨报继续复用 30 分钟缓存。
+            rep = gap_report(max_age=None, force_refresh=force_refresh, cache_only=(cache_only or not force_refresh))
             if rep.get('status') == 'error':
                 raise RuntimeError(rep.get('message'))
+            if rep.get('status') == 'empty':
+                lines += ['', f"🧩 <b>Emby 缺集</b>　<i>{html.escape(str(rep.get('message') or '暂无缓存'))}</i>"]
+                return '\n'.join(lines)
 
             def _diff(x):
                 return abs((x.get('tmdb_info') or {}).get('diff') or 0)
@@ -577,7 +620,7 @@ def send_morning_report(items: list, force_refresh: bool = False) -> bool:
     text = build_morning_report(items, force_refresh=force_refresh)
     ok = _eng().notify_telegram(text)
     if ok:
-        _cfg.mark_morning_report_sent(datetime.date.today().isoformat())
+        _cfg.mark_morning_report_sent(time.strftime('%Y-%m-%d', time.localtime()))
     return ok
 
 def _live_series_episodes(series_id: str):

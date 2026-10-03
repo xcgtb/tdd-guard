@@ -72,7 +72,7 @@ class TestPlanFilesAreConfirmed:
         res = engine.action_inter_clean(_Args(plan=pid))
 
         assert res['status'] == 'success', res
-        assert res['unconfirmed_files'] == 1
+        assert res.get('unconfirmed_files', 0) == 0
         assert not v720.exists()
         assert v1080.exists(), '扫描后才变成低版本的文件不在计划里，必须保留'
         assert v2160.exists()
@@ -98,18 +98,18 @@ class TestPlanFilesAreConfirmed:
         _touch(engine.S_ROOT, f'{d}/异常电影.720p.strm')
         _touch(engine.S_ROOT, f'{d}/异常电影.1080p.strm')
         pid = engine.save_plan(engine.build_plan())
-        orig = engine.build_plan
+        orig = engine.safe_delete_files
 
-        def boom():
-            raise OSError('挂载掉了')
-        engine.build_plan = boom
+        def boom(*args, **kwargs):
+            raise OSError('删除挂载掉了')
+        engine.safe_delete_files = boom
         try:
             engine.action_inter_clean(_Args(plan=pid))
             assert False, '异常应该继续抛出，由任务系统记录'
         except OSError:
             pass
         finally:
-            engine.build_plan = orig
+            engine.safe_delete_files = orig
         assert engine.load_plan(pid)['state'] == 'failed'
 
 
@@ -275,3 +275,25 @@ class TestGovernanceIdentity:
         shr = engine.Lib(engine.S_ROOT)
         meta = loc.meta[next(iter(loc.mov))]
         assert shr.find((next(iter(loc.mov)), meta), shr.mov) is None
+
+class TestPlanExecutionDoesNotRescan:
+    def test_confirmed_plan_executes_without_build_plan(self):
+        """15 分钟静默期后的已确认治理单，执行阶段不得再次全量扫描双库。"""
+        _reset()
+        d = '电影/华语电影/不二次扫描 (2023)'
+        f = _touch(engine.S_ROOT, f'{d}/不二次扫描.720p.strm')
+        _touch(engine.S_ROOT, f'{d}/不二次扫描.1080p.strm')
+        pid = engine.save_plan(engine.build_plan())
+        assert pid
+
+        def boom():
+            raise AssertionError('执行治理单不应再次 build_plan')
+        orig = engine.build_plan
+        engine.build_plan = boom
+        try:
+            res = engine.action_inter_clean(_Args(plan=pid))
+        finally:
+            engine.build_plan = orig
+        assert res['status'] == 'success', res
+        assert not f.exists()
+        assert engine.load_plan(pid)['state'] == 'done'

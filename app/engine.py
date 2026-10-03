@@ -54,7 +54,7 @@ try:
 except ImportError:
     from ingest import _fetch_ingest, refresh_ingest_cache, _write_ingest_cache, read_ingest_cache, get_ingest, action_stats, action_played, action_search, action_logs  # noqa: F401
 try:
-    from .subscribe import _load_sub_state, _save_sub_state, _emby_series_latest_ep, _disk_series_eps, _ep_key_num, _ep_key, _parse_ep_key, _eps_to_keys, _keys_to_eps, _fmt_ep_ranges, check_subscriptions  # noqa: F401
+    from .subscribe import _load_sub_state, _save_sub_state, _subscription_report_file, _save_subscription_report, _load_subscription_report, _emby_series_latest_ep, _disk_series_eps, _ep_key_num, _ep_key, _parse_ep_key, _eps_to_keys, _keys_to_eps, _fmt_ep_ranges, check_subscriptions  # noqa: F401
 except ImportError:
     from subscribe import _load_sub_state, _save_sub_state, _emby_series_latest_ep, _disk_series_eps, _ep_key_num, _ep_key, _parse_ep_key, _eps_to_keys, _keys_to_eps, _fmt_ep_ranges, check_subscriptions  # noqa: F401
 try:

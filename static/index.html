@@ -4082,6 +4082,7 @@ async function previewMorning(force){
   if ($('mrItemGap').checked)   items.push('emby_gap');
   try {
     if (force) toast('现场扫描中，可能稍慢...');
+    else toast('读取现有缓存...');
     var r = await api('/api/morning/preview', { method: 'POST', body: JSON.stringify({ items: items, force: force }) });
     if (r.status !== 'success') throw new Error(r.message || '失败');
     $('mrPreviewPanel').style.display = '';

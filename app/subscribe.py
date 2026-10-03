@@ -87,6 +87,30 @@ def _save_sub_state(state: dict):
     except Exception:
         pass
 
+def _subscription_report_file():
+    return _eng().STATE_DIR / 'subscription_report.json'
+
+def _save_subscription_report(updates):
+    """保存最近一次真正成功推送的追更汇报。晨报只引用这份实际汇报。"""
+    try:
+        p = _subscription_report_file()
+        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
+        payload = {'ts': time.time(), 'date': time.strftime('%Y-%m-%d', time.localtime()), 'updates': updates or []}
+        tmp = p.with_suffix('.tmp')
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+        tmp.replace(p)
+    except (OSError, TypeError) as e:
+        log.warning('保存追更实际汇报失败: %s', e)
+
+def _load_subscription_report(today_only=False):
+    try:
+        data = json.loads(_subscription_report_file().read_text(encoding='utf-8'))
+        if not isinstance(data, dict): return None
+        if today_only and data.get('date') != time.strftime('%Y-%m-%d', time.localtime()): return None
+        return data
+    except (OSError, ValueError):
+        return None
+
 def _emby_series_latest_ep(series_tmdb_id: str):
     """查 Emby 里某剧（按 tmdb_id）的所有副本并 union 分集。
 
@@ -385,7 +409,9 @@ def check_subscriptions(send_notify=True) -> dict:
             if u['newly_missing']:
                 lines.append(f"　⚠️ 缺集 <b>{_fmt_ep_ranges(_keys_to_eps(u['newly_missing']))}</b>")
         sent_ok = _eng().notify_telegram('\n'.join(lines))
-        if not sent_ok:
+        if sent_ok:
+            _save_subscription_report(updates)
+        else:
             log.warning('追更订阅推送失败，本轮不记账，下次继续重试')
 
     if not sent_ok:

@@ -215,22 +215,27 @@ def _tick(now: float):
         mr = {'enabled': False}
     if not mr.get('enabled'):
         return
-    today = time.strftime('%Y-%m-%d')
-    hour = int(mr.get('hour', 9)); minute = int(mr.get('minute', 0))
-    prescan_min = int(mr.get('prescan_min', 5))
     lt = time.localtime()
+    today = time.strftime('%Y-%m-%d', lt)
+    hour = int(mr.get('hour', 9)); minute = int(mr.get('minute', 0))
+    prescan_min = max(0, int(mr.get('prescan_min', 5)))
     lt_minutes = lt.tm_hour * 60 + lt.tm_min
     target_minutes = hour * 60 + minute
 
     # ── 预扫：提前 N 分钟静默刷新入库缓存 ──
     if prescan_min > 0:
-        prescan_target = target_minutes - prescan_min
-        if prescan_target < 0: prescan_target += 24 * 60
-        in_prescan_window = (prescan_target <= lt_minutes < prescan_target + 5)
+        # 使用环形分钟差，正确处理 00:xx 的跨午夜窗口。
+        minutes_until_target = (target_minutes - lt_minutes) % (24 * 60)
+        in_prescan_window = 0 < minutes_until_target <= prescan_min
         if in_prescan_window and mr.get('prescan_last_date') != today:
             engine.log.info('晨报预扫触发')
             try:
                 engine.refresh_ingest_cache()
+                # 晨报前预扫同时刷新 Emby 缺集快照；9:00 只引用这次成功扫描的结果。
+                try:
+                    engine.gap_report(max_age=None, force_refresh=True, cache_only=False)
+                except Exception as e:
+                    engine.log.warning('晨报 Emby 缺集预扫失败: %s', e)
                 _cfg.mark_morning_prescan(today)
             except Exception as e:
                 engine.log.warning('晨报预扫失败: %s', e)
