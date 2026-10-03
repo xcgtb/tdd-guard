@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg, storage
+from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg, storage, media
 
 log = logging.getLogger('media_agent')
 
@@ -88,11 +88,7 @@ def _build_emby_library_overview():
     out = {'series': [], 'movies': []}
     lib_of = state.EMBY_PATHS.lib_of
     disk_lookup = lib._disk_tmdb_lookup()  # 上游目录名 {tmdb-xxx} 兜底表
-    series_data = emby.emby_request('/Items', {
-        'Recursive': 'true', 'IncludeItemTypes': 'Series',
-        'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
-        'Limit': 50000,
-    }) or {}
+    series_data = {'Items': media.library_items('Series')}
     episodes_all = emby._fetch_all_episodes()
     alive = emby._alive_dir_map(ep.get('Path') for ep in episodes_all)
 
@@ -112,10 +108,7 @@ def _build_emby_library_overview():
         sid = s.get('Id')
         if not sid or not eps_by_series.get(sid):
             continue  # 空壳 Series 不进入片库映射
-        tmdb_id = str((s.get('ProviderIds') or {}).get('Tmdb') or '')
-        if not tmdb_id:
-            _cp = emby.emby_path_to_container(s.get('Path', '') or '')
-            tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
+        tmdb_id = media.tmdb_id_of(s, disk_lookup)
         key = f'tv:{tmdb_id}' if tmdb_id else f'id:{sid}'
         g = groups.setdefault(key, {
             'id': sid, 'series_ids': [], 'name': s.get('Name'),
@@ -197,12 +190,7 @@ def _build_emby_library_overview():
             'complete': total_missing == 0 and len(seasons) > 0,
         })
 
-    movie_data = emby.emby_request('/Items', {
-        'Recursive': 'true', 'IncludeItemTypes': 'Movie',
-        'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
-        'Limit': 50000,
-    }) or {}
-    movie_items = movie_data.get('Items', [])
+    movie_items = media.library_items('Movie')
     m_alive = emby._alive_dir_map(m.get('Path') for m in movie_items)
     movie_groups = {}
     for m in movie_items:
@@ -210,10 +198,7 @@ def _build_emby_library_overview():
         _pp = path.replace('\\', '/')
         if not m_alive.get(_pp.rsplit('/', 1)[0] if '/' in _pp else '', True):
             continue
-        tmdb_id = str((m.get('ProviderIds') or {}).get('Tmdb') or '')
-        if not tmdb_id:
-            _cp = emby.emby_path_to_container(m.get('Path', '') or '')
-            tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
+        tmdb_id = media.tmdb_id_of(m, disk_lookup)
         key = f'movie:{tmdb_id}' if tmdb_id else f'id:{m.get("Id")}'
         g = movie_groups.setdefault(key, {
             'id': m.get('Id'), 'ids': [], 'name': m.get('Name'),
@@ -395,18 +380,16 @@ def gap_report(max_age=30 * 60, force_refresh=False, cache_only=False):
     if not data:
         return {'status': 'empty', 'message': '暂无可用的片库对照缓存，请先执行「预览（现场扫）」或等待后台片库扫描完成。',
                 'missing': [], 'stats': {}, 'movies_total': 0, 'from_cache': False, 'cache_ts': 0}
+    # 手动完结标记只在这里应用一次（_apply_manual_done_to_series 内已把 missing/ongoing 改为 aligned，
+    # 之前这里又按 manual_done 重算了一遍，属于同一份数据在两层各算一次）。
     series = _apply_manual_done_to_series(data.get('series') or [])
     save_library_snapshot(build_library_health_snapshot(max_age=max_age))
     stats = {'total': len(series), 'aligned': 0, 'missing': 0, 'extra': 0,
              'ongoing': 0, 'unmatched': 0}
     missing = []
-    done = read_manual_done()  # 手动完结的剧不再算缺集 / 在更，与网页「片库映射」口径一致
     for s_ in series:
         st = (s_.get('tmdb_info') or {}).get('match_status', 'unmatched')
         if st == 'no_tmdb': st = 'unmatched'
-        ids = [str(x) for x in (s_.get('series_ids') or [s_.get('id')]) if x]
-        if any(x in done for x in ids) and st in ('missing', 'ongoing'):
-            st = 'aligned'
         if st in stats: stats[st] += 1
         if st == 'missing': missing.append(s_)
     missing.sort(key=lambda x: (x.get('tmdb_info') or {}).get('diff') or 0)  # diff 为负，越小缺得越多
@@ -599,26 +582,13 @@ def send_morning_report(items: list, force_refresh: bool = False, mark_sent: boo
     return ok
 
 def _live_series_episodes(series_id: str):
-    """某剧当前「真实存在」的分集：Emby 返回的分集里，路径能映射到容器内且文件已不在磁盘上的，
-    视为 Emby 尚未清理的残留，直接剔除。删除后 Emby 的刷新是异步的，
-    如果直接信 Emby，刚删完的剧集还会被当成\"仍在库里\"，海报就不会消失。
-    路径映射不上的（其它库）无法核实，保留。"""
-    items = (emby.emby_request('/Items', {
-        'ParentId': series_id, 'Recursive': 'true',
-        'IncludeItemTypes': 'Episode',
-        'Fields': 'Path,ParentIndexNumber,IndexNumber', 'Limit': 5000,
-    }) or {}).get('Items') or []
-    live = []
-    for e in items:
-        conv = emby.emby_path_to_container(e.get('Path') or '')
-        if conv is not None:
-            try:
-                if not conv.exists():
-                    continue
-            except OSError:
-                pass
-        live.append(e)
-    return live
+    """某剧当前「真实存在」的分集（薄包装 media.live_episode_items）。
+
+    幽灵条目（路径落在两个库根内、文件与目录都已不存在）直接剔除：删除后 Emby 的刷新是
+    异步的，如果直接信 Emby，刚删完的剧集还会被当成「仍在库里」，海报就不会消失。
+    路径映射不上的（其它库）无法核实，保留。
+    """
+    return media.live_episode_items(series_id)
 
 def _resync_series_entry(entry: dict, live: list):
     """用真实存在的分集重算缓存里这部剧的分集统计，并按原 TMDB 数据重新判定缺集。"""
