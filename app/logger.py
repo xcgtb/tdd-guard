@@ -1,8 +1,16 @@
 # -*- coding: utf-8 -*-
-"""执行记录存储：JSONL 格式 + 自动轮转 + 旧日志迁移"""
+"""执行记录存储：SQLite 主读 + JSONL 双写导出（自动轮转 + 旧日志迁移）"""
 import os, re, sys, json, time, threading
 from pathlib import Path
 from datetime import datetime
+
+try:
+    from . import storage as _storage
+except ImportError:
+    try:
+        import storage as _storage
+    except ImportError:
+        _storage = None
 
 # 数据目录固定为 /data；AGENT_DATA 仅供测试使用，不对用户开放
 DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))
@@ -39,6 +47,12 @@ def write(category: str, title: str, details=None, rule_sig=None):
                 f.write(line)
         except OSError as e:
             print(f'[logger] write failed: {e}', file=sys.stderr)
+    # SQLite 主读路径（JSONL 保留为可 grep 的导出）；落库失败不影响审计写入
+    if _storage is not None:
+        try:
+            _storage.db_add_audit(rec)
+        except Exception:
+            pass
 
 
 def _rotate_if_needed():
@@ -65,7 +79,15 @@ def _rotate_if_needed():
 
 
 def read_recent(limit: int = 50) -> list:
-    """从文件末尾往前读 N 条（不读整个文件）"""
+    """最近 N 条（新→旧）。SQLite 有数据时优先读库（索引查询、不受轮转 5MB 上限影响），
+    库里没有（旧部署未迁移 / 库不可用）回退到 JSONL 文件末尾读取。"""
+    if _storage is not None:
+        try:
+            rows = _storage.db_recent_audit(limit)
+            if rows:
+                return rows
+        except Exception:
+            pass
     if not RECORDS_FILE.exists():
         return []
     try:

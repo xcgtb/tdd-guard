@@ -41,17 +41,51 @@ def _eng():
 
 
 def _load_sub_state() -> dict:
-    """读取订阅状态；文件不存在/损坏时返回空 dict"""
+    """读取订阅状态。
+    - 文件有效：直接返回（并回填 SQLite 索引，失败静默）；
+    - 文件损坏：从 SQLite 兜底自愈（回写文件）；
+    - 文件缺失：视为「主动重置」返回空 dict（测试隔离/用户手删的语义），
+      同时清掉库里的残留，防止旧状态复活。"""
+    p = _eng().SUB_STATE_FILE
+    store = p.name
     try:
-        return json.loads(_eng().SUB_STATE_FILE.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+        raw = p.read_text(encoding='utf-8')
+    except OSError:
+        try:
+            _eng().db_clear_sub_state(store)
+        except Exception:
+            pass
         return {}
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError('not a dict')
+    except ValueError:
+        try:
+            data = _eng().db_load_sub_state(store) or {}
+        except Exception:
+            data = {}
+        if data:
+            try:
+                _save_sub_state(data)
+            except Exception:
+                pass
+        return data
+    try:
+        _eng().db_save_sub_state(store, data)
+    except Exception:
+        pass
+    return data
 
 def _save_sub_state(state: dict):
     _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = _eng().SUB_STATE_FILE.with_suffix('.tmp')
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
     tmp.replace(_eng().SUB_STATE_FILE)
+    try:
+        _eng().db_save_sub_state(_eng().SUB_STATE_FILE.name, state)   # 先文件后库
+    except Exception:
+        pass
 
 def _emby_series_latest_ep(series_tmdb_id: str):
     """查 Emby 里某剧（按 tmdb_id）的所有副本并 union 分集。

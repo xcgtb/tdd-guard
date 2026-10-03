@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.1
+
+### 架构：SQLite 存储层 + main.py 拆分为 APIRouter 路由包（合并自另一条 1.7.7 分支，基于本线重新拆分）
+
+- **新增 `app/storage.py`（SQLite，WAL，`state/ttd-guard.db`）**：治理计划（JSON 文件优先、缺失时库兜底，`/api/plans` 改为索引查询）、执行历史（审计，库优先读、JSONL 继续双写导出，不再受 5MB 轮转丢历史）、追更订阅状态（文件损坏从库自愈，文件缺失视为重置）、Telegram update offset 与已派发 update 去重（重启不再重复处理旧消息）。启动时幂等迁移既有数据；所有落库失败静默降级到原 JSON 路径，不影响治理主流程。
+- **main.py 拆为 `app/routers/`**（`deps / auth / system / governance / library / subscribe / settings`）。路由体取自本线 main.py（保留 CSRF 同源校验、安全响应头、画质对比规则 `/api/cover-strategy`、`/api/cover-compare` 等），路径与函数名不变（拆分前后 61 条路由逐条一致）；`main.app / main.auth / main.engine` 旧导入路径保留。CSRF 中间件仍在 `main.py` 注册。
+- `scripts/static_check.py` 同步检查 `app/routers/`；新增 `tests/test_storage.py`（7 项）。
+- 未并入：对方分支里的旧五元组打分相关导入（`get_score / best_score`），本线 1.7.8 已移除。
+
 ## 1.8.0
 
 ### 画质对比规则：关键策略防误触

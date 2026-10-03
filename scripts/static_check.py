@@ -82,7 +82,7 @@ def _eng_in_strings(path):
 
 def run(root=ROOT):
     issues = []
-    for path in sorted((Path(root) / 'app').glob('*.py')):
+    for path in sorted(list((Path(root) / 'app').glob('*.py')) + list((Path(root) / 'app' / 'routers').glob('*.py'))):
         rel = path.relative_to(root)
         for scope, name in _undefined_globals(path):
             issues.append('%s:%d 未定义的全局名 %r（位于 %s）' % (rel, _locate(path, name), name, scope))

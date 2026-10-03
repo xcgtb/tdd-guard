@@ -974,6 +974,10 @@ def save_plan(acts):
     }
     (_eng().STATE_DIR / f'plan_{pid}.json').write_text(
         json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    try:
+        _eng().db_save_plan(payload)   # SQLite 索引（先文件后库，文件仍是导出格式）
+    except Exception as ex:
+        log.debug('计划落库失败（已保留 JSON 文件）: %s', ex)
     return pid
 
 def load_plan(plan_id):
@@ -983,15 +987,24 @@ def load_plan(plan_id):
     if not safe:
         return None
     pf = _eng().STATE_DIR / f'plan_{safe}.json'
-    if not pf.exists():
-        return None
+    if pf.exists():
+        # 文件优先：测试/运维直接改文件的场景必须读到最新内容
+        try:
+            data = json.loads(pf.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        if data.get('schema_version') != 2:
+            return None
+        try:
+            _eng().db_save_plan(data)   # 回填索引，失败不影响读取
+        except Exception:
+            pass
+        return data
+    # 文件不在（被清理/丢失）→ SQLite 兜底
     try:
-        data = json.loads(pf.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+        return _eng().db_load_plan(safe)
+    except Exception:
         return None
-    if data.get('schema_version') != 2:
-        return None
-    return data
 
 def save_plan_state(plan_id, state, extra=None):
     if not plan_id:
@@ -1013,6 +1026,10 @@ def save_plan_state(plan_id, state, extra=None):
         tmp = pf.with_suffix('.tmp')
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
         tmp.replace(pf)
+        try:
+            _eng().db_save_plan(data)   # 同步 SQLite 索引（payload 已含新 state/extra）
+        except Exception:
+            pass
         return True
     except OSError:
         return False

@@ -956,6 +956,18 @@ def _poll_loop(gen):
                 if not _alive(gen):
                     break  # 处理到一半被换代：剩下的留给新线程（offset 未推进），不重复执行
                 _state['offset'] = upd['update_id'] + 1
+                try:
+                    engine.db_kv_set('tg_update_offset', str(_state['offset']))
+                except Exception:
+                    pass
+                # 去重闸：同一条 update 只派发一次（TG 在 offset 未确认时会重投）
+                try:
+                    uk = 'tg_upd_%s' % upd['update_id']
+                    if engine.db_dedup_seen(uk):
+                        continue
+                    engine.db_dedup_add(uk)
+                except Exception:
+                    pass
                 # 每个 update 单独线程：一个慢操作（网络卡住的 edit / delete）不再堵住后面所有按钮点击
                 threading.Thread(target=_handle_update, args=(token, upd),
                                  daemon=True, name='tg-update').start()
@@ -980,6 +992,14 @@ def _start_locked():
     if not _state['queue_loaded']:
         _load_queue()
         _state['queue_loaded'] = True
+    # 进程重启后从 SQLite 恢复 update offset：不再重复处理重启前的旧消息
+    # （此前 offset 只在内存里，重启即归零，TG 会把未确认的旧 update 再推一遍）
+    try:
+        persisted = int(engine.db_kv_get('tg_update_offset', '0') or 0)
+        if persisted > (_state.get('offset') or 0):
+            _state['offset'] = persisted
+    except Exception:
+        pass
     _state['running'] = True
     _state['gen'] += 1
     gen = _state['gen']

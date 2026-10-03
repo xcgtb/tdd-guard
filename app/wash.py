@@ -718,6 +718,10 @@ def purge_old():
                     f.unlink()
             except OSError:
                 pass
+        try:
+            _eng().db_purge_plans(plan_cut)   # SQLite 索引同步清理
+        except Exception:
+            pass
 
 
 # ═══════════ 目录级残留清理（照搬上游 TgtoDrive「Emby 洗版残留清理」） ═══════════
