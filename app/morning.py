@@ -13,6 +13,7 @@ from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
 from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg, storage, media, sync
+from .tgmsg import reports as tgmsg_reports
 
 log = logging.getLogger('media_agent')
 
@@ -481,24 +482,21 @@ def action_emby_library(args):
     return result
 
 def build_morning_report(items: list, force_refresh: bool = False, cache_only: bool = False) -> str:
+    """采集晨报所需数据，交给 tgmsg.reports.morning_report 统一渲染（拆数据与排版）。"""
     now = datetime.datetime.fromtimestamp(time.time())
-    lines = [tg.tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_WEEK[now.weekday()]}')]
     snap = daily_consistency_snapshot(force_refresh=force_refresh)
-    lines.append(f"🧭 <i>统一快照 · 规则 {html.escape(str(snap.get('rule_sig') or ''))}</i>")
+    items = list(items or [])
+    data = {'now': now, 'rule_sig': snap.get('rule_sig') or '', 'items': items}
 
     if 'stats' in items:
         try:
             st = (snap.get('ingest') or {}).get('stats') or {}
-            lines += ['', '📊 <b>近 24 小时入库</b>',
-                      f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
-                      f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
             # 折叠明细（对齐 Web 入库汇报）：最近入库置顶，TG 里点开即看，不用回 Web
             ing = ingest.read_ingest_cache() or {}
             tree = ing.get('tree') or {}
             tvd = tree.get('tv_detail') or {}
             movd = tree.get('mov_detail') or {}
             rows = []
-            src_short = {'本地影视库': '本地', '分享影视库': '分享', '其它库': '其它'}
             for src, cats in tvd.items():
                 for cat, shows in cats.items():
                     for name, info in shows.items():
@@ -509,37 +507,17 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
                     for name, ts in names.items():
                         rows.append((float(ts or 0), src, cat, name, 0))
             rows.sort(key=lambda x: -x[0])
-            if rows:
-                det = [f"• [{src_short.get(src, src)}·{html.escape(str(cat))}]《{html.escape(str(name))}》"
-                       + (f" +{cnt}集" if cnt else '')
-                       for _ts, src, cat, name, cnt in rows[:MORNING_INGEST_TOP]]
-                lines.append('<blockquote expandable>' + '\n'.join(det) + '</blockquote>')
-                if len(rows) > len(det):
-                    lines.append(f'<i>…另有 {len(rows) - len(det)} 条，完整清单见 Web「每日简报」</i>')
+            data['ingest'] = {'stats': st, 'rows': rows}
         except Exception as e:
-            lines += ['', f'📊 入库统计失败: {html.escape(str(e))}']
+            data['ingest'] = {'error': str(e)}
 
     if 'subscriptions' in items:
         try:
             # 晨报只引用当天「追更订阅」真正成功推送的汇报；不重新执行订阅检查。
             rep = subscribe._load_subscription_report(today_only=True)
-            ups = (rep or {}).get('updates') or []
-            lines += ['', f"🔔 <b>订阅更新</b>　<i>{len(ups)} 部</i>"]
-            if ups:
-                for u in ups[:10]:
-                    name = html.escape(str(u.get('name') or ''))
-                    if u.get('refilled'):
-                        lines.append(f"✅ 《{name}》已补齐 <b>{subscribe._fmt_ep_ranges(subscribe._keys_to_eps(u['refilled']))}</b>")
-                    if u.get('new_eps'):
-                        lines.append(f"📺 《{name}》新增 <b>{subscribe._fmt_ep_ranges(subscribe._keys_to_eps(u['new_eps']))}</b>")
-                    if u.get('newly_missing'):
-                        lines.append(f"⚠️ 《{name}》缺集 <b>{subscribe._fmt_ep_ranges(subscribe._keys_to_eps(u['newly_missing']))}</b>")
-                if len(ups) > 10:
-                    lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
-            else:
-                lines.append('✅ 无变化')
+            data['subs'] = (rep or {}).get('updates') or []
         except Exception as e:
-            lines += ['', f'🔔 订阅汇报读取失败: {html.escape(str(e))}']
+            data['subs'] = {'error': str(e)}
 
     if 'emby_gap' in items:
         try:
@@ -547,29 +525,11 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
             rep = gap_report(max_age=None, force_refresh=force_refresh, cache_only=(cache_only or not force_refresh))
             if rep.get('status') == 'error':
                 raise RuntimeError(rep.get('message'))
-            if rep.get('status') == 'empty':
-                lines += ['', f"🧩 <b>Emby 缺集</b>　<i>{html.escape(str(rep.get('message') or '暂无缓存'))}</i>"]
-                return '\n'.join(lines)
-
-            def _diff(x):
-                return abs((x.get('tmdb_info') or {}).get('diff') or 0)
-            broken = sorted(rep['missing'], key=_diff, reverse=True)
-            total_gap = sum(_diff(x) for x in broken)
-            lines += ['', f"🧩 <b>Emby 缺集</b>　<i>{len(broken)} 部 · 共缺 {total_gap} 集</i>"]
-            if broken:
-                shown = broken[:MORNING_GAP_TOP]
-                # 折叠引用：默认只露前几行（缺得最多的排最前），点一下展开，再点收起
-                lines.append('<blockquote expandable>' + '\n'.join(
-                    f"• 《{html.escape(str(x.get('name') or ''))}》缺 <b>{_diff(x)}</b> 集" for x in shown)
-                    + '</blockquote>')
-                if len(broken) > len(shown):
-                    lines.append(f'<i>…另有 {len(broken) - len(shown)} 部，完整清单见 Web「片库映射」</i>')
-            else:
-                lines.append('✅ 全部对齐')
+            data['gap'] = rep
         except Exception as e:
-            lines += ['', f'🧩 Emby 检查失败: {html.escape(str(e))}']
+            data['gap'] = {'error': str(e)}
 
-    return '\n'.join(lines)
+    return str(tgmsg_reports.morning_report(data))
 
 def send_morning_report(items: list, force_refresh: bool = False, mark_sent: bool = True) -> bool:
     """发送晨报。

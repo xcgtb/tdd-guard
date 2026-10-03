@@ -104,3 +104,30 @@ class TestStaticCheck:
     def test_allows_core_and_deps_name_imports(self):
         assert _m("from .core import esc\n") == []
         assert _run({'app/routers/r.py': "from app.routers.deps import auth\nfrom app import state\n"}) == []
+
+
+class TestSubpackage:
+    """app/tgmsg/ 这类子包：`from . import tgmsg` / `from .tgmsg import html as th` 要能过，
+    但属性存在性与「按名字导入」的严格规则不能被包路径绕过。"""
+
+    _PKG = {
+        'app/tgmsg/__init__.py': 'from . import html  # noqa: F401\n',
+        'app/tgmsg/html.py': 'def h(x):\n    return x\n',
+    }
+
+    def test_from_package_import_module(self):
+        code = 'from .tgmsg import html as th\n\ndef f():\n    return th.h(1)\n'
+        assert _run(dict(self._PKG, **{'app/m.py': code})) == []
+
+    def test_from_import_package_attribute_checked(self):
+        code = 'from . import tgmsg\n\ndef f():\n    return tgmsg.h\n'
+        issues = _run(dict(self._PKG, **{'app/m.py': code}))
+        assert any('tgmsg.h' in i for i in issues), issues
+
+    def test_from_import_package_existing_attribute_ok(self):
+        code = 'from . import tgmsg\n\ndef f():\n    return tgmsg.html\n'
+        assert _run(dict(self._PKG, **{'app/m.py': code})) == []
+
+    def test_name_import_from_subpackage_is_rejected(self):
+        issues = _run(dict(self._PKG, **{'app/m.py': 'from .tgmsg.html import h\n'}))
+        assert any('只允许' in i for i in issues), issues

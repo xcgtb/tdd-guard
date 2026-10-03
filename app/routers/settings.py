@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app import config as _cfg
 from app import state, governance, morning, bot
+from app.tgmsg import transport as tg_transport
 from app.routers.deps import auth
 
 router = APIRouter()
@@ -236,13 +237,9 @@ def api_test_telegram(body: dict = None):
     if not token or not chat_id:
         return {'status': 'error', 'message': '请填写 Bot Token 和 Chat ID'}
     try:
-        text = '✅ <b>TTD Guard</b> 测试消息\n如果你看到这条消息，说明 Telegram 通知已配置成功。'
-        url = f'https://api.telegram.org/bot{token}/sendMessage'
-        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as r:
-            resp = json.loads(r.read().decode('utf-8'))
-        if resp.get('ok'): return {'status': 'success', 'message': '✅ 已发送测试消息，请查看 Telegram'}
-        return {'status': 'error', 'message': f"❌ 发送失败: {resp.get('description', '未知错误')}"}
+        ok, desc = tg_transport.send_test(token, chat_id)
+        if ok:
+            return {'status': 'success', 'message': '✅ 已发送测试消息，请查看 Telegram'}
+        return {'status': 'error', 'message': f'❌ 发送失败: {desc}'}
     except Exception as e:
         return {'status': 'error', 'message': f'❌ 发送失败: {e}'}

@@ -1,0 +1,67 @@
+{
+ "tg_title": "🔍 <b>扫描完成</b>\n<i>副标题</i>",
+ "tg_title_nosub": "🔍 <b>扫描完成</b>",
+ "tg_row": "📚 剧集总数　<b>12</b>　<i>备注</i>",
+ "tg_row_nonote": "📚 剧集总数　<b>12</b>",
+ "fmt_scan_text": "🔍 <b>双库扫描完成</b>\n<i>01-02 03:04</i>\n\n🧹 待清理本地　<b>3</b>\n📤 待淘汰分享　<b>2</b>\n🛡️ 受保护　<b>5</b>\n🏷️ 白名单豁免　<b>4</b>　<i>合并为 2 组</i>",
+ "fmt_scan_text_stamp": "🔍 <b>双库扫描完成</b>\n<i>自定义</i>\n\n🧹 待清理本地　<b>3</b>\n📤 待淘汰分享　<b>2</b>\n🛡️ 受保护　<b>5</b>\n🏷️ 白名单豁免　<b>4</b>　<i>合并为 2 组</i>",
+ "split_short": [
+  "hello"
+ ],
+ "split_long": [
+  "<blockquote expandable>\n行0 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行2 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行3 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行4 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行5 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行6 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行7 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行8 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行9 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行10 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行11 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行12 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行13 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行14 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行15 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行16 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行17 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行18 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行19 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行20 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行21 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行22 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行23 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行24 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行25 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行26 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行27 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行28 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行29 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行30 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行31 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行32 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行33 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行34 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行35 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行36 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行37 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行38 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行39 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行40 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行41 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行42 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行43 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行44 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行45 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行46 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行47 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行48 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行49 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行50 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行51 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行52 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行53 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行54 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行55 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行56 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行57 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n</blockquote>",
+  "<blockquote expandable>行58 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行59 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行60 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行61 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行62 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行63 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行64 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行65 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行66 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行67 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行68 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行69 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行70 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行71 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行72 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行73 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行74 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行75 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行76 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行77 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行78 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n行79 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n</blockquote>"
+ ],
+ "card_check": [
+  "🔍 <b>扫描完成</b>\n<i>01-02 03:04</i>\n\n🧹 待清理本地　<b>3</b>\n📤 待淘汰分享　<b>2</b>\n🛡️ 受保护　<b>5</b>\n🏷️ 白名单豁免　<b>4</b>"
+ ],
+ "card_clean": [
+  "🗑️ <b>清理完成</b>\n<i>01-02 03:04</i>\n\n💾 释放本地　<b>2</b>\n📤 淘汰分享　<b>1</b>\n🔄 Emby 刷新　<b>✅</b>\n⏭️ 跳过　<b>3</b>　<i>状态已变化，未执行</i>"
+ ],
+ "card_clean_noskip": [
+  "🗑️ <b>清理完成</b>\n<i>01-02 03:04</i>\n\n💾 释放本地　<b>0</b>\n📤 淘汰分享　<b>0</b>\n🔄 Emby 刷新　<b>❌</b>"
+ ],
+ "card_logs": [
+  "📜 <b>审计日志</b>\n\n<pre>line1\nline2</pre>"
+ ],
+ "card_ingest": [
+  "📊 <b>24 小时入库</b>\n<i>📦 来自缓存 · 2 分钟前</i>\n\n🎬 电影　<b>+2 部</b>\n📺 剧集　<b>+3 部</b>　<i>+18 集</i>\n\n📺 <b>剧集明细</b>（点开展开全部 / 再点收起）\n<blockquote expandable><b>📂 本地影视库 · 国产剧</b> (2部)\n• 《剧甲》+5集\n• 《剧乙》+2集</blockquote>\n\n🎬 <b>电影明细</b>（点开展开全部 / 再点收起）\n<blockquote expandable><b>📂 分享影视库 · 外语电影</b> (1部)\n• 《电影甲》</blockquote>"
+ ],
+ "card_emby": [
+  "📺 <b>Emby 库总览</b>\n\n📚 剧集总数　<b>10</b>\n✅ 对齐　<b>7</b>　<i>在更 2</i>\n⚠️ 缺集　<b>3</b>　<i>超集 1 · 未匹配 0</i>\n🎬 电影总数　<b>5</b>\n\n<b>全部缺集（2 部）</b>（点开展开 / 再点收起）\n<blockquote expandable>• 《乙剧》缺 <b>7</b> 集\n• 《甲剧》缺 <b>2</b> 集</blockquote>"
+ ],
+ "card_gap": [
+  "🧩 <b>缺集检测</b>\n<i>TMDB 对照 · 2 小时前</i>\n\n📚 剧集总数　<b>10</b>\n✅ 对齐　<b>7</b>　<i>在更 2</i>\n⚠️ 缺集　<b>3</b>　<i>超集 1 · 未匹配 0</i>\n\n<b>全部缺集（1 部）</b>（点开展开 / 再点收起）\n<blockquote expandable>• 《甲剧》缺 <b>2</b> 集</blockquote>"
+ ],
+ "card_emby_error": [
+  "❌ emby 失败: 拉取失败"
+ ],
+ "card_gap_error": [
+  "❌ gap 失败: 拉取失败"
+ ],
+ "auto_scan": [
+  "⏰ <b>双库定时巡检</b>\n<i>01-02 03:04</i>\n\n🧹 待清理本地　<b>3</b>\n📤 待淘汰分享　<b>2</b>\n🛡️ 受保护　<b>5</b>\n🏷️ 白名单豁免　<b>4</b>\n\n<i>清单 2 小时内有效，过期需重新扫描；清理不会自动执行，确认后请点下方按钮</i>"
+ ],
+ "auto_scan_clean": [
+  "⏰ <b>双库定时巡检</b>\n<i>01-02 03:04</i>\n\n🧹 待清理本地　<b>0</b>\n📤 待淘汰分享　<b>0</b>\n🛡️ 受保护　<b>0</b>\n🏷️ 白名单豁免　<b>0</b>\n\n✅ 双库状态良好，无需清理"
+ ],
+ "auto_scan_error": [
+  "⚠️ <b>定时巡检失败</b>\n扫描炸了"
+ ],
+ "sub_check": [
+  "⏳ 正在检查订阅（含 TMDB 对照）...",
+  "🔔 <b>订阅检查</b>\n<i>2 部有变化</i>\n\n📺 <b>《甲剧》</b>\n　🆕 新增入库 <b>S01E16–E17</b>\n\n📺 <b>《乙剧》</b>\n　✅ 已补齐 <b>S01E09</b>\n　⚠️ 缺集 <b>S02E03</b>"
+ ],
+ "sub_check_empty": [
+  "⏳ 正在检查订阅（含 TMDB 对照）...",
+  "🔔 <b>订阅检查完成</b>\n<i>共 12 部</i>\n\n✅ 无新集、无缺集"
+ ],
+ "sub_list": [
+  "🔔 <b>追更订阅</b>\n<i>共 2 部</i>\n\n• 《甲剧》 <code>S01E17</code> · TMDB 20 集\n• 《乙剧》 <code>S02E03</code> (已暂停)"
+ ],
+ "sub_list_empty": [
+  "🔔 暂无订阅。\n在 Web「追更订阅」页添加，或从「影视探索」点订阅按钮。"
+ ],
+ "morning": "☀️ <b>TTD Guard 晨报</b>\n<i>2026-01-01 周四</i>\n🧭 <i>统一快照 · 规则 abc123</i>\n\n📊 <b>近 24 小时入库</b>\n🎬 电影　<b>+2</b> 部\n📺 剧集　<b>+3</b> 部 · <b>+18</b> 集\n<blockquote expandable>• [本地·国产剧]《剧甲》 +5集\n• [分享·外语电影]《电影甲》\n• [本地·国产剧]《剧乙》 +2集</blockquote>\n\n🔔 <b>订阅更新</b>　<i>2 部</i>\n📺 《甲剧》新增 <b>S01E16–E17</b>\n✅ 《乙剧》已补齐 <b>S01E09</b>\n⚠️ 《乙剧》缺集 <b>S02E03</b>\n\n🧩 <b>Emby 缺集</b>　<i>2 部 · 共缺 9 集</i>\n<blockquote expandable>• 《乙剧》缺 <b>7</b> 集\n• 《甲剧》缺 <b>2</b> 集</blockquote>",
+ "morning_empty_gap": "☀️ <b>TTD Guard 晨报</b>\n<i>2026-01-01 周四</i>\n🧭 <i>统一快照 · 规则 abc123</i>\n\n📊 <b>近 24 小时入库</b>\n🎬 电影　<b>+0</b> 部\n📺 剧集　<b>+0</b> 部 · <b>+0</b> 集\n\n🔔 <b>订阅更新</b>　<i>0 部</i>\n✅ 无变化\n\n🧩 <b>Emby 缺集</b>　<i>暂无缓存</i>"
+}

@@ -12,7 +12,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from app import bot, config, engine, storage
+from app import bot, config, engine, storage, morning, subscribe
+from app.tgmsg import html as th
+from app.tgmsg import transport as tg_transport
 
 
 class TestIsAllowed:
@@ -65,8 +67,8 @@ class TestRestartDoesNotLeakPollers:
                 return {'ok': True, 'result': {'username': 'test_bot'}}
             return {'ok': True, 'result': {}}
 
-        orig_api, orig_cfg = bot._api, bot.load_config
-        bot._api = fake_api
+        orig_api, orig_cfg = tg_transport.api, bot.load_config
+        tg_transport.api = fake_api
         bot.load_config = lambda: {'telegram_bot_token': 'x', 'telegram_allowed_users': ''}
         try:
             bot.start()
@@ -79,7 +81,7 @@ class TestRestartDoesNotLeakPollers:
         finally:
             bot.stop()
             _time.sleep(2.5)
-            bot._api, bot.load_config = orig_api, orig_cfg
+            tg_transport.api, bot.load_config = orig_api, orig_cfg
         assert _alive('tg-bot') == 0
 
 
@@ -321,12 +323,13 @@ class TestDeleteQueue:
     def test_cleanup_does_not_hold_lock_during_network_delete(self):
         """以前 deleteMessage 的网络调用在 _DELETE_LOCK 里；网络一卡，_send / status() 全部被堵死"""
         started, release = _threading.Event(), _threading.Event()
-        saved = (bot._try_delete, bot.load_config)
+        saved = (bot._try_delete, bot.load_config, bot._state.get('token'))
 
         def slow_delete(token, chat_id, mid):
             started.set(); release.wait(5); return True
         bot._try_delete = slow_delete
-        bot.load_config = lambda: {'telegram_bot_token': 'tok'}
+        # 清理线程用 _state 里缓存的 token（不再每 2 秒 load_config），这里直接注入
+        bot._state['token'] = 'tok'
         with bot._DELETE_LOCK:
             bot._delete_queue[:] = [(_time.time() - 1, 1, 4242)]
         bot._state['running'] = True
@@ -344,7 +347,7 @@ class TestDeleteQueue:
             release.set()
             bot._state['running'] = False
             t.join(5)
-            bot._try_delete, bot.load_config = saved
+            bot._try_delete, bot.load_config, bot._state['token'] = saved
             with bot._DELETE_LOCK:
                 bot._delete_queue[:] = []
 
@@ -397,3 +400,111 @@ class TestBotStatus:
         assert bot._is_timeout(TimeoutError('x'))
         assert bot._is_timeout(Exception('The read operation timed out'))
         assert not bot._is_timeout(Exception('HTTP Error 409: Conflict'))
+
+
+# ═══════════════════ 命令表 / 任务总线 / 转义 / 线程池 ═══════════════════
+def _cmd(text, patches=()):
+    """驱动一条命令，返回 (send 文本列表, 还原函数)。"""
+    out = []
+    saved = (bot._send, bot._edit, bot.load_config)
+    bot._send = lambda token, chat_id, t, *a, **k: (out.append(t), {'ok': True})[1]
+    bot._edit = lambda token, chat_id, m, t, kb=None, **k: (out.append(t), {'ok': True})[1]
+    bot.load_config = lambda: {'telegram_bot_token': 'tok', 'telegram_allowed_users': '1'}
+    originals = [((obj, name), getattr(obj, name)) for obj, name, _v in patches]
+    for obj, name, val in patches:
+        setattr(obj, name, val)
+    try:
+        bot._handle_command('tok', {'chat': {'id': 1}, 'from': {'id': 1},
+                                    'text': text, 'message_id': 1})
+    finally:
+        bot._send, bot._edit, bot.load_config = saved
+        for (obj, name), val in originals:
+            setattr(obj, name, val)
+    return out
+
+
+class TestCommandTable:
+    def test_status_is_registered(self):
+        assert '/status' in ['/' + c['command'] for c in bot.COMMANDS]
+        assert any(c['command'] == 'status' for c in bot.MY_COMMANDS)
+
+    def test_unknown_command_reply_is_valid_html(self):
+        out = _cmd('/<x>')
+        assert out, '未知命令应回复'
+        reply = str(out[-1])
+        assert th.tg_html_problems(reply) == [], reply
+        assert '<script>' not in reply
+
+    def test_dispatch_table_covers_commands(self):
+        for c in bot.COMMANDS:
+            assert c['action'] in bot._ACTIONS or c.get('special') == 'search'
+
+
+class TestMorningCommand:
+    def test_morning_does_not_mark_daily_sent(self):
+        calls = {}
+        orig = morning.send_morning_report
+        morning.send_morning_report = (
+            lambda items, force_refresh=False, mark_sent=True:
+            (calls.update(items=items, force_refresh=force_refresh, mark_sent=mark_sent), True)[1])
+        try:
+            _cmd('/morning', patches=[(bot._cfg, 'get_morning_report', lambda: {'items': ['stats']})])
+            deadline = _time.time() + 5
+            while 'mark_sent' not in calls and _time.time() < deadline:
+                _time.sleep(0.05)
+        finally:
+            morning.send_morning_report = orig
+        assert calls.get('mark_sent') is False, calls
+        assert calls.get('force_refresh') is False, calls
+
+
+class TestSubCheckUsesTaskBus:
+    def test_sub_check_spawns_task(self):
+        spawned = []
+        orig_spawn = bot.tasks.manager.spawn
+        orig_check = subscribe.check_subscriptions
+
+        def spy(kind, fn, *a, **k):
+            spawned.append(kind)
+            return orig_spawn(kind, fn, *a, **k)
+        bot.tasks.manager.spawn = spy
+        subscribe.check_subscriptions = lambda send_notify=True: {'updates': [], 'total': 0}
+        try:
+            _cmd('/sub check')
+            deadline = _time.time() + 5
+            while not spawned and _time.time() < deadline:
+                _time.sleep(0.05)
+            # 任务跑完再放行，避免污染后续用例的「忙碌中」状态
+            while bot.tasks.manager.running() is not None and _time.time() < deadline:
+                _time.sleep(0.05)
+        finally:
+            bot.tasks.manager.spawn = orig_spawn
+            subscribe.check_subscriptions = orig_check
+        assert spawned == ['bot_sub_check'], spawned
+
+
+class TestUpdatePool:
+    def test_many_concurrent_updates_use_at_most_four_workers(self):
+        gate = _threading.Event()
+        seen = []
+        orig = bot._handle_update
+
+        def slow(token, upd):
+            seen.append(upd)
+            gate.wait(5)
+        bot._handle_update = slow
+        try:
+            for i in range(50):
+                bot._submit_update('tok', {'update_id': i})
+            _time.sleep(0.6)
+            workers = [t for t in _threading.enumerate()
+                       if t.name.startswith('tg-update') and t.is_alive()]
+            assert 0 < len(workers) <= 4, [t.name for t in workers]
+            assert len(seen) <= bot.MAX_PENDING_UPDATES
+        finally:
+            gate.set()
+            bot._handle_update = orig
+            deadline = _time.time() + 5
+            while bot._pending_updates and _time.time() < deadline:
+                _time.sleep(0.05)
+        assert bot._pending_updates == 0

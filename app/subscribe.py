@@ -13,6 +13,7 @@ from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
 from . import state, tmdb, emby, lib, storage, tg, media, sync
+from .tgmsg import blocks as tgmsg_blocks, reports as tgmsg_reports
 
 log = logging.getLogger('media_agent')
 
@@ -150,32 +151,7 @@ def _keys_to_eps(keys):
 
 keys_to_eps = _keys_to_eps  # 公开名（bot 用这个）
 
-def _fmt_ep_ranges(eps):
-    """把集列表格式化成人类可读的区间串。
-
-    同一季内连续集号合并：[(1,16),(1,17),(1,18)] -> 'S01E16–E18'
-    单集保留完整写法：[(1,16)] -> 'S01E16'
-    跨季用 ', ' 连接：[(1,10),(2,1),(2,2)] -> 'S01E10, S02E01–E02'
-    集数较多时折叠尾部，避免 Telegram 消息被撑爆。
-    """
-    items = sorted({(int(sn), int(en)) for sn, en in (eps or []) if sn > 0 and en > 0})
-    if not items:
-        return ''
-    parts = []
-    i, n = 0, len(items)
-    while i < n:
-        sn, lo = items[i]
-        hi = lo
-        j = i + 1
-        # 只在同季内合并连续集号；跨季一定断开（S01E10 后面不是 S01E11 的延续）
-        while j < n and items[j][0] == sn and items[j][1] == hi + 1:
-            hi = items[j][1]
-            j += 1
-        parts.append(_ep_key(sn, lo) if hi == lo else f'S{sn:02d}E{lo:02d}–E{hi:02d}')
-        i = j
-    if len(parts) > 6:
-        parts = parts[:6] + [f'…等 {n} 集']
-    return ', '.join(parts)
+_fmt_ep_ranges = tgmsg_blocks.ep_ranges  # 实现已移到 app/tgmsg/blocks.py，这里保留旧名兼容
 
 _CHECK_LOCK = threading.Lock()
 CHECK_LOCK_TIMEOUT = 300
@@ -322,17 +298,8 @@ def _run_subscription_check(send_notify=True) -> dict:
     # 保证下一轮算出同一批 new_eps 继续重试 —— 既不丢通知也不重复刷屏。
     sent_ok = True
     if send_notify and updates:
-        lines = [tg.tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
-        for u in updates:
-            lines.append('')
-            lines.append(f"📺 <b>《{html.escape(str(u['name'] or ''))}》</b>")
-            if u['refilled']:
-                lines.append(f"　✅ 已补齐 <b>{_fmt_ep_ranges(_keys_to_eps(u['refilled']))}</b>")
-            if u['new_eps']:
-                lines.append(f"　🆕 新增入库 <b>{_fmt_ep_ranges(_keys_to_eps(u['new_eps']))}</b>")
-            if u['newly_missing']:
-                lines.append(f"　⚠️ 缺集 <b>{_fmt_ep_ranges(_keys_to_eps(u['newly_missing']))}</b>")
-        sent_ok = tg.notify_telegram('\n'.join(lines))
+        # 文案统一由 tgmsg 渲染（与 Bot /sub check、晨报「订阅更新」同一份实现）
+        sent_ok = tg.notify_telegram(str(tgmsg_reports.sub_notify(updates)))
         if sent_ok:
             _save_subscription_report(updates)
         else:
