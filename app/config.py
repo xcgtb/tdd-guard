@@ -4,10 +4,7 @@ import os
 import json
 from pathlib import Path
 
-try:
-    from . import core as _core
-except ImportError:          # 测试里直接把 app/ 放进 sys.path 的加载方式
-    import core as _core
+from . import core as _core
 
 # 数据目录固定为 /data；AGENT_DATA 仅供测试使用，不对用户开放
 DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))

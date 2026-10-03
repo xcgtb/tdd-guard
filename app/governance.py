@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,36 +8,21 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX,
+                   compare_cover, explain_compare)
+from . import state, wash, emby, lib, stats, storage, tg
+
 log = logging.getLogger('media_agent')
 
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX, compare_cover, explain_compare)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX, compare_cover, explain_compare)
+
+# ═══════════════════ 电视剧逐集比较（白皮书 §7）═══════════════════
 
 
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
+# 逐集择优阈值：交集内分享画质达标集数占比 >= 该比例才删本地（否则删分享或保留）。
+SEASON_REPLACE_RATIO = 0.9
 
 
 def _strategy():
@@ -57,20 +42,20 @@ def _cmp_versions(a_name, b_name):
 
 def _tie_share_wins():
     """平局时分享是否胜出（由 Web「平局保留本地」开关决定）。"""
-    return not _eng()._strategy()['tie_keep_local']
+    return not _strategy()['tie_keep_local']
 
 
 def _replace_ratio():
-    """剧集「分享达标率」阈值：Web 可调（0.5~1.0），缺失/非法回落 engine.SEASON_REPLACE_RATIO。"""
-    default = _eng().SEASON_REPLACE_RATIO
+    """剧集「分享达标率」阈值：Web 可调（0.5~1.0），缺失/非法回落 SEASON_REPLACE_RATIO。"""
+    default = SEASON_REPLACE_RATIO
     try:
-        v = float(_eng()._strategy().get('season_replace_ratio', default))
+        v = float(_strategy().get('season_replace_ratio', default))
     except (TypeError, ValueError):
         return default
     return v if 0.5 <= v <= 1.0 else default
 
 def _exempt_keywords():
-    return _eng()._strategy()['exempt_keywords']
+    return _strategy()['exempt_keywords']
 
 def _ep(p: Path):
     parent = p.parent
@@ -78,10 +63,10 @@ def _ep(p: Path):
     if not allow:
         # 从当前路径向上找本工具的媒体根；只有位于含“剧”的分类目录下才允许
         # 裸 EP/Episode。找不到根时宁可保守返回 None。
-        for root in (_eng().L_ROOT, _eng().S_ROOT):
+        for root in (state.L_ROOT, state.S_ROOT):
             try:
                 parent.relative_to(root)
-                allow = _eng()._under_tv_category(parent, root)
+                allow = lib._under_tv_category(parent, root)
                 break
             except (ValueError, OSError):
                 continue
@@ -109,7 +94,7 @@ def _nat_key(text):
 def _split_root(path):
     """返回 (库标签, 相对根目录的路径)；不在两个库内则 ('', None)"""
     p = Path(path)
-    for root, label in ((_eng().L_ROOT, '本地'), (_eng().S_ROOT, '分享')):
+    for root, label in ((state.L_ROOT, '本地'), (state.S_ROOT, '分享')):
         try:
             return label, p.relative_to(root)
         except ValueError:
@@ -130,7 +115,7 @@ def _exempt_group_of(path, kws):
 
 def _share_wins(s_name, l_name):
     """分享版本是否胜出：先看决策模型，再按 7 维对比，全部打平才用平局开关。"""
-    decision = _eng()._strategy()['decision']
+    decision = _strategy()['decision']
     if decision == 'keep_local': return False
     if decision == 'keep_share': return True
     r = _cmp_versions(s_name, l_name)
@@ -146,7 +131,7 @@ def _compare_meta(s_name, l_name, season=False):
     """把「分享版 vs 本地版」逐维对比结果挂到动作上，Web 可直接展示依据。"""
     e = explain_compare(s_name, l_name, _cover_strategy())
     e['share_name'], e['local_name'] = s_name, l_name
-    e['decision'] = 'quality_first' if season else _eng()._strategy()['decision']
+    e['decision'] = 'quality_first' if season else _strategy()['decision']
     e['tie_keep_local'] = not _tie_share_wins()
     return e
 
@@ -436,22 +421,22 @@ def _identity_conflicts(S, L):
     return out
 
 def _build_plan_with_libs():
-    """生成治理计划，同时把本次用到的两个 _eng().Lib 一并返回，
+    """生成治理计划，同时把本次用到的两个 lib.Lib 一并返回，
     供调用方直接取 strm_count 等数据，避免为了计数再对双库做一遍全量 rglob。"""
     t_start = time.time()
     # 两个库互不相干，并行遍历：磁盘/网络挂载慢时能把等待时间叠在一起
     with ThreadPoolExecutor(max_workers=2) as _ex:
-        _fs, _fl = _ex.submit(_eng()._get_lib, _eng().S_ROOT), _ex.submit(_eng()._get_lib, _eng().L_ROOT)
+        _fs, _fl = _ex.submit(lib._get_lib, state.S_ROOT), _ex.submit(lib._get_lib, state.L_ROOT)
         S, L = _fs.result(), _fl.result()
     log.info('双库遍历完成：分享 %d / 本地 %d 个 STRM，耗时 %.1fs',
              S.strm_count, L.strm_count, time.time() - t_start)
-    s = _eng()._strategy()
+    s = _strategy()
     kws = _exempt_keywords()
     gate = _QuietGate()
     acts = []
 
     for key, s_files in S.mov.items():
-        lk = _eng()._match_governance_key(S, L, key, L.mov, s.get('match_strategy', 'title_year'), 'movie')
+        lk = lib._match_governance_key(S, L, key, L.mov, s.get('match_strategy', 'title_year'), 'movie')
         if not lk: continue
         disp, l_files = S.meta[key][0], L.mov[lk]
 
@@ -487,7 +472,7 @@ def _build_plan_with_libs():
 
     for key, s_seasons in S.tv.items():
         disp = S.meta[key][0]
-        lk = _eng()._match_governance_key(S, L, key, L.tv, s.get('match_strategy', 'title_year'), 'tv')
+        lk = lib._match_governance_key(S, L, key, L.tv, s.get('match_strategy', 'title_year'), 'tv')
         l_seasons = L.tv[lk] if lk else {}
 
         # 入库未满静默期：只要任意一季（任一侧）刚有变动，整部剧暂不治理，
@@ -627,7 +612,7 @@ def _build_plan_with_libs():
 
     # ── 库内多版本去重：同片/同集存在多份 strm 时，只留画质最优的一份 ──
     _dedupe_lib_versions(acts, L, S, gate, kws)
-    _eng()._QUIET_LAST['n'] = gate.skipped
+    state._QUIET_LAST['n'] = gate.skipped
     # 为每一条治理动作补齐「为什么匹配到」的证据，供 Web 详情/审计使用。
     # 这里不改变决策结果，只增加可追溯信息。
     #
@@ -954,11 +939,14 @@ def _current_rule_snapshot():
     sig = hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
     return {'sig': sig, 'rules': rules}
 
+
+current_rule_snapshot = _current_rule_snapshot  # 公开名（bot 等外部调用方用这个）
+
 def save_plan(acts):
     todo = [a for a in acts if a.kind not in ('keep', 'exempt') and a.action_id]
     if not todo:
         return None
-    _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
     ts = time.time()
     ids = sorted(a.action_id for a in todo)
     pid = hashlib.md5(('\n'.join(ids) + str(ts)).encode()).hexdigest()[:8]
@@ -994,10 +982,10 @@ def save_plan(acts):
         'executed_at': None,
         'executed_result': None,
     }
-    (_eng().STATE_DIR / f'plan_{pid}.json').write_text(
+    (state.STATE_DIR / f'plan_{pid}.json').write_text(
         json.dumps(payload, ensure_ascii=False), encoding='utf-8')
     try:
-        _eng().db_save_plan(payload)   # SQLite 索引（先文件后库，文件仍是导出格式）
+        storage.db_save_plan(payload)   # SQLite 索引（先文件后库，文件仍是导出格式）
     except Exception as ex:
         log.debug('计划落库失败（已保留 JSON 文件）: %s', ex)
     return pid
@@ -1008,7 +996,7 @@ def load_plan(plan_id):
     safe = re.sub(r'[^0-9a-f]', '', str(plan_id))
     if not safe:
         return None
-    pf = _eng().STATE_DIR / f'plan_{safe}.json'
+    pf = state.STATE_DIR / f'plan_{safe}.json'
     if pf.exists():
         # 文件优先：测试/运维直接改文件的场景必须读到最新内容
         try:
@@ -1018,30 +1006,30 @@ def load_plan(plan_id):
         if data.get('schema_version') != 2:
             return None
         try:
-            _eng().db_save_plan(data)   # 回填索引，失败不影响读取
+            storage.db_save_plan(data)   # 回填索引，失败不影响读取
         except Exception:
             pass
         return data
     # 文件不在（被清理/丢失）→ SQLite 兜底
     try:
-        return _eng().db_load_plan(safe)
+        return storage.db_load_plan(safe)
     except Exception:
         return None
 
-def save_plan_state(plan_id, state, extra=None):
+def save_plan_state(plan_id, new_state, extra=None):
     if not plan_id:
         return False
     safe = re.sub(r'[^0-9a-f]', '', str(plan_id))
     if not safe:
         return False
-    pf = _eng().STATE_DIR / f'plan_{safe}.json'
+    pf = state.STATE_DIR / f'plan_{safe}.json'
     if not pf.exists():
         return False
     try:
         data = json.loads(pf.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return False
-    data['state'] = state
+    data['state'] = new_state
     if extra:
         data.update(extra)
     try:
@@ -1049,7 +1037,7 @@ def save_plan_state(plan_id, state, extra=None):
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
         tmp.replace(pf)
         try:
-            _eng().db_save_plan(data)   # 同步 SQLite 索引（payload 已含新 state/extra）
+            storage.db_save_plan(data)   # 同步 SQLite 索引（payload 已含新 state/extra）
         except Exception:
             pass
         return True
@@ -1063,23 +1051,23 @@ def save_latest_scan(plan_id, result):
     这样“上次扫描”不会错误地停留在旧 plan。
     """
     try:
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
         ts = time.time()
         meta = dict(result or {})
         meta['scan_ts'] = ts
         meta['scan_id'] = plan_id
         rule_sig = _current_rule_snapshot()['sig']
         meta['rule_sig'] = rule_sig
-        tmp = _eng().GOV_LATEST_FILE.with_suffix('.tmp')
+        tmp = state.GOV_LATEST_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps({'schema_version': 2, 'ts': ts, 'plan_id': plan_id,
                                    'rule_sig': rule_sig, 'result': meta}, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(_eng().GOV_LATEST_FILE)
+        tmp.replace(state.GOV_LATEST_FILE)
     except OSError as ex:
         log.warning('保存最近扫描结果失败: %s', ex)
 
 def load_latest_scan():
     try:
-        return json.loads(_eng().GOV_LATEST_FILE.read_text(encoding='utf-8'))
+        return json.loads(state.GOV_LATEST_FILE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
 
@@ -1088,18 +1076,18 @@ def action_inter_check(args):
     identity_conflicts = _identity_conflicts(S_lib, L_lib)
 
     # 扫描完成后顺便刷新 STRM 计数缓存。
-    # 计数直接取自 build_plan 刚遍历出来的 _eng().Lib（同一次遍历，数据与计划严格一致），
+    # 计数直接取自 build_plan 刚遍历出来的 lib.Lib（同一次遍历，数据与计划严格一致），
     # 不再为了计数把双库重新 rglob 一遍——大库/网络挂载上这是扫描耗时翻倍的元凶。
     try:
-        _eng()._strm_count_cache.update({'ts': time.time(), 'local': L_lib.strm_count, 'share': S_lib.strm_count})
-        _eng()._save_strm_count_disk(L_lib.strm_count, S_lib.strm_count)
+        state._strm_count_cache.update({'ts': time.time(), 'local': L_lib.strm_count, 'share': S_lib.strm_count})
+        stats._save_strm_count_disk(L_lib.strm_count, S_lib.strm_count)
         log.info('扫描后刷新 STRM 计数: local=%d share=%d', L_lib.strm_count, S_lib.strm_count)
     except Exception as e:
         log.warning('刷新 STRM 计数缓存失败: %s', e)
-    # 扫描后失效 _eng().Lib 缓存。执行阶段不再重新 build_plan：
+    # 扫描后失效 lib.Lib 缓存。执行阶段不再重新 build_plan：
     # 治理单已经经过 15 分钟入库静默期并由用户确认，执行只消费这份已确认快照。
     # 这样避免点击「执行清理」时再次全量遍历双库。
-    _eng()._invalidate_lib_cache()
+    lib._invalidate_lib_cache()
     loc = [a for a in acts if a.kind == 'loc']
     shr = [a for a in acts if a.kind == 'shr']
     keep = [a for a in acts if a.kind == 'keep']
@@ -1108,7 +1096,7 @@ def action_inter_check(args):
     write_audit_log('库间查重巡检',
                     f'扫描完成：待清理本地 {len(loc)} 项, 待清理分享 {len(shr)} 项, 保护 {len(keep)} 项, 豁免 {len(exempted)} 项')
     if (loc or shr) and not getattr(args, 'silent', False):
-        _eng().notify_telegram(_eng().fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
+        tg.notify_telegram(tg.fmt_scan_text('🔍', '双库扫描完成', len(loc), len(shr), len(keep), len(exempted),
                                       len(_group_exempt_acts(exempted))))
     def _file_count(items):
         return sum(len(a.files) for a in items)
@@ -1127,7 +1115,7 @@ def action_inter_check(args):
         'protected_items': [_act_to_dict(a) for a in keep],
         'exempted_items':  _group_exempt_acts(exempted),
         'exempted_count':  len(exempted),
-        'quiet_skipped':   _eng()._QUIET_LAST['n'],
+        'quiet_skipped':   state._QUIET_LAST['n'],
         'reason_counts': dict(reason_counts),
         'strm_counts': {'local': L_lib.strm_count, 'share': S_lib.strm_count,
                         'total': L_lib.strm_count + S_lib.strm_count},
@@ -1144,9 +1132,9 @@ def action_inter_clean(args):
     if args.dry_run:
         return _action_inter_clean_locked(args)
     try:
-        with _eng().mutation_lock():
+        with wash.mutation_lock():
             return _action_inter_clean_locked(args)
-    except _eng().MutationBusy as e:
+    except wash.MutationBusy as e:
         return {'status': 'busy', 'message': str(e)}
 
 def _action_inter_clean_locked(args):
@@ -1176,7 +1164,7 @@ def _plan_action_to_act(old_act):
     if kind not in ('loc', 'shr'):
         return None
     files = []
-    root = _eng().L_ROOT if kind == 'loc' else _eng().S_ROOT
+    root = state.L_ROOT if kind == 'loc' else state.S_ROOT
     for raw in old_act.get('files') or []:
         try:
             p = Path(str(raw))
@@ -1223,7 +1211,7 @@ def _run_inter_clean(args):
         if st == 'expired':
             return {'status': 'error', 'code': 'plan_expired',
                     'message': '清理计划已过期，请重新诊断'}
-        if time.time() - plan.get('ts', 0) > _eng().PLAN_TTL:
+        if time.time() - plan.get('ts', 0) > state.PLAN_TTL:
             if not args.dry_run:
                 save_plan_state(args.plan, 'expired')
             return {'status': 'error', 'code': 'plan_expired',
@@ -1249,14 +1237,14 @@ def _run_inter_clean(args):
             todo.append(cur)
         skipped = len(old_actions) - len(todo)
     else:
-        todo = [a for a in _eng().build_plan() if a.kind not in ('keep', 'exempt')]
+        todo = [a for a in build_plan() if a.kind not in ('keep', 'exempt')]
         skipped = 0
 
     n_loc = n_sh = 0
     detail, warns = [], []
     for a in todo:
         is_loc = a.kind == 'loc'
-        r = _eng().safe_delete_files(a.files, _eng().L_ROOT if is_loc else _eng().S_ROOT, _eng().CLOUD_L_ROOT if is_loc else None, args.dry_run)
+        r = wash.safe_delete_files(a.files, state.L_ROOT if is_loc else state.S_ROOT, state.CLOUD_L_ROOT if is_loc else None, args.dry_run)
         line = ('[DRY-RUN] ' if args.dry_run else '') + a.detail
         if r['errors']:
             warns.append(f'{a.text}: ' + '; '.join(r['errors'][:2])); line += ' ⚠️ 部分失败'
@@ -1274,13 +1262,13 @@ def _run_inter_clean(args):
 
     refreshed = False
     if (n_loc or n_sh) and not args.dry_run:
-        refreshed = _eng().notify_emby_refresh()
-        # 文件已变动，主动失效 _eng().Lib 缓存，避免下次 build_plan 用到陈旧数据
-        _eng()._invalidate_lib_cache()
+        refreshed = emby.notify_emby_refresh()
+        # 文件已变动，主动失效 lib.Lib 缓存，避免下次 build_plan 用到陈旧数据
+        lib._invalidate_lib_cache()
         # 同时失效统计缓存（总览页下次重算）
-        _eng()._strm_count_cache['ts'] = 0
-        _eng()._lib_stats_cache['ts'] = 0
-        _eng()._lib_stats_cache['data'] = None
+        state._strm_count_cache['ts'] = 0
+        state._lib_stats_cache['ts'] = 0
+        state._lib_stats_cache['data'] = None
     if skipped:
         detail.append(f'├─ ⏭ 有 {skipped} 项计划文件已不存在/路径无效，已跳过')
         for s in skipped_details[:5]:
@@ -1288,17 +1276,17 @@ def _run_inter_clean(args):
     if unconfirmed:
         detail.append(f'├─ ⏭ 有 {unconfirmed} 个文件未在已确认治理单快照中，本次未删除')
     if not args.dry_run:
-        _eng().purge_old()
+        wash.purge_old()
         write_audit_log('执行跨库清理',
                         f'释放本地 {n_loc} 项, 淘汰分享 {n_sh} 项 (Emby刷新: {refreshed})',
                         detail + [f'⚠️ {w}' for w in warns])
         # Bot 端发起的清理会传 notify=False：由 Bot 自己编辑确认消息，避免重复弹两条
         if (n_loc or n_sh) and getattr(args, 'notify', True):
-            _eng().notify_telegram('\n'.join([
-                _eng().tg_title('🗑️', '清理完成', _eng().tg_stamp()), '',
-                _eng().tg_row('💾', '释放本地', n_loc),
-                _eng().tg_row('📤', '淘汰分享', n_sh),
-                _eng().tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
+            tg.notify_telegram('\n'.join([
+                tg.tg_title('🗑️', '清理完成', tg.tg_stamp()), '',
+                tg.tg_row('💾', '释放本地', n_loc),
+                tg.tg_row('📤', '淘汰分享', n_sh),
+                tg.tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
         if args.plan:
             save_plan_state(args.plan, 'done', {
                 'executed_at': time.time(),

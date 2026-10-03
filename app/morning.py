@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,52 +8,37 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html, copy
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state, governance, tmdb, ingest, subscribe, emby, lib, stats, tg
+
 log = logging.getLogger('media_agent')
 
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
 
+# ═══════════════════ Telegram 排版助手 ═══════════════════
+_WEEK = '一二三四五六日'
 
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
+# ═══════════════════ 晨报 ═══════════════════
+MORNING_GAP_TOP = 50   # 晨报里最多列出多少部缺集剧（按缺得最多排序），完整清单看 Web
+MORNING_INGEST_TOP = 60  # 晨报里最多列出多少条入库明细（最近入库置顶），完整清单看 Web
 
 
 def _save_overview_disk(out):
     try:
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _eng()._EMBY_OVERVIEW_CACHE_FILE.with_suffix('.tmp')
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = state._EMBY_OVERVIEW_CACHE_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps({'ts': time.time(), 'data': out}, ensure_ascii=False),
                        encoding='utf-8')
-        tmp.replace(_eng()._EMBY_OVERVIEW_CACHE_FILE)
+        tmp.replace(state._EMBY_OVERVIEW_CACHE_FILE)
     except (OSError, TypeError) as e:
         log.warning('片库映射缓存写入失败: %s', e)
 
 def _load_overview_disk():
     """返回 {'ts': float, 'data': {...}} 或 None"""
     try:
-        raw = json.loads(_eng()._EMBY_OVERVIEW_CACHE_FILE.read_text(encoding='utf-8'))
+        raw = json.loads(state._EMBY_OVERVIEW_CACHE_FILE.read_text(encoding='utf-8'))
         data = raw.get('data')
         if isinstance(data, dict) and 'series' in data:
             return {'ts': float(raw.get('ts', 0)), 'data': data}
@@ -63,37 +48,37 @@ def _load_overview_disk():
 
 def _overview_bg_refresh():
     """后台重建片库映射数据（单飞），完成后更新内存+磁盘缓存"""
-    if not _eng()._overview_refresh_lock.acquire(blocking=False):
+    if not state._overview_refresh_lock.acquire(blocking=False):
         return
     try:
         out = _build_emby_library_overview()
-        _eng()._emby_lib_cache['ts'] = time.time()
-        _eng()._emby_lib_cache['data'] = out
+        state._emby_lib_cache['ts'] = time.time()
+        state._emby_lib_cache['data'] = out
         _save_overview_disk(out)
         log.info('片库映射缓存后台刷新完成：剧集 %d / 电影 %d',
                  len(out.get('series', [])), len(out.get('movies', [])))
     except Exception as e:
         log.warning('片库映射后台刷新失败: %s', e)
     finally:
-        _eng()._overview_refresh_lock.release()
+        state._overview_refresh_lock.release()
 
 def emby_library_overview(force=False):
     """片库映射数据三级缓存：内存(5分钟) → 磁盘(立即返回+后台刷新) → 同步构建。
     全量拉取 Emby 分集很慢，磁盘缓存保证每次进页面秒开，后台静默更新。"""
     if not force:
-        if _eng()._emby_lib_cache['data'] and time.time() - _eng()._emby_lib_cache['ts'] < _eng()._CACHE_TTL:
-            return _eng()._emby_lib_cache['data']
+        if state._emby_lib_cache['data'] and time.time() - state._emby_lib_cache['ts'] < state._CACHE_TTL:
+            return state._emby_lib_cache['data']
         disk = _load_overview_disk()
         if disk is not None:
-            _eng()._emby_lib_cache['data'] = disk['data']
-            _eng()._emby_lib_cache['ts'] = disk['ts']
-            if time.time() - disk['ts'] >= _eng()._CACHE_TTL:
+            state._emby_lib_cache['data'] = disk['data']
+            state._emby_lib_cache['ts'] = disk['ts']
+            if time.time() - disk['ts'] >= state._CACHE_TTL:
                 threading.Thread(target=_overview_bg_refresh, daemon=True,
                                  name='emby-overview-refresh').start()
-            return _eng()._emby_lib_cache['data']
+            return state._emby_lib_cache['data']
     out = _build_emby_library_overview()
-    _eng()._emby_lib_cache['ts'] = time.time()
-    _eng()._emby_lib_cache['data'] = out
+    state._emby_lib_cache['ts'] = time.time()
+    state._emby_lib_cache['data'] = out
     _save_overview_disk(out)
     return out
 
@@ -105,15 +90,15 @@ def _build_emby_library_overview():
     同一身份的季/集按 ``(season, episode)`` union。
     """
     out = {'series': [], 'movies': []}
-    lib_of = _eng().EMBY_PATHS.lib_of
-    disk_lookup = _eng()._disk_tmdb_lookup()  # 上游目录名 {tmdb-xxx} 兜底表
-    series_data = _eng().emby_request('/Items', {
+    lib_of = state.EMBY_PATHS.lib_of
+    disk_lookup = lib._disk_tmdb_lookup()  # 上游目录名 {tmdb-xxx} 兜底表
+    series_data = emby.emby_request('/Items', {
         'Recursive': 'true', 'IncludeItemTypes': 'Series',
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
         'Limit': 50000,
     }) or {}
-    episodes_all = _eng()._fetch_all_episodes()
-    alive = _eng()._alive_dir_map(ep.get('Path') for ep in episodes_all)
+    episodes_all = emby._fetch_all_episodes()
+    alive = emby._alive_dir_map(ep.get('Path') for ep in episodes_all)
 
     def _ep_alive(path):
         p = (path or '').replace('\\', '/')
@@ -133,7 +118,7 @@ def _build_emby_library_overview():
             continue  # 空壳 Series 不进入片库映射
         tmdb_id = str((s.get('ProviderIds') or {}).get('Tmdb') or '')
         if not tmdb_id:
-            _cp = _eng().emby_path_to_container(s.get('Path', '') or '')
+            _cp = emby.emby_path_to_container(s.get('Path', '') or '')
             tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
         key = f'tv:{tmdb_id}' if tmdb_id else f'id:{sid}'
         g = groups.setdefault(key, {
@@ -148,9 +133,9 @@ def _build_emby_library_overview():
         path = s.get('Path', '') or ''
         if path and path not in g['paths']:
             g['paths'].append(path)
-        lib = lib_of(path)
-        if lib:
-            g['libs'].add(lib)
+        lib_tag = lib_of(path)
+        if lib_tag:
+            g['libs'].add(lib_tag)
         g['has_image'] = g['has_image'] or ('Primary' in (s.get('ImageTags') or {}))
         if not g.get('name') and s.get('Name'):
             g['name'] = s.get('Name')
@@ -173,7 +158,7 @@ def _build_emby_library_overview():
 
     # 分集磁盘兜底：上游 TgtoDrive 用 SxxExx 命名，Emby 识别可能漏集/错集。
     # 把磁盘事实分集 union 进 Emby 分集，补上 Emby 漏识别的集，避免缺集对照误判。
-    disk_eps = _eng()._disk_eps_by_tmdb()
+    disk_eps = lib._disk_eps_by_tmdb()
     for g in groups.values():
         _tid = g.get('tmdb_id')
         if not _tid:
@@ -216,13 +201,13 @@ def _build_emby_library_overview():
             'complete': total_missing == 0 and len(seasons) > 0,
         })
 
-    movie_data = _eng().emby_request('/Items', {
+    movie_data = emby.emby_request('/Items', {
         'Recursive': 'true', 'IncludeItemTypes': 'Movie',
         'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags,Genres',
         'Limit': 50000,
     }) or {}
     movie_items = movie_data.get('Items', [])
-    m_alive = _eng()._alive_dir_map(m.get('Path') for m in movie_items)
+    m_alive = emby._alive_dir_map(m.get('Path') for m in movie_items)
     movie_groups = {}
     for m in movie_items:
         path = m.get('Path', '') or ''
@@ -231,7 +216,7 @@ def _build_emby_library_overview():
             continue
         tmdb_id = str((m.get('ProviderIds') or {}).get('Tmdb') or '')
         if not tmdb_id:
-            _cp = _eng().emby_path_to_container(m.get('Path', '') or '')
+            _cp = emby.emby_path_to_container(m.get('Path', '') or '')
             tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
         key = f'movie:{tmdb_id}' if tmdb_id else f'id:{m.get("Id")}'
         g = movie_groups.setdefault(key, {
@@ -244,8 +229,8 @@ def _build_emby_library_overview():
             g['ids'].append(m.get('Id'))
         if path and path not in g['paths']:
             g['paths'].append(path)
-        lib = lib_of(path)
-        if lib: g['libs'].add(lib)
+        lib_tag = lib_of(path)
+        if lib_tag: g['libs'].add(lib_tag)
         g['has_image'] = g['has_image'] or ('Primary' in (m.get('ImageTags') or {}))
     for g in movie_groups.values():
         libs = g['libs']
@@ -263,7 +248,7 @@ def read_manual_done() -> dict:
     TMDB 季数 / 集数与实际不符（如国产剧只有一季而 TMDB 有很多季）时手动标记，
     仅影响缺集统计与提示，不改动任何文件。由 Web「片库映射」弹窗里的「手动完结」写入。"""
     try:
-        data = json.loads(_eng().MANUAL_DONE_FILE.read_text(encoding='utf-8'))
+        data = json.loads(state.MANUAL_DONE_FILE.read_text(encoding='utf-8'))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -316,16 +301,16 @@ def build_library_health_snapshot(max_age=1800):
 
 def save_library_snapshot(snapshot):
     try:
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _eng().LIBRARY_SNAPSHOT_FILE.with_suffix('.tmp')
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = state.LIBRARY_SNAPSHOT_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(_eng().LIBRARY_SNAPSHOT_FILE)
+        tmp.replace(state.LIBRARY_SNAPSHOT_FILE)
     except (OSError, TypeError) as e:
         log.warning('统一片库快照写入失败: %s', e)
 
 def load_library_snapshot(max_age=None, background_refresh=True):
     try:
-        data = json.loads(_eng().LIBRARY_SNAPSHOT_FILE.read_text(encoding='utf-8'))
+        data = json.loads(state.LIBRARY_SNAPSHOT_FILE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     if max_age is not None and time.time() - float(data.get('ts') or 0) > max_age:
@@ -350,7 +335,7 @@ def unified_health(max_age=1800):
     这里返回空快照，让晨报继续生成，而不是因为一次 Emby 异常导致预览/发送整体失败。
     """
     try:
-        snap = _eng().load_library_snapshot(max_age=max_age)
+        snap = load_library_snapshot(max_age=max_age)
         if snap:
             return snap
         # 兼容已有 Emby→TMDB 对照缓存：只从缓存重建轻量健康快照，绝不触发网络扫描。
@@ -387,14 +372,14 @@ def unified_health(max_age=1800):
 def daily_consistency_snapshot(force_refresh: bool = False) -> dict:
     """轻量统一事实快照：晨报、总览、执行记录口径使用同一批缓存与规则指纹。"""
     # 晨报只引用后台 5 分钟轮询维护的 24h 入库缓存；生成晨报时绝不再次查询。
-    ingest = _eng().read_ingest_cache() or {}
+    ingest_cache = ingest.read_ingest_cache() or {}
     health = unified_health(max_age=1800) or {}
-    gov = _eng().load_latest_scan() or {}
-    rule_snapshot = _eng()._current_rule_snapshot()
+    gov = governance.load_latest_scan() or {}
+    rule_snapshot = governance._current_rule_snapshot()
     return {
         'schema_version': 2, 'ts': time.time(), 'rule_sig': rule_snapshot['sig'],
-        'ingest': {'ts': ingest.get('ts', 0), 'ok': ingest.get('ok', True), 'stats': ingest.get('stats', {}),
-                   'warning': ingest.get('stale_error') or ('' if ingest.get('ok', True) else ingest.get('error', ''))},
+        'ingest': {'ts': ingest_cache.get('ts', 0), 'ok': ingest_cache.get('ok', True), 'stats': ingest_cache.get('stats', {}),
+                   'warning': ingest_cache.get('stale_error') or ('' if ingest_cache.get('ok', True) else ingest_cache.get('error', ''))},
         'library': {'ts': health.get('ts', 0), 'stats': health.get('stats', {}), 'episode_total': health.get('episode_total', 0),
                     'top_missing': (health.get('top_missing') or [])[:10]},
         'governance': {'ts': gov.get('ts', 0), 'scan_id': gov.get('plan_id', ''), 'result': gov.get('result') or {}},
@@ -459,7 +444,7 @@ def action_emby_library(args):
                           'tmdb_total': None, 'diff': None, 'seasons': []}
 
     if with_tmdb:
-        t = _eng().Tmdb()
+        t = tmdb.Tmdb()
         has_key = bool(t.key)
         for s in series:
             tmdb_id = s.get('tmdb_id')
@@ -469,24 +454,24 @@ def action_emby_library(args):
                                   'tmdb_total': None, 'diff': None, 'seasons': []}
                 continue
             try:
-                info = t.get(f'/tv/{tmdb_id}', ttl=_eng().TMDB_INFO_TTL)
-            except _eng().TmdbError as e:
+                info = t.get(f'/tv/{tmdb_id}', ttl=tmdb.TMDB_INFO_TTL)
+            except tmdb.TmdbError as e:
                 log.warning('TMDB 查询失败 %s: %s', tmdb_id, e); info = None; tmdb_errors += 1
             except Exception as e:
                 log.warning('TMDB 查询异常 %s: %s', tmdb_id, e); info = None; tmdb_errors += 1
-            s['tmdb_info'] = _eng().classify_series_by_tmdb(s.get('seasons', []), info)
+            s['tmdb_info'] = tmdb.classify_series_by_tmdb(s.get('seasons', []), info)
             # 照搬上游 TgtoDrive 的海报对照逻辑：TMDB 原始响应的 poster_path 直接保留，
             # 前端片库映射优先用 TMDB 官方最新图（Emby 缓存图只做兜底）。
             if info and info.get('poster_path'):
                 s['tmdb_info']['poster'] = info.get('poster_path')
-        # 电影同样按上游海报对照逻辑取 TMDB 最新 poster（24h 缓存与剧集共用 _eng().Tmdb 缓存池）。
+        # 电影同样按上游海报对照逻辑取 TMDB 最新 poster（24h 缓存与剧集共用 tmdb.Tmdb 缓存池）。
         if t.key:
             for m in movies:
                 _mid = m.get('tmdb_id')
                 if not _mid:
                     continue
                 try:
-                    _minfo = t.get(f'/movie/{_mid}', ttl=_eng().TMDB_INFO_TTL)
+                    _minfo = t.get(f'/movie/{_mid}', ttl=tmdb.TMDB_INFO_TTL)
                 except Exception as e:
                     log.warning('TMDB 电影海报查询失败 %s: %s', _mid, e)
                     continue
@@ -513,7 +498,7 @@ def action_emby_library(args):
         if s.get('complete') or st == 'aligned': stats['complete_series'] += 1
         else: stats['incomplete_series'] += 1
     result = {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
-              'tmdb_errors': tmdb_errors, 'emby_host': _eng().EMBY_HOST}
+              'tmdb_errors': tmdb_errors, 'emby_host': state.EMBY_HOST}
     if with_tmdb:
         try:
             save_emby_lib_cache(result)
@@ -524,7 +509,7 @@ def action_emby_library(args):
 
 def build_morning_report(items: list, force_refresh: bool = False, cache_only: bool = False) -> str:
     now = datetime.datetime.fromtimestamp(time.time())
-    lines = [_eng().tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_eng()._WEEK[now.weekday()]}')]
+    lines = [tg.tg_title('☀️', 'TTD Guard 晨报', f'{now:%Y-%m-%d} 周{_WEEK[now.weekday()]}')]
     snap = daily_consistency_snapshot(force_refresh=force_refresh)
     lines.append(f"🧭 <i>统一快照 · 规则 {html.escape(str(snap.get('rule_sig') or ''))}</i>")
 
@@ -535,7 +520,7 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
                       f"🎬 电影　<b>+{st.get('movies', 0)}</b> 部",
                       f"📺 剧集　<b>+{st.get('series', 0)}</b> 部 · <b>+{st.get('episodes', 0)}</b> 集"]
             # 折叠明细（对齐 Web 入库汇报）：最近入库置顶，TG 里点开即看，不用回 Web
-            ing = _eng().read_ingest_cache() or {}
+            ing = ingest.read_ingest_cache() or {}
             tree = ing.get('tree') or {}
             tvd = tree.get('tv_detail') or {}
             movd = tree.get('mov_detail') or {}
@@ -554,7 +539,7 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
             if rows:
                 det = [f"• [{src_short.get(src, src)}·{html.escape(str(cat))}]《{html.escape(str(name))}》"
                        + (f" +{cnt}集" if cnt else '')
-                       for _ts, src, cat, name, cnt in rows[:_eng().MORNING_INGEST_TOP]]
+                       for _ts, src, cat, name, cnt in rows[:MORNING_INGEST_TOP]]
                 lines.append('<blockquote expandable>' + '\n'.join(det) + '</blockquote>')
                 if len(rows) > len(det):
                     lines.append(f'<i>…另有 {len(rows) - len(det)} 条，完整清单见 Web「每日简报」</i>')
@@ -564,18 +549,18 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
     if 'subscriptions' in items:
         try:
             # 晨报只引用当天「追更订阅」真正成功推送的汇报；不重新执行订阅检查。
-            rep = _eng()._load_subscription_report(today_only=True)
+            rep = subscribe._load_subscription_report(today_only=True)
             ups = (rep or {}).get('updates') or []
             lines += ['', f"🔔 <b>订阅更新</b>　<i>{len(ups)} 部</i>"]
             if ups:
                 for u in ups[:10]:
                     name = html.escape(str(u.get('name') or ''))
                     if u.get('refilled'):
-                        lines.append(f"✅ 《{name}》已补齐 <b>{_eng()._fmt_ep_ranges(_eng()._keys_to_eps(u['refilled']))}</b>")
+                        lines.append(f"✅ 《{name}》已补齐 <b>{subscribe._fmt_ep_ranges(subscribe._keys_to_eps(u['refilled']))}</b>")
                     if u.get('new_eps'):
-                        lines.append(f"📺 《{name}》新增 <b>{_eng()._fmt_ep_ranges(_eng()._keys_to_eps(u['new_eps']))}</b>")
+                        lines.append(f"📺 《{name}》新增 <b>{subscribe._fmt_ep_ranges(subscribe._keys_to_eps(u['new_eps']))}</b>")
                     if u.get('newly_missing'):
-                        lines.append(f"⚠️ 《{name}》缺集 <b>{_eng()._fmt_ep_ranges(_eng()._keys_to_eps(u['newly_missing']))}</b>")
+                        lines.append(f"⚠️ 《{name}》缺集 <b>{subscribe._fmt_ep_ranges(subscribe._keys_to_eps(u['newly_missing']))}</b>")
                 if len(ups) > 10:
                     lines.append(f'<i>…另有 {len(ups) - 10} 部有变化</i>')
             else:
@@ -599,7 +584,7 @@ def build_morning_report(items: list, force_refresh: bool = False, cache_only: b
             total_gap = sum(_diff(x) for x in broken)
             lines += ['', f"🧩 <b>Emby 缺集</b>　<i>{len(broken)} 部 · 共缺 {total_gap} 集</i>"]
             if broken:
-                shown = broken[:_eng().MORNING_GAP_TOP]
+                shown = broken[:MORNING_GAP_TOP]
                 # 折叠引用：默认只露前几行（缺得最多的排最前），点一下展开，再点收起
                 lines.append('<blockquote expandable>' + '\n'.join(
                     f"• 《{html.escape(str(x.get('name') or ''))}》缺 <b>{_diff(x)}</b> 集" for x in shown)
@@ -621,7 +606,7 @@ def send_morning_report(items: list, force_refresh: bool = False, mark_sent: boo
     避免一次手动测试把当天 08:00 的定时晨报标记掉。
     """
     text = build_morning_report(items, force_refresh=force_refresh)
-    ok = _eng().notify_telegram(text)
+    ok = tg.notify_telegram(text)
     if ok and mark_sent:
         _cfg.mark_morning_report_sent(time.strftime('%Y-%m-%d', time.localtime()))
     return ok
@@ -631,14 +616,14 @@ def _live_series_episodes(series_id: str):
     视为 Emby 尚未清理的残留，直接剔除。删除后 Emby 的刷新是异步的，
     如果直接信 Emby，刚删完的剧集还会被当成\"仍在库里\"，海报就不会消失。
     路径映射不上的（其它库）无法核实，保留。"""
-    items = (_eng().emby_request('/Items', {
+    items = (emby.emby_request('/Items', {
         'ParentId': series_id, 'Recursive': 'true',
         'IncludeItemTypes': 'Episode',
         'Fields': 'Path,ParentIndexNumber,IndexNumber', 'Limit': 5000,
     }) or {}).get('Items') or []
     live = []
     for e in items:
-        conv = _eng().emby_path_to_container(e.get('Path') or '')
+        conv = emby.emby_path_to_container(e.get('Path') or '')
         if conv is not None:
             try:
                 if not conv.exists():
@@ -650,7 +635,7 @@ def _live_series_episodes(series_id: str):
 
 def _resync_series_entry(entry: dict, live: list):
     """用真实存在的分集重算缓存里这部剧的分集统计，并按原 TMDB 数据重新判定缺集。"""
-    lib_of = _eng().EMBY_PATHS.lib_of
+    lib_of = state.EMBY_PATHS.lib_of
     season_map, local_set, share_set = {}, set(), set()
     for ep in live:
         sn, en = ep.get('ParentIndexNumber'), ep.get('IndexNumber')
@@ -685,14 +670,14 @@ def _resync_series_entry(entry: dict, live: list):
             fake = {'status': old.get('tmdb_status') or '',
                     'seasons': [{'season_number': se['season'], 'episode_count': se['tmdb']}
                                 for se in (old.get('seasons') or []) if se.get('tmdb')]}
-            entry['tmdb_info'] = _eng().classify_series_by_tmdb(seasons, fake)
+            entry['tmdb_info'] = tmdb.classify_series_by_tmdb(seasons, fake)
         else:
             old['local_total'] = entry['total_episodes']
 
 def _patch_all_caches(patch):
     """对 内存 / 总览磁盘 / TMDB 对照磁盘 三份缓存各调用一次 patch(data)->bool，改动了就落盘（保留原时间戳）。"""
-    if _eng()._emby_lib_cache.get('data'):
-        patch(_eng()._emby_lib_cache['data'])
+    if state._emby_lib_cache.get('data'):
+        patch(state._emby_lib_cache['data'])
     disk = _load_overview_disk()
     if disk and patch(disk['data']):
         _save_overview_disk(disk['data'])
@@ -859,17 +844,17 @@ def patch_emby_lib_cache_after_movie_delete(tmdb_id: str, target: str):
     return removed[0]
 
 def save_emby_lib_cache(data: dict, keep_ts: bool = False):
-    _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
     data = dict(data)
     if not (keep_ts and data.get('ts')):
         data['ts'] = time.time()
-    tmp = _eng().EMBY_LIB_CACHE_FILE.with_suffix('.tmp')
+    tmp = state.EMBY_LIB_CACHE_FILE.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-    tmp.replace(_eng().EMBY_LIB_CACHE_FILE)
+    tmp.replace(state.EMBY_LIB_CACHE_FILE)
 
 def read_emby_lib_cache(max_age=None):
     try:
-        data = json.loads(_eng().EMBY_LIB_CACHE_FILE.read_text(encoding='utf-8'))
+        data = json.loads(state.EMBY_LIB_CACHE_FILE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     if max_age is not None and time.time() - data.get('ts', 0) > max_age:
@@ -877,7 +862,7 @@ def read_emby_lib_cache(max_age=None):
     return data
 
 def get_tmdb_scan_progress() -> dict:
-    p = dict(_eng()._tmdb_scan_progress)
+    p = dict(state._tmdb_scan_progress)
     if p['running'] and p['started_at']:
         p['elapsed_sec'] = int(time.time() - p['started_at'])
         p['eta_sec'] = int(p['elapsed_sec'] / p['done'] * (p['total'] - p['done'])) if p['done'] > 0 else None
@@ -891,16 +876,16 @@ def get_tmdb_scan_progress() -> dict:
 def refresh_tmdb_scan():
     """后台跑一次完整 TMDB 对照并落盘（带进度上报）。单飞：网页「强制对照」和定时预热
     可能前后脚触发，已在跑时直接返回，不再并发两份全量对照。"""
-    if not _eng()._tmdb_scan_lock.acquire(blocking=False):
+    if not state._tmdb_scan_lock.acquire(blocking=False):
         return {'status': 'running', 'message': 'TMDB 对照已在后台运行'}
     try:
         return _refresh_tmdb_scan()
     finally:
-        _eng()._tmdb_scan_lock.release()
+        state._tmdb_scan_lock.release()
 
 def _refresh_tmdb_scan():
     log.info('TMDB 对照开始（后台）')
-    _eng()._tmdb_scan_progress.update({
+    state._tmdb_scan_progress.update({
         'running': True, 'total': 0, 'done': 0,
         'stage': '拉取 Emby 库...',
         'started_at': time.time(), 'finished_at': 0,
@@ -911,9 +896,9 @@ def _refresh_tmdb_scan():
         series = data['series']
         movies = data['movies']
         total = len(series)
-        _eng()._tmdb_scan_progress['total'] = total
-        _eng()._tmdb_scan_progress['stage'] = f'对照 TMDB（共 {total} 部）...'
-        t = _eng().Tmdb()
+        state._tmdb_scan_progress['total'] = total
+        state._tmdb_scan_progress['stage'] = f'对照 TMDB（共 {total} 部）...'
+        t = tmdb.Tmdb()
         has_key = bool(t.key)
         tmdb_errors = 0
         for i, s_ in enumerate(series):
@@ -925,17 +910,17 @@ def _refresh_tmdb_scan():
                                    'tmdb_total': None, 'diff': None, 'seasons': []}
             else:
                 try:
-                    info = t.get(f'/tv/{tmdb_id}', ttl=_eng().TMDB_INFO_TTL)
-                except _eng().TmdbError as e:
+                    info = t.get(f'/tv/{tmdb_id}', ttl=tmdb.TMDB_INFO_TTL)
+                except tmdb.TmdbError as e:
                     log.warning('TMDB 查询失败 %s: %s', tmdb_id, e)
                     info = None; tmdb_errors += 1
                 except Exception as e:
                     log.warning('TMDB 查询异常 %s: %s', tmdb_id, e)
                     info = None; tmdb_errors += 1
-                s_['tmdb_info'] = _eng().classify_series_by_tmdb(s_.get('seasons', []), info)
-            _eng()._tmdb_scan_progress['done'] = i + 1
+                s_['tmdb_info'] = tmdb.classify_series_by_tmdb(s_.get('seasons', []), info)
+            state._tmdb_scan_progress['done'] = i + 1
             if (i + 1) % 20 == 0 or (i + 1) == total:
-                el = time.time() - _eng()._tmdb_scan_progress['started_at']
+                el = time.time() - state._tmdb_scan_progress['started_at']
                 eta = el / (i + 1) * (total - i - 1)
                 log.info('TMDB 进度 %d/%d (%.0f%%) ETA %.0f 秒', i + 1, total,
                          (i + 1) / total * 100 if total else 100, eta)
@@ -950,20 +935,20 @@ def _refresh_tmdb_scan():
             if s_.get('complete'): stats['complete_series'] += 1
             else: stats['incomplete_series'] += 1
         res = {'status': 'success', 'stats': stats, 'series': series, 'movies': movies,
-               'tmdb_errors': tmdb_errors, 'with_tmdb': True, 'emby_host': _eng().EMBY_HOST}
+               'tmdb_errors': tmdb_errors, 'with_tmdb': True, 'emby_host': state.EMBY_HOST}
         save_emby_lib_cache(res)
         save_library_snapshot(build_library_health_snapshot())
         cfg = _cfg.load_config()
         cfg['tmdb_scan_last_ts'] = str(time.time())
         _cfg.save_config(cfg)
-        _eng()._tmdb_scan_progress.update({'running': False, 'finished_at': time.time(),
+        state._tmdb_scan_progress.update({'running': False, 'finished_at': time.time(),
                                     'stage': '完成', 'stats': stats})
         log.info('TMDB 对照完成：对齐 %d / 缺集 %d / 超集 %d / 在更 %d',
                  stats['aligned'], stats['missing'], stats['extra'], stats['ongoing'])
         return res
     except Exception as e:
         log.exception('TMDB 对照失败')
-        _eng()._tmdb_scan_progress.update({'running': False, 'finished_at': time.time(),
+        state._tmdb_scan_progress.update({'running': False, 'finished_at': time.time(),
                                     'stage': '失败', 'error': str(e)})
         return {'status': 'error', 'message': str(e)}
 
@@ -971,39 +956,39 @@ def scan_exempt_matches():
     """扫描双库，返回命中白名单的条目。
     口径与 build_plan 一致：剧名、所在目录、文件路径任一命中都算；
     同一个命中目录（如「百家讲坛」）下的多个 Season 目录聚合成一条。"""
-    kws = _eng()._exempt_keywords()
+    kws = governance._exempt_keywords()
     if not kws:
         return []
     results = {}
 
     def hit_of(disp, files):
-        h = _eng()._exempt_hit(disp)
+        h = governance._exempt_hit(disp)
         if h:
             return h
         for f in files:
-            h = _eng()._exempt_hit(str(f))
+            h = governance._exempt_hit(str(f))
             if h:
                 return h
         return []
 
-    for root, lib_name in ((_eng().L_ROOT, '本地'), (_eng().S_ROOT, '分享')):
+    for root, lib_name in ((state.L_ROOT, '本地'), (state.S_ROOT, '分享')):
         if not root.exists():
             continue
-        lib = _eng()._get_lib(root)
+        disk_lib = lib._get_lib(root)
         entries = []  # (key, [files], 季号或None)
-        for key, files in lib.mov.items():
+        for key, files in disk_lib.mov.items():
             entries.append((key, files, None))
-        for key, seasons in lib.tv.items():
+        for key, seasons in disk_lib.tv.items():
             for sn, files in seasons.items():
                 entries.append((key, files, sn))
         for key, files, sn in entries:
-            disp = lib.meta[key][0]
+            disp = disk_lib.meta[key][0]
             hits = hit_of(disp, files)
             if not hits:
                 continue
             gname = None
             for f in files[:200]:
-                gname, _k = _eng()._exempt_group_of(f, kws)
+                gname, _k = governance._exempt_group_of(f, kws)
                 if gname:
                     break
             gname = gname or disp
@@ -1018,7 +1003,7 @@ def scan_exempt_matches():
             r['strm'] += len(files)
     out = []
     for r in results.values():
-        members = sorted(r['members'], key=_eng()._nat_key)
+        members = sorted(r['members'], key=governance._nat_key)
         out.append({
             'title': r['title'], 'keyword': r['keyword'], 'libs': r['libs'],
             # 只有单个节目时季号才有意义；多个 Season 目录时用 members 展示
@@ -1026,5 +1011,5 @@ def scan_exempt_matches():
             'member_count': len(members), 'members': members[:300],
             'strm_count': r['strm'],
         })
-    out.sort(key=lambda x: _eng()._nat_key(x['title']))
+    out.sort(key=lambda x: governance._nat_key(x['title']))
     return out

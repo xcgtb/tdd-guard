@@ -4,16 +4,10 @@ import asyncio, time
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-try:
-    from app.routers.deps import (
-        WEB_USER, WEB_PASSWORD, SESSION_COOKIE, SESSION_DAYS,
-        _sign_session, STATIC_DIR,
-    )
-except ImportError:
-    from routers.deps import (
-        WEB_USER, WEB_PASSWORD, SESSION_COOKIE, SESSION_DAYS,
-        _sign_session, STATIC_DIR,
-    )
+from app.routers.deps import (
+    WEB_USER, WEB_PASSWORD, SESSION_COOKIE, SESSION_DAYS,
+    _sign_session, STATIC_DIR,
+)
 
 import secrets
 

@@ -4,13 +4,7 @@ import os, re, sys, json, time, threading
 from pathlib import Path
 from datetime import datetime
 
-try:
-    from . import storage as _storage
-except ImportError:
-    try:
-        import storage as _storage
-    except ImportError:
-        _storage = None
+from . import storage as _storage
 
 # 数据目录固定为 /data；AGENT_DATA 仅供测试使用，不对用户开放
 DATA_DIR = Path(os.environ.get('AGENT_DATA', '/data'))

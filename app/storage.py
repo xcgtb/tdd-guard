@@ -2,7 +2,7 @@
 """SQLite 存储层：治理计划 / 执行历史 / 追更订阅状态 / 消息去重。
 
 设计约定（与全项目其它模块一致）：
-- 库文件固定为 STATE_DIR/ttd-guard.db（WAL 模式）；路径随 engine.STATE_DIR 惰性解析，
+- 库文件固定为 STATE_DIR/ttd-guard.db（WAL 模式）；路径随 state.STATE_DIR 惰性解析，
   测试改 AGENT_DATA / monkeypatch 路径后自动落到新库，不串数据；
 - 计划与订阅状态：JSON 文件仍是「文档/导出格式」，SQLite 是索引与兜底——
   写两边（先文件后库），读先文件后库（文件命中顺带回填库）；
@@ -16,6 +16,8 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+
+from . import state
 
 DB_NAME = 'ttd-guard.db'
 PLAN_KEEP_DAYS = 7          # 计划保留 7 天（与 purge_old 一致）
@@ -69,18 +71,8 @@ CREATE TABLE IF NOT EXISTS dedup (
 
 
 def _state_dir() -> Path:
-    """当前生效的 state 目录。优先取 engine.STATE_DIR（含 monkeypatch），
-    engine 不可用时（脚本单独 import 本模块）退回 AGENT_DATA 环境变量。"""
-    try:
-        from app import engine as _e
-        return Path(_e.STATE_DIR)
-    except ImportError:
-        try:
-            import engine as _e
-            return Path(_e.STATE_DIR)
-        except ImportError:
-            pass
-    return Path(os.environ.get('AGENT_DATA', '/data')) / 'state'
+    """当前生效的 state 目录：调用时取 state.STATE_DIR（含 monkeypatch）。"""
+    return Path(state.STATE_DIR)
 
 
 def _conn():

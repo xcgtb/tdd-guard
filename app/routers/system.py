@@ -3,24 +3,21 @@
 import time, threading
 from fastapi import APIRouter, Depends, HTTPException
 
-try:
-    from app.routers.deps import auth, engine, bot, tasks, _current_task_dict, APP_VERSION
-    from app.config import get_subscriptions, get_morning_report, get_ingest_cfg
-except ImportError:
-    from routers.deps import auth, engine, bot, tasks, _current_task_dict, APP_VERSION
-    from config import get_subscriptions, get_morning_report, get_ingest_cfg
+from app import config as _cfg
+from app import state, governance, morning, ingest, emby, stats, bot, tasks
+from app.routers.deps import auth, _current_task_dict, APP_VERSION
 
 router = APIRouter()
 
 
 @router.get('/api/health')
 def health():
-    return {'status': 'ok', 'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'tz': engine.tz_info(),
+    return {'status': 'ok', 'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'tz': state.tz_info(),
             'paths': {
-                'L_ROOT':       str(engine.L_ROOT) + (' ✅' if engine.L_ROOT.exists() else ' ❌'),
-                'S_ROOT':       str(engine.S_ROOT) + (' ✅' if engine.S_ROOT.exists() else ' ❌'),
-                'CLOUD_L_ROOT': str(engine.CLOUD_L_ROOT) + (' ✅' if engine.CLOUD_L_ROOT.exists() else ' ❌'),
-                'DATA_DIR':     str(engine.DATA_DIR) + (' ✅' if engine.DATA_DIR.exists() else ' ❌'),
+                'L_ROOT':       str(state.L_ROOT) + (' ✅' if state.L_ROOT.exists() else ' ❌'),
+                'S_ROOT':       str(state.S_ROOT) + (' ✅' if state.S_ROOT.exists() else ' ❌'),
+                'CLOUD_L_ROOT': str(state.CLOUD_L_ROOT) + (' ✅' if state.CLOUD_L_ROOT.exists() else ' ❌'),
+                'DATA_DIR':     str(state.DATA_DIR) + (' ✅' if state.DATA_DIR.exists() else ' ❌'),
             },
             'current_task': _current_task_dict()}
 
@@ -28,7 +25,7 @@ def health():
 @router.get('/api/consistency', dependencies=[Depends(auth)])
 def api_consistency(force: int = 0):
     try:
-        return {'status': 'success', 'snapshot': engine.daily_consistency_snapshot(force_refresh=bool(force))}
+        return {'status': 'success', 'snapshot': morning.daily_consistency_snapshot(force_refresh=bool(force))}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
@@ -37,7 +34,7 @@ def api_consistency(force: int = 0):
 def library_health():
     """统一片库健康快照：只读缓存，过期后台刷新，页面请求不触发全量扫描。"""
     try:
-        snap = engine.unified_health(max_age=1800)
+        snap = morning.unified_health(max_age=1800)
         return {'status': 'success', **snap}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
@@ -46,25 +43,25 @@ def library_health():
 @router.get('/api/dashboard', dependencies=[Depends(auth)])
 def dashboard():
     try:
-        l_count, s_count = engine._get_strm_counts()
+        l_count, s_count = stats._get_strm_counts()
         # Emby 探测缓存 30 秒
         now_ts = time.time()
         if not hasattr(dashboard, '_emby_cache'):
             dashboard._emby_cache = {'ts': 0, 'ok': False, 'host': ''}
         if now_ts - dashboard._emby_cache['ts'] > 30:
             try:
-                emby_ok = bool(engine.emby_request('/System/Info', timeout=3, retries=0))
+                emby_ok = bool(emby.emby_request('/System/Info', timeout=3, retries=0))
             except Exception:
                 emby_ok = False
-            dashboard._emby_cache = {'ts': now_ts, 'ok': emby_ok, 'host': engine.EMBY_HOST}
+            dashboard._emby_cache = {'ts': now_ts, 'ok': emby_ok, 'host': state.EMBY_HOST}
         emby_ok = dashboard._emby_cache['ok']
-        tmdb_ok = bool(engine.RUNTIME_CFG.get('tmdb_key'))
-        tg_ok = bool(engine.RUNTIME_CFG.get('telegram_bot_token')) and bool(engine.RUNTIME_CFG.get('telegram_chat_id'))
-        subs = get_subscriptions()
-        mr = get_morning_report()
-        ing = get_ingest_cfg()
+        tmdb_ok = bool(state.RUNTIME_CFG.get('tmdb_key'))
+        tg_ok = bool(state.RUNTIME_CFG.get('telegram_bot_token')) and bool(state.RUNTIME_CFG.get('telegram_chat_id'))
+        subs = _cfg.get_subscriptions()
+        mr = _cfg.get_morning_report()
+        ing = _cfg.get_ingest_cfg()
 
-        ingest_cache = engine.read_ingest_cache()
+        ingest_cache = ingest.read_ingest_cache()
         ingest_ts = ingest_cache.get('ts', 0) if ingest_cache else 0
         ingest_stats = (ingest_cache or {}).get('stats', {})
 
@@ -72,7 +69,7 @@ def dashboard():
         # plan_*.json 只有在存在待处理项时才会生成，0 项扫描也必须能成为“最近一次扫描”。
         last_scan = None
         try:
-            gov = engine.load_latest_scan() or {}
+            gov = governance.load_latest_scan() or {}
             gr = gov.get('result') or {}
             gts = float(gov.get('ts') or gr.get('scan_ts') or 0)
             if gts:
@@ -90,12 +87,12 @@ def dashboard():
                 }
         except Exception:
             pass
-        health = engine.unified_health(max_age=1800)
+        health = morning.unified_health(max_age=1800)
         bs = bot.status()
         return {'version': APP_VERSION,
                 'localCount': f'{l_count:,}', 'shareCount': f'{s_count:,}',
                 'services': {
-                    'emby': {'ok': emby_ok, 'host': engine.EMBY_HOST},
+                    'emby': {'ok': emby_ok, 'host': state.EMBY_HOST},
                     'tmdb': {'ok': tmdb_ok},
                     'telegram': {'ok': tg_ok, 'bot_running': bs.get('running'),
                                  'bot_username': bs.get('bot_username'),
@@ -140,10 +137,10 @@ def api_cache_refresh():
     """清除全部内存缓存并触发后台重建（STRM 计数 / 片库映射 / 统计 / 分集 / Emby 索引）。
     磁盘缓存文件保留作为兜底，后台重建完成后自动覆盖。"""
     try:
-        engine.invalidate_media_caches()
-        threading.Thread(target=engine._overview_bg_refresh, daemon=True,
+        stats.invalidate_media_caches()
+        threading.Thread(target=morning._overview_bg_refresh, daemon=True,
                          name='cache-refresh-overview').start()
-        threading.Thread(target=engine._strm_count_bg_refresh, daemon=True,
+        threading.Thread(target=stats._strm_count_bg_refresh, daemon=True,
                          name='cache-refresh-strm').start()
         return {'status': 'success', 'message': '缓存已清除，后台正在重建'}
     except Exception as e:

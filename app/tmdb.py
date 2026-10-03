@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,36 +8,56 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state, morning, emby, lib
+
 log = logging.getLogger('media_agent')
 
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
 
-
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
+TMDB_BASE = os.environ.get('TMDB_BASE', 'https://api.themoviedb.org/3')
+TMDB_LANG = os.environ.get('TMDB_LANG', 'zh-CN')
+TMDB_IMG  = os.environ.get('TMDB_IMG', 'https://image.tmdb.org/t/p/w500')
+TMDB_INFO_TTL = 24 * 3600
+REGION_MAP = {
+    'cn': {'with_origin_country': 'CN'}, 'hk': {'with_origin_country': 'HK'},
+    'tw': {'with_origin_country': 'TW'}, 'jp': {'with_origin_country': 'JP'},
+    'kr': {'with_origin_country': 'KR'}, 'us': {'with_origin_country': 'US'},
+}
+SORT_MAP = {
+    'popularity': 'popularity.desc', 'release': 'primary_release_date.desc',
+    'rating': 'vote_average.desc',
+}
+GENRE_MAP = {
+    # 与 TMDB 官方 genre 列表对齐（movie: /genre/movie/list, tv: /genre/tv/list）
+    '动作':   {'movie': 28,    'tv': 10759},
+    '冒险':   {'movie': 12,    'tv': None},
+    '喜剧':   {'movie': 35,    'tv': 35},
+    '犯罪':   {'movie': 80,    'tv': 80},
+    '纪录':   {'movie': 99,    'tv': 99},
+    '剧情':   {'movie': 18,    'tv': 18},
+    '家庭':   {'movie': 10751, 'tv': 10751},
+    '奇幻':   {'movie': 14,    'tv': None},
+    '历史':   {'movie': 36,    'tv': None},
+    '恐怖':   {'movie': 27,    'tv': None},
+    '音乐':   {'movie': 10402, 'tv': None},
+    '悬疑':   {'movie': 9648,  'tv': 9648},
+    '爱情':   {'movie': 10749, 'tv': None},
+    '科幻':   {'movie': 878,   'tv': 10765},
+    '惊悚':   {'movie': 53,    'tv': None},
+    '战争':   {'movie': 10752, 'tv': 10768},
+    '西部':   {'movie': 37,    'tv': 37},
+    '动画':   {'movie': 16,    'tv': 16},
+    '儿童':   {'movie': None,  'tv': 10762},
+    '新闻':   {'movie': None,  'tv': 10763},
+    '真人秀': {'movie': None,  'tv': 10764},
+    '肥皂剧': {'movie': None,  'tv': 10766},
+    '脱口秀': {'movie': None,  'tv': 10767},
+    '电视电影': {'movie': 10770, 'tv': None},
+}
+_LIVE_EPS_TTL = 15
 
 
 class TmdbError(Exception):
@@ -45,8 +65,8 @@ class TmdbError(Exception):
 
 class Tmdb:
     def __init__(self):
-        self.key = (_eng().RUNTIME_CFG.get('tmdb_key') or '').strip()
-        self.cache_file = _eng().STATE_DIR / 'tmdb_cache.json'
+        self.key = (state.RUNTIME_CFG.get('tmdb_key') or '').strip()
+        self.cache_file = state.STATE_DIR / 'tmdb_cache.json'
         self.calls = self.hits = 0
         try:
             self.cache = json.loads(self.cache_file.read_text(encoding='utf-8'))
@@ -54,7 +74,7 @@ class Tmdb:
             self.cache = {}
 
     def get(self, path, ttl=6 * 3600, **params):
-        params.setdefault('language', _eng().TMDB_LANG)
+        params.setdefault('language', TMDB_LANG)
         ck = path + '?' + urllib.parse.urlencode(sorted(params.items()))
         hit = self.cache.get(ck)
         if hit and time.time() - hit['ts'] < ttl:
@@ -65,7 +85,7 @@ class Tmdb:
             headers['Authorization'] = f'Bearer {self.key}'
         else:
             params['api_key'] = self.key
-        url = f'{_eng().TMDB_BASE}{path}?{urllib.parse.urlencode(params)}'
+        url = f'{TMDB_BASE}{path}?{urllib.parse.urlencode(params)}'
         data = None
         for attempt in range(3):
             try:
@@ -90,7 +110,7 @@ class Tmdb:
 
     def save(self):
         try:
-            _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
+            state.STATE_DIR.mkdir(parents=True, exist_ok=True)
             cut = time.time() - 86400
             self.cache = {k: v for k, v in self.cache.items() if v['ts'] > cut}
             tmp = self.cache_file.with_suffix('.tmp')
@@ -101,7 +121,7 @@ class Tmdb:
 
 def _load_emby_index_disk():
     try:
-        raw = json.loads(_eng()._EMBY_INDEX_CACHE_FILE.read_text(encoding='utf-8'))
+        raw = json.loads(state._EMBY_INDEX_CACHE_FILE.read_text(encoding='utf-8'))
         data = raw.get('data')
         if isinstance(data, dict): return {'ts': float(raw.get('ts', 0)), 'data': data}
     except (OSError, ValueError):
@@ -110,20 +130,20 @@ def _load_emby_index_disk():
 
 def _save_emby_index_disk(data):
     try:
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _eng()._EMBY_INDEX_CACHE_FILE.with_suffix('.tmp')
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = state._EMBY_INDEX_CACHE_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps({'ts': time.time(), 'data': data}, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(_eng()._EMBY_INDEX_CACHE_FILE)
+        tmp.replace(state._EMBY_INDEX_CACHE_FILE)
     except (OSError, TypeError) as e:
         log.warning('Emby 探索索引缓存写入失败: %s', e)
 
 def _build_emby_library_index():
     out = {}
-    disk_lookup = _eng()._disk_tmdb_lookup()  # 上游目录名 {tmdb-xxx} 兜底表
+    disk_lookup = lib._disk_tmdb_lookup()  # 上游目录名 {tmdb-xxx} 兜底表
     for item_type in ('Movie', 'Series'):
         media_key = 'tv' if item_type == 'Series' else 'movie'
         try:
-            data = _eng().emby_request('/Items', {
+            data = emby.emby_request('/Items', {
                 'Recursive': 'true', 'IncludeItemTypes': item_type,
                 'Fields': 'ProviderIds,Path,ProductionYear,CommunityRating,ImageTags',
                 'Limit': 50000,
@@ -131,12 +151,12 @@ def _build_emby_library_index():
             for it in data.get('Items', []):
                 tmdb_id = str((it.get('ProviderIds') or {}).get('Tmdb') or '')
                 if not tmdb_id:
-                    _cp = _eng().emby_path_to_container(it.get('Path', '') or '')
+                    _cp = emby.emby_path_to_container(it.get('Path', '') or '')
                     tmdb_id = disk_lookup.get(str(_cp) if _cp else '', '')
                 if not tmdb_id: continue
                 key = f'{media_key}:{tmdb_id}'
                 path = it.get('Path', '') or ''
-                lib = _eng().emby_lib_of(path)
+                lib_tag = state.emby_lib_of(path)
                 row = out.setdefault(key, {
                     'id': it.get('Id'), 'ids': [], 'name': it.get('Name'), 'type': it.get('Type'),
                     'path': path, 'paths': [], 'year': it.get('ProductionYear'),
@@ -144,7 +164,7 @@ def _build_emby_library_index():
                 })
                 if it.get('Id') and it.get('Id') not in row['ids']: row['ids'].append(it.get('Id'))
                 if path and path not in row['paths']: row['paths'].append(path)
-                if lib: row['libs'].add(lib)
+                if lib_tag: row['libs'].add(lib_tag)
                 row['has_image'] = row['has_image'] or ('Primary' in (it.get('ImageTags') or {}))
                 if not row.get('path') and path: row['path'] = path
         except Exception as e:
@@ -156,30 +176,30 @@ def _build_emby_library_index():
     return out
 
 def _emby_index_bg_refresh():
-    if not _eng()._emby_index_refresh_lock.acquire(blocking=False): return
+    if not state._emby_index_refresh_lock.acquire(blocking=False): return
     try:
         out = _build_emby_library_index()
-        _eng()._emby_index_cache.update({'ts': time.time(), 'data': out})
+        state._emby_index_cache.update({'ts': time.time(), 'data': out})
         _save_emby_index_disk(out)
     except Exception as e:
         log.warning('Emby 探索索引后台刷新失败: %s', e)
     finally:
-        _eng()._emby_index_refresh_lock.release()
+        state._emby_index_refresh_lock.release()
 
 def emby_library_index(force=False):
     """探索页身份索引：内存 5 分钟 → 磁盘立即返回+后台刷新 → 首次同步构建。"""
     if not force:
-        if _eng()._emby_index_cache['data'] and time.time() - _eng()._emby_index_cache['ts'] < 300:
-            return _eng()._emby_index_cache['data']
+        if state._emby_index_cache['data'] and time.time() - state._emby_index_cache['ts'] < 300:
+            return state._emby_index_cache['data']
         disk = _load_emby_index_disk()
         if disk:
-            _eng()._emby_index_cache.update(disk)
+            state._emby_index_cache.update(disk)
             if time.time() - disk['ts'] >= 300:
                 threading.Thread(target=_emby_index_bg_refresh, daemon=True,
                                  name='emby-index-refresh').start()
-            return _eng()._emby_index_cache['data']
+            return state._emby_index_cache['data']
     out = _build_emby_library_index()
-    _eng()._emby_index_cache.update({'ts': time.time(), 'data': out})
+    state._emby_index_cache.update({'ts': time.time(), 'data': out})
     _save_emby_index_disk(out)
     return out
 
@@ -192,7 +212,7 @@ def action_explore(args):
     query = (getattr(args, 'q', '') or '').strip()
     genre = (getattr(args, 'genre', '') or '').strip()
 
-    t = _eng().Tmdb()
+    t = Tmdb()
     if not t.key:
         return {'status': 'error', 'message': '未配置 TMDB_KEY'}
 
@@ -209,12 +229,12 @@ def action_explore(args):
         if media == 'all':
             media = 'movie'
         tmdb_path = '/discover/tv' if media == 'tv' else '/discover/movie'
-        params = {'page': page, 'sort_by': _eng().SORT_MAP.get(sort, 'popularity.desc'), 'vote_count.gte': 5}
-        if region != 'all' and region in _eng().REGION_MAP: params.update(_eng().REGION_MAP[region])
+        params = {'page': page, 'sort_by': SORT_MAP.get(sort, 'popularity.desc'), 'vote_count.gte': 5}
+        if region != 'all' and region in REGION_MAP: params.update(REGION_MAP[region])
         if year:
             params['first_air_date_year' if media == 'tv' else 'primary_release_year'] = year
-        if genre and genre in _eng().GENRE_MAP:
-            gid = _eng().GENRE_MAP[genre].get(media)
+        if genre and genre in GENRE_MAP:
+            gid = GENRE_MAP[genre].get(media)
             if gid:
                 params['with_genres'] = str(gid)
 
@@ -241,7 +261,7 @@ def action_explore(args):
     eps_map = {}; tmdb_map = {}
     if media != 'movie':
         try:
-            snap = _eng().load_library_snapshot(max_age=1800) or _eng().build_library_health_snapshot()
+            snap = morning.load_library_snapshot(max_age=1800) or morning.build_library_health_snapshot()
             for sr in snap.get('series', []):
                 tid = str(sr.get('tmdb_id') or '')
                 if not tid: continue
@@ -276,7 +296,7 @@ def action_explore(args):
                 # TMDB 标称总集数：直接取 /tv/{id}（24h 缓存，命中即零成本），不再依赖
                 # 30 分钟的统一快照，避免「Emby 是新的、TMDB 总数是旧的」造成 18/16 这类错位。
                 try:
-                    _info = t.get(f'/tv/{tid}', ttl=_eng().TMDB_INFO_TTL) or {}
+                    _info = t.get(f'/tv/{tid}', ttl=TMDB_INFO_TTL) or {}
                     _tot = sum(int(x.get('episode_count') or 0) for x in (_info.get('seasons') or [])
                                if (x.get('season_number') or 0) > 0)
                     if _tot > 0:
@@ -315,7 +335,7 @@ def action_explore(args):
         in_emby = emby_hit is not None
         in_local = bool(emby_hit and emby_hit.get('in_local'))
         in_share = bool(emby_hit and emby_hit.get('in_share'))
-        if poster: poster_url = f'{_eng().TMDB_IMG}{poster}'
+        if poster: poster_url = f'{TMDB_IMG}{poster}'
         elif in_emby and emby_hit.get('has_image'): poster_url = f'/api/emby/poster/{emby_hit["id"]}'
         else: poster_url = ''
 
@@ -414,7 +434,7 @@ def _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id=None):
     """
     ids = []
     try:
-        data = _eng().emby_request('/Items', {
+        data = emby.emby_request('/Items', {
             'Recursive': 'true', 'IncludeItemTypes': 'Series',
             'Fields': 'ProviderIds,Name', 'Limit': 50000,
             'AnyProviderIdEquals': f'Tmdb.{series_tmdb_id}',
@@ -424,7 +444,7 @@ def _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id=None):
         log.warning('实时集数：Series 精确查询失败 %s: %s', series_tmdb_id, e)
     if not ids:
         try:
-            data = _eng().emby_request('/Items', {
+            data = emby.emby_request('/Items', {
                 'Recursive': 'true', 'IncludeItemTypes': 'Series',
                 'Fields': 'ProviderIds,Name', 'Limit': 50000,
             }) or {}
@@ -453,9 +473,9 @@ def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
         return None
     ck = str(series_tmdb_id)
     if use_cache:
-        with _eng()._live_eps_lock:
-            hit = _eng()._live_eps_cache.get(ck)
-            if hit and time.time() - hit[0] < _eng()._LIVE_EPS_TTL:
+        with state._live_eps_lock:
+            hit = state._live_eps_cache.get(ck)
+            if hit and time.time() - hit[0] < _LIVE_EPS_TTL:
                 return hit[1]
 
     ids = _emby_series_ids_by_tmdb(series_tmdb_id, fallback_id)
@@ -464,7 +484,7 @@ def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
     have, local_eps, share_eps = set(), set(), set()
     for sid in ids:
         try:
-            data = _eng().emby_request('/Items', {
+            data = emby.emby_request('/Items', {
                 'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
                 'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,Path',
                 'Limit': 50000,
@@ -481,7 +501,7 @@ def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
                 continue
             if sn <= 0 or en <= 0:
                 continue
-            lib = _eng().emby_lib_of(ep.get('Path') or '')
+            lib = state.emby_lib_of(ep.get('Path') or '')
             if not lib:
                 continue  # 不在两个库根内：不算入库（与片库映射口径一致）
             for e in range(en, max(en, en_end) + 1):
@@ -491,12 +511,12 @@ def _emby_series_live_eps(series_tmdb_id, fallback_id=None, use_cache=True):
     out = {'episodes': have, 'local_eps': len(local_eps), 'share_eps': len(share_eps),
            'have_eps': len(have), 'empty': not have}
     if use_cache:
-        with _eng()._live_eps_lock:
-            _eng()._live_eps_cache[ck] = (time.time(), out)
+        with state._live_eps_lock:
+            state._live_eps_cache[ck] = (time.time(), out)
             # 轻量清理：只保留最近 2000 条，避免长跑进程内存无界增长
-            if len(_eng()._live_eps_cache) > 2000:
-                for k, _v in sorted(_eng()._live_eps_cache.items(), key=lambda kv: kv[1][0])[:500]:
-                    _eng()._live_eps_cache.pop(k, None)
+            if len(state._live_eps_cache) > 2000:
+                for k, _v in sorted(state._live_eps_cache.items(), key=lambda kv: kv[1][0])[:500]:
+                    state._live_eps_cache.pop(k, None)
     return out
 
 def _tmdb_aired_set_from_info(info):
@@ -535,8 +555,8 @@ def _tmdb_series_info(tmdb_id):
     连载季 episode_count 含未播集，直接求和会让在更的剧永远「缺集」。
     缺 last_episode_to_air 时退回旧口径（各季 episode_count 全部计入）。"""
     try:
-        t = _eng().Tmdb()
-        info = t.get(f'/tv/{tmdb_id}', ttl=_eng().TMDB_INFO_TTL)
+        t = Tmdb()
+        info = t.get(f'/tv/{tmdb_id}', ttl=TMDB_INFO_TTL)
         t.save()
         if not info: return None
         aired_seasons = {}

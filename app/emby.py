@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,50 +8,33 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state
+
 log = logging.getLogger('media_agent')
 
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
 
-
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
+# ═══════════════════ Emby ═══════════════════
+EMBY_TIMEOUT = int(os.environ.get('EMBY_TIMEOUT', '30') or 30)   # 秒；大库 / NAS 繁忙时 15 秒容易超时
+EMBY_RETRIES = 2                                                  # 仅 GET 在超时 / 5xx / 连接错误时重试
+_MEDIA_EXT = {'.strm', '.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.iso'}
 
 
 def emby_request(path, params=None, method='GET', timeout=None, body=None, retries=None):
-    if not _eng().EMBY_KEY:
+    if not state.EMBY_KEY:
         raise RuntimeError('未配置 EMBY_KEY')
-    timeout = timeout or _eng().EMBY_TIMEOUT
-    url = _eng().EMBY_HOST + path + ('?' + urllib.parse.urlencode(params) if params else '')
-    headers = {'X-Emby-Token': _eng().EMBY_KEY}
+    timeout = timeout or EMBY_TIMEOUT
+    url = state.EMBY_HOST + path + ('?' + urllib.parse.urlencode(params) if params else '')
+    headers = {'X-Emby-Token': state.EMBY_KEY}
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode('utf-8')
         headers['Content-Type'] = 'application/json'
     else:
         data = b'' if method == 'POST' else None
-    attempts = 1 + ((_eng().EMBY_RETRIES if retries is None else retries) if method == 'GET' else 0)
+    attempts = 1 + ((EMBY_RETRIES if retries is None else retries) if method == 'GET' else 0)
     for i in range(attempts):
         req = urllib.request.Request(url, method=method, data=data, headers=headers)
         try:
@@ -72,8 +55,8 @@ def emby_request(path, params=None, method='GET', timeout=None, body=None, retri
 
 def container_to_emby_path(p, target):
     """容器内路径 → Emby 侧路径（notify_emby_deleted 用）；映射不上返回 None"""
-    root = _eng().L_ROOT if target == 'local' else _eng().S_ROOT
-    eroot = _eng().EMBY_PATHS.local if target == 'local' else _eng().EMBY_PATHS.share
+    root = state.L_ROOT if target == 'local' else state.S_ROOT
+    eroot = state.EMBY_PATHS.local if target == 'local' else state.EMBY_PATHS.share
     if not eroot:
         return None
     try:
@@ -95,7 +78,7 @@ def notify_emby_deleted(emby_paths, background=True):
                 ok = False
                 for ep in ('/Library/Media/Updated', '/emby/Library/Media/Updated'):
                     try:
-                        _eng().emby_request(ep, method='POST', timeout=15, body=body)
+                        emby_request(ep, method='POST', timeout=15, body=body)
                         ok = True
                         break
                     except Exception as e:
@@ -114,7 +97,7 @@ def notify_emby_deleted(emby_paths, background=True):
 def notify_emby_refresh():
     for ep in ('/Library/Refresh', '/emby/Library/Refresh'):
         try:
-            _eng().emby_request(ep, method='POST', timeout=10)
+            emby_request(ep, method='POST', timeout=10)
             return True
         except Exception as e:
             log.warning('Emby 刷新失败 %s: %s', ep, e)
@@ -129,17 +112,17 @@ def parse_dt(s):
 
 def _fetch_all_episodes(force=False):
     """分页拉取全库 Episode（带 600 秒缓存 + 线程锁，避免并发重复拉）"""
-    if not force and _eng()._ep_cache['data'] is not None and (time.time() - _eng()._ep_cache['ts']) < 600:
-        log.info('复用分集缓存（%d 条，%.0f 秒前）', len(_eng()._ep_cache['data']), time.time() - _eng()._ep_cache['ts'])
-        return _eng()._ep_cache['data']
-    with _eng()._ep_lock:
-        if not force and _eng()._ep_cache['data'] is not None and (time.time() - _eng()._ep_cache['ts']) < 600:
-            return _eng()._ep_cache['data']
+    if not force and state._ep_cache['data'] is not None and (time.time() - state._ep_cache['ts']) < 600:
+        log.info('复用分集缓存（%d 条，%.0f 秒前）', len(state._ep_cache['data']), time.time() - state._ep_cache['ts'])
+        return state._ep_cache['data']
+    with state._ep_lock:
+        if not force and state._ep_cache['data'] is not None and (time.time() - state._ep_cache['ts']) < 600:
+            return state._ep_cache['data']
         all_eps = []
         start = 0
         page_size = 5000
         while True:
-            data = _eng().emby_request('/Items', {
+            data = emby_request('/Items', {
                 'Recursive': 'true',
                 'IncludeItemTypes': 'Episode',
                 'Fields': 'SeriesId,ParentIndexNumber,IndexNumber,Path',
@@ -153,8 +136,8 @@ def _fetch_all_episodes(force=False):
             if len(items) < page_size or len(all_eps) >= total:
                 break
             start += page_size
-        _eng()._ep_cache['ts'] = time.time()
-        _eng()._ep_cache['data'] = all_eps
+        state._ep_cache['ts'] = time.time()
+        state._ep_cache['data'] = all_eps
         return all_eps
 
 def _dir_has_media(d):
@@ -162,7 +145,7 @@ def _dir_has_media(d):
     try:
         with os.scandir(d) as it:
             for e in it:
-                if os.path.splitext(e.name)[1].lower() in _eng()._MEDIA_EXT:
+                if os.path.splitext(e.name)[1].lower() in _MEDIA_EXT:
                     return True
         return False
     except (FileNotFoundError, NotADirectoryError):
@@ -183,11 +166,11 @@ def _alive_dir_map(paths):
         d = p.rsplit('/', 1)[0] if '/' in p else ''
         if not d or d in dirs:
             continue
-        conv = _eng().EMBY_PATHS.to_container(d)
+        conv = state.EMBY_PATHS.to_container(d)
         if conv is None:
             dirs[d] = True
             continue
-        root = _eng().L_ROOT if str(conv).startswith(str(_eng().L_ROOT) + os.sep) else _eng().S_ROOT
+        root = state.L_ROOT if str(conv).startswith(str(state.L_ROOT) + os.sep) else state.S_ROOT
         dirs[d] = True if not root.exists() else _dir_has_media(conv)
     dead = sum(1 for v in dirs.values() if not v)
     if len(dirs) > 20 and dead / len(dirs) > 0.5:
@@ -199,7 +182,7 @@ def _paged_items(params, page_size=1000, max_items=50000):
     """分页拉取 /Items；任何一页失败都向上抛，由调用方决定是否保留旧缓存。"""
     items, start = [], 0
     while len(items) < max_items:
-        data = _eng().emby_request('/Items', dict(params, StartIndex=start, Limit=page_size)) or {}
+        data = emby_request('/Items', dict(params, StartIndex=start, Limit=page_size)) or {}
         page = data.get('Items') or []
         items.extend(page)
         total = data.get('TotalRecordCount') or 0
@@ -214,7 +197,7 @@ def _recent(item_type, fields, limit, cutoff):
         'Recursive': 'true', 'IncludeItemTypes': item_type,
         'Fields': fields, 'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'Limit': limit,
     }
-    data = _eng().emby_request('/Items', params) or {}
+    data = emby_request('/Items', params) or {}
     for it in data.get('Items', []):
         dt = parse_dt(it.get('DateCreated'))
         if dt is None: continue
@@ -222,10 +205,10 @@ def _recent(item_type, fields, limit, cutoff):
         yield it
 
 def _src(path):
-    lib = _eng().emby_lib_of(path)
+    lib = state.emby_lib_of(path)
     return '本地影视库' if lib == 'local' else ('分享影视库' if lib == 'share' else '其它库')
 
 def emby_path_to_container(emby_path):
     """将 Emby 返回的 Path 转成容器内路径"""
     # 严格按配置的根目录前缀映射（不做末级目录名兜底），宁可对不上也不能删错库
-    return _eng().EMBY_PATHS.to_container(emby_path)
+    return state.EMBY_PATHS.to_container(emby_path)

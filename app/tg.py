@@ -1,36 +1,21 @@
 # -*- coding: utf-8 -*-
 """Telegram 消息格式化与推送（从 engine.py 拆出）。
 
-注意：RUNTIME_CFG 是运行时可变全局（reload_config() 会原地改 engine 里的那份），
-所以这里用惰性访问，避免模块导入时快照旧配置。
+注意：RUNTIME_CFG 是运行时可变全局（reload_config() 会重新绑定 state 里的那份），
+所以这里在调用时取 state.RUNTIME_CFG，避免模块导入时快照旧配置。
 """
 import datetime
 import logging
 import urllib.parse
 import urllib.request
 
+from . import state
+
 log = logging.getLogger('media_agent')
 
 
-def _engine_ns():
-    """返回 engine 模块对象；import 失败则 None（脚本直跑等边角场景）。"""
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
-
-
 def _runtime_cfg():
-    eng = _engine_ns()
-    if eng is not None and hasattr(eng, 'RUNTIME_CFG'):
-        return eng.RUNTIME_CFG
-    from . import config as _cfg
-    return _cfg.load_config()
+    return state.RUNTIME_CFG
 
 
 def tg_title(icon, title, sub=''):

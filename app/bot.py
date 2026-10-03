@@ -11,14 +11,11 @@
 import json, re, time, html, logging, threading, urllib.request, urllib.parse, urllib.error
 from argparse import Namespace
 
-try:
-    from . import engine, tasks
-    from . import config as _cfg
-    from .config import load_config
-except ImportError:
-    import engine, tasks
-    import config as _cfg
-    from config import load_config
+from . import config as _cfg
+from . import state, governance, ingest, morning, storage, subscribe, tasks, tg
+
+# 测试替身挂载点：tests 直接替换 bot.load_config，所以这里保留模块级名字
+load_config = _cfg.load_config
 
 log = logging.getLogger('media_agent.bot')
 _API = 'https://api.telegram.org/bot{token}/{method}'
@@ -63,14 +60,14 @@ _DELETE_RETRY_DELAY = 20
 
 
 def _queue_file():
-    return engine.STATE_DIR / 'bot_delete_queue.json'
+    return state.STATE_DIR / 'bot_delete_queue.json'
 
 
 def _persist_queue_locked():
     """落盘待删队列（调用方须已持有 _DELETE_LOCK）。以前队列只在内存，重启一次，
     所有卡片 / 命令消息的删除计划全部丢失，消息就永远留在聊天里。"""
     try:
-        engine.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = _queue_file().with_suffix('.tmp')
         tmp.write_text(json.dumps(_delete_queue), encoding='utf-8')
         tmp.replace(_queue_file())
@@ -259,17 +256,17 @@ def _rescan_keyboard():
 
 def _plan_ttl_left(plan_id, default=None):
     """计划剩余有效秒数：计划卡片据此设置自动销毁，到期即消失。"""
-    plan = engine.load_plan(plan_id) if plan_id else None
+    plan = governance.load_plan(plan_id) if plan_id else None
     if not plan:
         return default
-    left = float(plan.get('ts') or 0) + engine.PLAN_TTL - time.time()
+    left = float(plan.get('ts') or 0) + state.PLAN_TTL - time.time()
     return max(int(left), 10)
 
 
 def _plan_problem(plan_id):
     """校验计划还能不能执行。返回 (code, 提示文案)，可执行则 (None, '')。
     顺手把已超时但仍是 pending 的计划落盘标成 expired。"""
-    plan = engine.load_plan(plan_id)
+    plan = governance.load_plan(plan_id)
     if plan is None:
         return 'missing', '计划已失效或不存在'
     st = plan.get('state')
@@ -277,13 +274,13 @@ def _plan_problem(plan_id):
         return 'used', '计划已执行过或已失效，不能重复执行'
     if st == 'executing' and _get_current_task() is not None:
         return 'executing', '计划正在执行中，请稍候'
-    if st == 'expired' or time.time() - float(plan.get('ts') or 0) > engine.PLAN_TTL:
+    if st == 'expired' or time.time() - float(plan.get('ts') or 0) > state.PLAN_TTL:
         if st == 'pending':
-            engine.save_plan_state(plan_id, 'expired')
-        return 'expired', f'计划已超过 {engine.PLAN_TTL // 3600} 小时有效期，已过期'
+            governance.save_plan_state(plan_id, 'expired')
+        return 'expired', f'计划已超过 {state.PLAN_TTL // 3600} 小时有效期，已过期'
     sig = str(plan.get('rule_sig') or '')
     try:
-        cur_sig = engine._current_rule_snapshot()['sig']
+        cur_sig = governance.current_rule_snapshot()['sig']
     except Exception:
         cur_sig = ''
     if sig and cur_sig and sig != cur_sig:
@@ -372,7 +369,7 @@ LIST_MSG_TTL = 600  # 带折叠清单的消息保留 10 分钟，够展开/收�
 
 def _send_long(token, chat_id, text, ttl=None):
     """超长消息自动切段；切在折叠引用块里时每段都补全 blockquote 标签。"""
-    for part in engine.split_telegram_html(text):
+    for part in tg.split_telegram_html(text):
         _send(token, chat_id, part, ttl=ttl)
 
 
@@ -430,11 +427,11 @@ def _latest_pending_plan_id():
     """最近一份仍可执行的计划。不能只按文件 mtime 取最新：计划被标记 done/expired 时会重写文件，
     mtime 变新，按 mtime 会选中一份已执行过的旧计划。"""
     best = None
-    for f in engine.STATE_DIR.glob('plan_*.json'):
-        data = engine.load_plan(f.stem.replace('plan_', ''))
+    for f in state.STATE_DIR.glob('plan_*.json'):
+        data = governance.load_plan(f.stem.replace('plan_', ''))
         if not data or data.get('state') != 'pending':
             continue
-        if time.time() - float(data.get('ts') or 0) > engine.PLAN_TTL:
+        if time.time() - float(data.get('ts') or 0) > state.PLAN_TTL:
             continue
         if best is None or data.get('ts', 0) > best.get('ts', 0):
             best = data
@@ -488,11 +485,11 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
             _send(token, chat_id, bm); return
         if message_id:
             _edit(token, chat_id, message_id, '⏳ 正在扫描双库...', {'inline_keyboard': []})
-            _spawn_and_watch('check', engine.ACTIONS['inter_check'], chat_id, message_id=message_id)
+            _spawn_and_watch('check', governance.action_inter_check, chat_id, message_id=message_id)
         else:
             m = _send(token, chat_id, '⏳ 正在扫描双库...')
             mid = (m or {}).get('result', {}).get('message_id')
-            _spawn_and_watch('check', engine.ACTIONS['inter_check'], chat_id, message_id=mid)
+            _spawn_and_watch('check', governance.action_inter_check, chat_id, message_id=mid)
 
     elif action == 'clean':
         plan_id = _latest_pending_plan_id()
@@ -506,22 +503,22 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
         force = 'force' in (arg or '').lower()
         if force:
             _send(token, chat_id, '⏳ 正在强制刷新入库统计（现场扫 Emby）...')
-        _spawn_and_watch('ingest', engine.ACTIONS['stats'], chat_id,
+        _spawn_and_watch('ingest', ingest.action_stats, chat_id,
                          kw='full force' if force else 'full')
 
     elif action == 'played':
-        _spawn_and_watch('played', engine.ACTIONS['played'], chat_id)
+        _spawn_and_watch('played', ingest.action_played, chat_id)
 
     elif action == 'emby':
         _send(token, chat_id, '⏳ 正在拉取 Emby 库...')
-        _spawn_and_watch('emby', lambda _a: engine.gap_report(), chat_id)
+        _spawn_and_watch('emby', lambda _a: morning.gap_report(), chat_id)
 
     elif action == 'gap':
         _send(token, chat_id, '⏳ 正在检测缺集（首次可能较慢）...')
-        _spawn_and_watch('gap', lambda _a: engine.gap_report(), chat_id)
+        _spawn_and_watch('gap', lambda _a: morning.gap_report(), chat_id)
 
     elif action == 'logs':
-        _spawn_and_watch('logs', engine.ACTIONS['logs'], chat_id, kw='20')
+        _spawn_and_watch('logs', ingest.action_logs, chat_id, kw='20')
 
     elif action == 'sub':
         if arg.lower() in ('check', 'now', '立即'):
@@ -529,34 +526,34 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
 
             def _do_check():
                 try:
-                    r = engine.check_subscriptions(send_notify=False)
+                    r = subscribe.check_subscriptions(send_notify=False)
                     ups = r.get('updates') or []
                     if not ups:
                         _send(token, chat_id,
-                              engine.tg_title('🔔', '订阅检查完成', f"共 {r.get('total', 0)} 部") + '\n\n✅ 无新集、无缺集')
+                              tg.tg_title('🔔', '订阅检查完成', f"共 {r.get('total', 0)} 部") + '\n\n✅ 无新集、无缺集')
                     else:
-                        lines = [engine.tg_title('🔔', '订阅检查', f'{len(ups)} 部有变化')]
+                        lines = [tg.tg_title('🔔', '订阅检查', f'{len(ups)} 部有变化')]
                         for u in ups:
                             lines.append('')
                             lines.append(f"📺 <b>《{_esc(u['name'])}》</b>")
                             if u.get('refilled'):
-                                lines.append(f"　✅ 已补齐 <b>{engine._fmt_ep_ranges(engine._keys_to_eps(u['refilled']))}</b>")
+                                lines.append(f"　✅ 已补齐 <b>{subscribe._fmt_ep_ranges(subscribe.keys_to_eps(u['refilled']))}</b>")
                             if u.get('new_eps'):
-                                lines.append(f"　🆕 新增入库 <b>{engine._fmt_ep_ranges(engine._keys_to_eps(u['new_eps']))}</b>")
+                                lines.append(f"　🆕 新增入库 <b>{subscribe._fmt_ep_ranges(subscribe.keys_to_eps(u['new_eps']))}</b>")
                             if u.get('newly_missing'):
-                                lines.append(f"　⚠️ 缺集 <b>{engine._fmt_ep_ranges(engine._keys_to_eps(u['newly_missing']))}</b>")
+                                lines.append(f"　⚠️ 缺集 <b>{subscribe._fmt_ep_ranges(subscribe.keys_to_eps(u['newly_missing']))}</b>")
                         _send(token, chat_id, '\n'.join(lines))
                 except Exception as e:
                     _send(token, chat_id, f'❌ 检查失败: {e}')
             threading.Thread(target=_do_check, daemon=True).start()
         else:
             subs = _cfg.get_subscriptions()
-            state = engine._load_sub_state()
+            state = subscribe.load_sub_state()
             if not subs:
                 _send(token, chat_id,
                       '🔔 暂无订阅。\n在 Web「追更订阅」页添加，或从「影视探索」点订阅按钮。')
             else:
-                lines = [engine.tg_title('🔔', '追更订阅', f'共 {len(subs)} 部'), '']
+                lines = [tg.tg_title('🔔', '追更订阅', f'共 {len(subs)} 部'), '']
                 for s in subs[:20]:
                     sid = s.get('id') or s.get('tmdb_id') or s.get('name')
                     st = state.get(sid) or {}
@@ -575,7 +572,7 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
         def _do_morning():
             try:
                 mr = _cfg.get_morning_report()
-                ok = engine.send_morning_report(
+                ok = morning.send_morning_report(
                     mr.get('items') or ['stats', 'subscriptions', 'emby_gap'],
                     force_refresh=True)
                 if not ok:
@@ -591,22 +588,22 @@ def _dispatch(action, token, chat_id, message_id=None, user_msg_id=None, arg='')
 
     elif action.startswith('search:'):
         q = action[7:]
-        _spawn_and_watch('search', engine.ACTIONS['search'], chat_id, kw=q)
+        _spawn_and_watch('search', ingest.action_search, chat_id, kw=q)
 
 
 # ═══════════════════ 结果渲染 ═══════════════════
 def _scan_text(icon, title, res):
     ex_items = res.get('exempted_items') or []
     ex_cnt = res.get('exempted_count', len(ex_items))   # 豁免项按节目合并后条数变少，总数用 exempted_count
-    return engine.fmt_scan_text(icon, title, res.get('del_local_cnt', 0), res.get('del_share_cnt', 0),
+    return tg.fmt_scan_text(icon, title, res.get('del_local_cnt', 0), res.get('del_share_cnt', 0),
                                 len(res.get('protected_items') or []), ex_cnt, len(ex_items))
 
 
 def _gap_stats_text(icon, title, st, sub='', extra=''):
-    rows = [engine.tg_title(icon, title, sub), '',
-            engine.tg_row('📚', '剧集总数', st.get('total', 0)),
-            engine.tg_row('✅', '对齐', st.get('aligned', 0), f'在更 {st.get("ongoing", 0)}'),
-            engine.tg_row('⚠️', '缺集', st.get('missing', 0),
+    rows = [tg.tg_title(icon, title, sub), '',
+            tg.tg_row('📚', '剧集总数', st.get('total', 0)),
+            tg.tg_row('✅', '对齐', st.get('aligned', 0), f'在更 {st.get("ongoing", 0)}'),
+            tg.tg_row('⚠️', '缺集', st.get('missing', 0),
                           f'超集 {st.get("extra", 0)} · 未匹配 {st.get("unmatched", 0)}')]
     if extra:
         rows.append(extra)
@@ -615,8 +612,8 @@ def _gap_stats_text(icon, title, st, sub='', extra=''):
 
 def notify_auto_scan(res, error=None):
     """定时巡检结果推送（带「查看清单 / 执行清理」按钮）。返回是否发送成功。"""
-    token = (engine.RUNTIME_CFG.get('telegram_bot_token') or '').strip()
-    chat_id = (engine.RUNTIME_CFG.get('telegram_chat_id') or '').strip()
+    token = (state.RUNTIME_CFG.get('telegram_bot_token') or '').strip()
+    chat_id = (state.RUNTIME_CFG.get('telegram_chat_id') or '').strip()
     if not token or not chat_id:
         return False
     if error:
@@ -629,7 +626,7 @@ def notify_auto_scan(res, error=None):
         text += '\n\n✅ 双库状态良好，无需清理'
         kb = {'inline_keyboard': []}
     else:
-        text += (f'\n\n<i>清单 {engine.PLAN_TTL // 3600} 小时内有效，过期需重新扫描；'
+        text += (f'\n\n<i>清单 {state.PLAN_TTL // 3600} 小时内有效，过期需重新扫描；'
                  '清理不会自动执行，确认后请点下方按钮</i>')
         kb = _plan_keyboard(pid) if pid else {'inline_keyboard': []}
     # 带按钮的卡片跟计划同寿命：计划过期（PLAN_TTL）就自动消失，不再挂 12 小时变成点不动的死卡片
@@ -677,12 +674,12 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
 
     elif kind == 'clean':
         skipped = res.get('skipped') or 0  # 引擎返回的是跳过项数（int），以前按列表 len() 会在清理完成后抛错
-        text = '\n'.join([engine.tg_title('🗑️', '清理完成', engine.tg_stamp()), '',
-                          engine.tg_row('💾', '释放本地', res.get('loc_cnt', 0)),
-                          engine.tg_row('📤', '淘汰分享', res.get('sh_cnt', 0)),
-                          engine.tg_row('🔄', 'Emby 刷新', '✅' if res.get('refreshed') else '❌')])
+        text = '\n'.join([tg.tg_title('🗑️', '清理完成', tg.tg_stamp()), '',
+                          tg.tg_row('💾', '释放本地', res.get('loc_cnt', 0)),
+                          tg.tg_row('📤', '淘汰分享', res.get('sh_cnt', 0)),
+                          tg.tg_row('🔄', 'Emby 刷新', '✅' if res.get('refreshed') else '❌')])
         if skipped:
-            text += '\n' + engine.tg_row('⏭️', '跳过', skipped, '状态已变化，未执行')
+            text += '\n' + tg.tg_row('⏭️', '跳过', skipped, '状态已变化，未执行')
         _edit_or_send(token, chat_id, message_id, text, {'inline_keyboard': []}, ttl=300)
 
     elif kind == 'search':
@@ -700,10 +697,10 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
         elif age < 60: age_str = f'{age} 秒前'
         elif age < 3600: age_str = f'{age // 60} 分钟前'
         else: age_str = f'{age // 3600} 小时前'
-        text = '\n'.join([engine.tg_title('📊', '24 小时入库',
+        text = '\n'.join([tg.tg_title('📊', '24 小时入库',
                                           f'{"📦 来自缓存" if res.get("from_cache") else "🔄 现场扫描"} · {age_str}'), '',
-                          engine.tg_row('🎬', '电影', f'+{st.get("movies", 0)} 部'),
-                          engine.tg_row('📺', '剧集', f'+{st.get("series", 0)} 部', f'+{st.get("episodes", 0)} 集')])
+                          tg.tg_row('🎬', '电影', f'+{st.get("movies", 0)} 部'),
+                          tg.tg_row('📺', '剧集', f'+{st.get("series", 0)} 部', f'+{st.get("episodes", 0)} 集')])
         # 完整清单放进折叠引用：默认收起，点一下展开全部，再点收起
         tv_lines = []
         for src in ('本地影视库', '分享影视库'):
@@ -752,7 +749,7 @@ def _notify_result(token, chat_id, kind, res, message_id=None, user_msg_id=None)
             _send(token, chat_id, f"❌ Emby 库总览失败: {res.get('message')}"); return
         st = res.get('stats') or {}
         broken = res.get('missing') or []
-        text = _gap_stats_text('📺', 'Emby 库总览', st, extra=engine.tg_row('🎬', '电影总数', res.get('movies_total', 0)))
+        text = _gap_stats_text('📺', 'Emby 库总览', st, extra=tg.tg_row('🎬', '电影总数', res.get('movies_total', 0)))
         if broken:
             text += f'\n\n<b>全部缺集（{len(broken)} 部）</b>（点开展开 / 再点收起）\n' + _bq(
                 [f'• 《{_esc(s.get("name"))}》缺 <b>{abs((s.get("tmdb_info") or {}).get("diff") or 0)}</b> 集'
@@ -854,7 +851,7 @@ def _handle_callback(token, cb):
         code, text = _plan_problem(plan_id)
         if code and code != 'executing':
             _show_plan_problem(token, chat_id, message_id, code, text); return
-        plan_data = engine.load_plan(plan_id) or {}
+        plan_data = governance.load_plan(plan_id) or {}
         actions = plan_data.get('actions') or []
         if not actions:
             _send(token, chat_id, '📋 <b>计划清单</b>\n\n(空)'); return
@@ -886,7 +883,7 @@ def _handle_callback(token, cb):
             _edit(token, chat_id, message_id, bm, _close_keyboard(), ttl=20); return
         # 清理可能跑很久：进度卡片保留 30 分钟，别 60 秒就被删，否则结果没地方显示
         _edit(token, chat_id, message_id, '⏳ 正在执行清理...', {'inline_keyboard': []}, ttl=1800)
-        _spawn_and_watch('clean', engine.ACTIONS['inter_clean'], chat_id,
+        _spawn_and_watch('clean', governance.action_inter_clean, chat_id,
                          message_id=message_id, plan=plan_id, dry_run=False,
                          notify=False)  # Bot 自己编辑确认消息，引擎不再另发一条
 
@@ -957,15 +954,15 @@ def _poll_loop(gen):
                     break  # 处理到一半被换代：剩下的留给新线程（offset 未推进），不重复执行
                 _state['offset'] = upd['update_id'] + 1
                 try:
-                    engine.db_kv_set('tg_update_offset', str(_state['offset']))
+                    storage.db_kv_set('tg_update_offset', str(_state['offset']))
                 except Exception:
                     pass
                 # 去重闸：同一条 update 只派发一次（TG 在 offset 未确认时会重投）
                 try:
                     uk = 'tg_upd_%s' % upd['update_id']
-                    if engine.db_dedup_seen(uk):
+                    if storage.db_dedup_seen(uk):
                         continue
-                    engine.db_dedup_add(uk)
+                    storage.db_dedup_add(uk)
                 except Exception:
                     pass
                 # 每个 update 单独线程：一个慢操作（网络卡住的 edit / delete）不再堵住后面所有按钮点击
@@ -995,7 +992,7 @@ def _start_locked():
     # 进程重启后从 SQLite 恢复 update offset：不再重复处理重启前的旧消息
     # （此前 offset 只在内存里，重启即归零，TG 会把未确认的旧 update 再推一遍）
     try:
-        persisted = int(engine.db_kv_get('tg_update_offset', '0') or 0)
+        persisted = int(storage.db_kv_get('tg_update_offset', '0') or 0)
         if persisted > (_state.get('offset') or 0):
             _state['offset'] = persisted
     except Exception:

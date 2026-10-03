@@ -153,10 +153,9 @@ for mod in deps:
 section('4. app 内部模块 import')
 
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(APP_DIR))
 
 try:
-    import core
+    from app import core
     ok('core 导入成功')
 except Exception as e:
     fail('core 导入失败', traceback.format_exc())
@@ -165,8 +164,8 @@ except Exception as e:
 # ═══════════════════ 5. core 关键函数 ═══════════════════
 section('5. core 关键函数')
 
-if 'core' in sys.modules:
-    import core
+if 'app.core' in sys.modules:
+    from app import core
     core_funcs = [
         'esc', 'parse_season_dir', 'get_ep', 
         'title_key', 'is_exempt', 'fmt_nums',
@@ -195,7 +194,7 @@ if 'core' in sys.modules:
 section('6. config 模块')
 
 try:
-    import config
+    from app import config
     cfg_funcs = [
         'load_config', 'save_config',
         'get_strategy', 'update_strategy',
@@ -235,7 +234,7 @@ section('7. engine 模块')
 os.environ.setdefault('EMBY_HOST', 'http://127.0.0.1:8096')
 
 try:
-    import engine
+    from app import engine
     ok('engine 导入成功')
 
     engine_funcs = [
@@ -293,7 +292,7 @@ except Exception as e:
 section('8. bot 模块')
 
 try:
-    import bot
+    from app import bot
     bot_funcs = [
         'start', 'stop', 'restart', 'status', 'set_current_ref',
         '_send', '_edit', '_try_delete', '_schedule_delete',
@@ -315,7 +314,7 @@ except Exception as e:
 section('9. main 模块')
 
 try:
-    import main
+    from app import main
     ok('main 导入成功')
 
     routes = [r.path for r in main.app.routes]

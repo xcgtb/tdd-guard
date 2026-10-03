@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,36 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state, governance, morning, emby, lib
+
 log = logging.getLogger('media_agent')
-
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
-
-
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
 
 
 def _fetch_ingest(hours=24):
@@ -56,19 +33,19 @@ def _fetch_ingest(hours=24):
 
     base = {'Recursive': 'true', 'SortBy': 'DateCreated', 'SortOrder': 'Descending', 'MinDateCreated': min_date}
     try:
-        for m in _eng()._paged_items(dict(base, IncludeItemTypes='Movie', Fields='DateCreated,Path,Genres,ProviderIds,ProductionYear,Name')):
-            dt = _eng().parse_dt(m.get('DateCreated'))
+        for m in emby._paged_items(dict(base, IncludeItemTypes='Movie', Fields='DateCreated,Path,Genres,ProviderIds,ProductionYear,Name')):
+            dt = emby.parse_dt(m.get('DateCreated'))
             if not dt or dt < cutoff: continue
             movies_raw.append(m)
             n = m.get('Name')
-            bucket = mov_tree[_eng()._src(m.get('Path', ''))][parse_emby_library(m, True)]
+            bucket = mov_tree[emby._src(m.get('Path', ''))][parse_emby_library(m, True)]
             if n and n not in bucket: bucket.append(n)
             if n:
                 try:
                     _mts = dt.timestamp()
                 except Exception:
                     _mts = 0.0
-                _md = mov_detail[_eng()._src(m.get('Path', ''))][parse_emby_library(m, True)]
+                _md = mov_detail[emby._src(m.get('Path', ''))][parse_emby_library(m, True)]
                 if _mts > (_md.get(n) or 0):
                     _md[n] = _mts
     except Exception as e:
@@ -76,11 +53,11 @@ def _fetch_ingest(hours=24):
         errors.append('电影: %s' % e)
 
     try:
-        for e in _eng()._paged_items(dict(base, IncludeItemTypes='Episode', Fields='DateCreated,Path,SeriesName,Genres,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,ProductionYear,Name')):
-            dt = _eng().parse_dt(e.get('DateCreated'))
+        for e in emby._paged_items(dict(base, IncludeItemTypes='Episode', Fields='DateCreated,Path,SeriesName,Genres,ProviderIds,SeriesId,ParentIndexNumber,IndexNumber,ProductionYear,Name')):
+            dt = emby.parse_dt(e.get('DateCreated'))
             if not dt or dt < cutoff: continue
             episodes_raw.append(e)
-            src = _eng()._src(e.get('Path', ''))
+            src = emby._src(e.get('Path', ''))
             cat = parse_emby_library(e, False)
             title = e.get('SeriesName') or '未知剧集'
             tv_tree[src][cat][title] += 1
@@ -113,7 +90,7 @@ def _fetch_ingest(hours=24):
     # 统计口径：按媒体身份去重。双库同一 TMDB 电影只算 1 部；剧集按
     # 规范化剧名+年份识别跨库同一剧，再按 (season, episode) union。
     def _ingest_series_key(e):
-        name = _eng()._normalize_title(str(e.get('SeriesName') or e.get('Name') or '')).casefold()
+        name = lib._normalize_title(str(e.get('SeriesName') or e.get('Name') or '')).casefold()
         year = str(e.get('ProductionYear') or '')
         # Episode 的 ProviderIds 常常是 episode 自身 ID，不能拿它当 Series ID。
         return f"name:{name}|year:{year}" if name else f"sid:{e.get('SeriesId') or ''}"
@@ -123,7 +100,7 @@ def _fetch_ingest(hours=24):
     for m in movies_raw:
         tid = str((m.get('ProviderIds') or {}).get('Tmdb') or '')
         if tid: movie_ids.add(tid)
-        else: movie_fallback.add((_eng()._normalize_title(str(m.get('Name') or '')).casefold(), str(m.get('ProductionYear') or '')))
+        else: movie_fallback.add((lib._normalize_title(str(m.get('Name') or '')).casefold(), str(m.get('ProductionYear') or '')))
     for e in episodes_raw:
         sid = _ingest_series_key(e)
         if sid: series_ids.add(sid)
@@ -170,7 +147,7 @@ def refresh_ingest_cache(hours=24) -> dict:
     """立即拉取并覆盖缓存。拉取失败（超时等）时保留上一份完整缓存，只附上失败信息，
     避免把「+0 部 / +0 集」的残缺结果写成最新数据。"""
     log.info('入库缓存刷新开始（%sh）', hours)
-    data = _eng()._fetch_ingest(hours=hours)
+    data = _fetch_ingest(hours=hours)
     if not data.get('ok', True):
         old = read_ingest_cache()
         if old and old.get('ok', True):
@@ -187,7 +164,7 @@ def refresh_ingest_cache(hours=24) -> dict:
     # 不触发全量 TMDB 对照，避免为了「补齐缺集」重新扫整个片库。
     if data.get('ok', True):
         try:
-            _eng().refresh_mapping_cache_after_ingest(data)
+            morning.refresh_mapping_cache_after_ingest(data)
         except Exception as e:
             log.warning('入库后片库映射缓存刷新失败: %s', e)
     st = data.get('stats', {})
@@ -200,17 +177,17 @@ def refresh_ingest_cache(hours=24) -> dict:
 
 def _write_ingest_cache(data):
     try:
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _eng().INGEST_CACHE_FILE.with_suffix('.tmp')
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = state.INGEST_CACHE_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(_eng().INGEST_CACHE_FILE)
+        tmp.replace(state.INGEST_CACHE_FILE)
     except OSError as e:
         log.warning('入库缓存写入失败: %s', e)
 
 def read_ingest_cache(max_age=None) -> dict:
     """读缓存；max_age 为 None 时不做时效判断，返回 None 表示无缓存"""
     try:
-        data = json.loads(_eng().INGEST_CACHE_FILE.read_text(encoding='utf-8'))
+        data = json.loads(state.INGEST_CACHE_FILE.read_text(encoding='utf-8'))
     except (OSError, ValueError):
         return None
     if max_age is not None and time.time() - data.get('ts', 0) > max_age:
@@ -290,7 +267,7 @@ def action_stats(args):
 def action_played(args):
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
     newest = defaultdict(lambda: defaultdict(int))
-    for ep in _eng()._recent('Episode', 'DateCreated,SeriesName,ParentIndexNumber,IndexNumber', 3000, cutoff):
+    for ep in emby._recent('Episode', 'DateCreated,SeriesName,ParentIndexNumber,IndexNumber', 3000, cutoff):
         if ep.get('SeriesName') and ep.get('IndexNumber'):
             s = ep.get('ParentIndexNumber', 1)
             newest[ep['SeriesName']][s] = max(newest[ep['SeriesName']][s], ep['IndexNumber'])
@@ -303,10 +280,10 @@ def action_played(args):
                  'text': f'👤 {who} {verb}，《{name}》今日已入库 E{top:02d}'}
             if not any(x['user'] == who and x['series'] == name for x in alerts):
                 alerts.append(a)
-    for u in _eng().emby_request('/Users') or []:
+    for u in emby.emby_request('/Users') or []:
         uid, who = u['Id'], u.get('Name', '用户')
         try:
-            items = (_eng().emby_request(f'/Users/{uid}/Items', {'Recursive': 'true', 'Filters': 'IsResumable',
+            items = (emby.emby_request(f'/Users/{uid}/Items', {'Recursive': 'true', 'Filters': 'IsResumable',
                                                           'SortBy': 'DatePlayed', 'SortOrder': 'Descending',
                                                           'Limit': 5}) or {}).get('Items', [])
             for it in items:
@@ -321,7 +298,7 @@ def action_played(args):
                     records.append({'user': who, 'type': 'tv', 'name': name, 's': s_idx, 'e': e_idx, 'pct': pct,
                                     'text': f'👤 {who} 正在看 📺《{name}》S{s_idx:02d}E{e_idx:02d} (进度 {pct}%)'})
                     check(name, s_idx, e_idx, who, False)
-            watched = (_eng().emby_request(f'/Users/{uid}/Items', {'Recursive': 'true', 'Filters': 'IsPlayed',
+            watched = (emby.emby_request(f'/Users/{uid}/Items', {'Recursive': 'true', 'Filters': 'IsPlayed',
                                                             'SortBy': 'DatePlayed', 'SortOrder': 'Descending',
                                                             'Limit': 6, 'IncludeItemTypes': 'Episode'}) or {}).get('Items', [])
             for it in watched:
@@ -336,7 +313,7 @@ def action_search(args):
     if not tokens:
         return {'status': 'success', 'text': '请输入片名关键词'}
     found = []
-    for root, tag in ((_eng().L_ROOT, '本地影视库'), (_eng().S_ROOT, '分享影视库')):
+    for root, tag in ((state.L_ROOT, '本地影视库'), (state.S_ROOT, '分享影视库')):
         if not root.exists(): continue
         for dp, dns, fns in os.walk(root):
             dns[:] = [d for d in dns if parse_season_dir(d) is None]
@@ -349,7 +326,7 @@ def action_search(args):
                 found.append(f'{icon} **《{esc(p.name)}》**\n  ├ 📂 归属库: `{tag}`\n  ├ 🏷️ 分类: `{m_type} / {m_cat}`\n  └ 📍 路径: `{p}`')
     text = '\n\n'.join(found[:8]) if found else f'❌ 未在两库中检索到包含关键词《{esc(args.kw)}》的资源。'
     if len(found) > 8: text += f'\n\n… 共 {len(found)} 条，仅显示前 8 条，请补充关键词缩小范围'
-    _eng().write_audit_log('模糊搜片', f'关键词: {args.kw}，命中 {len(found)} 条')
+    governance.write_audit_log('模糊搜片', f'关键词: {args.kw}，命中 {len(found)} 条')
     return {'status': 'success', 'text': text}
 
 def action_logs(args):

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,36 +8,25 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state, governance, emby, lib, storage
+
 log = logging.getLogger('media_agent')
 
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
 
-
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
+VIDEO_EXTS = ['.mkv', '.mp4', '.ts', '.mov', '.iso', '.m2ts']
+_METADATA_EXTS = {
+    '.nfo', '.jpg', '.jpeg', '.png', '.gif', '.webp',
+    '.srt', '.ass', '.ssa', '.sub', '.idx', '.sup',
+    '.json', '.url', '.xml', '.md5', '.sha1',
+}
+PRUNE_MIN_DEPTH = int(os.environ.get('PRUNE_MIN_DEPTH', '3'))
+_SIDECAR_SEPS = '.-_ [('
+_RE_DIR_TMDB = re.compile(r'(?i)tmdb(?:id)?[-_=: ]*(\d+)')
+_ORPHAN_IGNORE_NAMES = {'thumbs.db', 'desktop.ini', '.ds_store'}
 
 
 def cloud_videos(f, base_root, cloud_root):
@@ -66,7 +55,7 @@ def cloud_videos(f, base_root, cloud_root):
         if next_d.is_dir():
             d = next_d
             continue
-        sub, level = _eng()._find_dir_fuzzy(d, part)
+        sub, level = lib._find_dir_fuzzy(d, part)
         if sub is None:
             return [], level  # ambiguous / none
         d = sub
@@ -82,7 +71,7 @@ def cloud_videos(f, base_root, cloud_root):
     # STRM 命名约定：<原名>.<编码信息>.strm，视频扩展名被剥离
     stem = f.stem
     exact = []
-    for ext in _eng().VIDEO_EXTS:
+    for ext in VIDEO_EXTS:
         c = d / f'{stem}{ext}'
         if c.is_file() and _inside(c, cloud_root):
             exact.append(c)
@@ -93,14 +82,14 @@ def cloud_videos(f, base_root, cloud_root):
         return exact, 'exact'
 
     # ── 标准化后唯一匹配 ──
-    stem_norm = _eng()._normalize_title(stem)
+    stem_norm = lib._normalize_title(stem)
     norm_matches = []
     try:
         for child in d.iterdir():
             if not child.is_file(): continue
-            if child.suffix.lower() not in _eng().VIDEO_EXTS: continue
+            if child.suffix.lower() not in VIDEO_EXTS: continue
             if not _inside(child, cloud_root): continue
-            if _eng()._normalize_title(child.stem) == stem_norm:
+            if lib._normalize_title(child.stem) == stem_norm:
                 norm_matches.append(child)
     except OSError:
         return [], 'none'
@@ -114,7 +103,7 @@ def cloud_videos(f, base_root, cloud_root):
     # ── 目录唯一视频兜底（低置信度，仅报告） ──
     try:
         vids = [c for c in d.iterdir()
-                if c.is_file() and c.suffix.lower() in _eng().VIDEO_EXTS
+                if c.is_file() and c.suffix.lower() in VIDEO_EXTS
                 and _inside(c, cloud_root)]
         if len(vids) == 1:
             return vids, 'unique_fallback'
@@ -136,8 +125,8 @@ class MutationBusy(Exception):
 def mutation_lock():
     """跨入口互斥锁：CLI / Web / Telegram Bot 任何真正改文件的操作（双库清理、单剧删除、
     洗版残留清理）都必须先拿到这把文件锁，拿不到抛 MutationBusy，由调用方回「忙」。"""
-    _eng().DATA_DIR.mkdir(parents=True, exist_ok=True)
-    fh = open(_eng().LOCK_FILE, 'w')
+    state.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fh = open(state.LOCK_FILE, 'w')
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -154,26 +143,26 @@ def _is_sidecar_of(stem, other_stem):
     如 A.S01E01-mediainfo / A.S01E01.zh。只看前缀会把「A - S01E1」的附属扩到「A - S01E10」上。"""
     if other_stem == stem:
         return True
-    return other_stem.startswith(stem) and other_stem[len(stem)] in _eng()._SIDECAR_SEPS
+    return other_stem.startswith(stem) and other_stem[len(stem)] in _SIDECAR_SEPS
 
 def _load_wash_residuals():
     try:
-        raw = json.loads(_eng().WASH_RESIDUAL_FILE.read_text(encoding='utf-8'))
+        raw = json.loads(state.WASH_RESIDUAL_FILE.read_text(encoding='utf-8'))
         items = raw.get('items') if isinstance(raw, dict) else raw
         return items if isinstance(items, list) else []
     except (OSError, ValueError, TypeError):
         return []
 
 def _save_wash_residuals(items):
-    _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _eng().WASH_RESIDUAL_FILE.with_suffix('.tmp')
+    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = state.WASH_RESIDUAL_FILE.with_suffix('.tmp')
     tmp.write_text(json.dumps({'version': 1, 'items': items}, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(_eng().WASH_RESIDUAL_FILE)
+    tmp.replace(state.WASH_RESIDUAL_FILE)
 
 def _record_wash_residuals(records):
     if not records:
         return
-    with _eng()._WASH_RESIDUAL_LOCK:
+    with state._WASH_RESIDUAL_LOCK:
         items = _load_wash_residuals()
         seen = {(str(x.get('strm_path')), str(x.get('sidecar_path'))) for x in items}
         for r in records:
@@ -211,7 +200,7 @@ def _remove_strm(f):
     f.unlink()
     if failed:
         now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        lib = 'local' if _inside(f, _eng().L_ROOT) else ('share' if _inside(f, _eng().S_ROOT) else 'unknown')
+        lib = 'local' if _inside(f, state.L_ROOT) else ('share' if _inside(f, state.S_ROOT) else 'unknown')
         _record_wash_residuals([
             {'id': hashlib.sha1(f'{f}|{s}|{now}'.encode('utf-8')).hexdigest()[:16],
              'lib': lib, 'strm_path': str(f), 'sidecar_path': str(s),
@@ -236,7 +225,7 @@ def _classify_dir(path, base_root):
     if len(parts) == 0:
         return 'lib_root'
     if len(parts) == 1:
-        return 'category' if parts[0] in _eng()._CATEGORY_NAMES else 'unknown'
+        return 'category' if parts[0] in state._CATEGORY_NAMES else 'unknown'
     name = path.name
     parent = path.parent
     parent_name = parent.name if parent != base_root else ''
@@ -244,7 +233,7 @@ def _classify_dir(path, base_root):
         return 'season'
     if parent_name and parse_season_dir(parent_name) is not None:
         return 'series_root'
-    if parent_name in _eng()._CATEGORY_NAMES:
+    if parent_name in state._CATEGORY_NAMES:
         return 'movie'
     return 'unknown'
 
@@ -274,9 +263,9 @@ def _dir_cleanable(d):
             if not f.is_file():
                 continue
             ext = f.suffix.lower()
-            if ext == '.strm' or ext in _eng().VIDEO_EXTS:
+            if ext == '.strm' or ext in VIDEO_EXTS:
                 return False, '还有媒体文件 ' + f.name
-            if ext not in _eng()._METADATA_EXTS:
+            if ext not in _METADATA_EXTS:
                 return False, '含未知文件 ' + f.name
     except OSError as e:
         return False, '权限错误 %s' % e
@@ -295,7 +284,7 @@ def _prune_up(d, base_root, cloud_root):
             rel = cur.relative_to(base_root)
         except (ValueError, OSError):
             return
-        if len(rel.parts) < _eng().PRUNE_MIN_DEPTH:
+        if len(rel.parts) < PRUNE_MIN_DEPTH:
             return
         kind = _classify_dir(cur, base_root)
         if kind in ('category', 'lib_root', 'unknown'):
@@ -359,7 +348,7 @@ def safe_delete_files(files, base_root, cloud_root=None, dry_run=False):
                 st['cloud_missing'] += 1
                 st['errors'].append(f'{f.name}: 云端根目录不可用 ({cloud_root})，STRM 保留')
                 continue
-            vids, conf = _eng().cloud_videos(f, base_root, cloud_root)
+            vids, conf = cloud_videos(f, base_root, cloud_root)
             if conf == 'none':
                 st['cloud_missing'] += 1
                 st['errors'].append(f'{f.name}: 未找到云端源文件，STRM 保留')
@@ -418,11 +407,11 @@ def find_movie_strms_by_tmdb(root, tmdb_id):
     want = int(want)
     out = []
     for dp, dns, _fns in os.walk(root):
-        m = _eng()._RE_DIR_TMDB.search(os.path.basename(dp))
+        m = _RE_DIR_TMDB.search(os.path.basename(dp))
         if not m or int(m.group(1)) != want:
             continue
         dns[:] = []
-        strms, is_series = [], _eng()._under_tv_category(Path(dp), root)
+        strms, is_series = [], lib._under_tv_category(Path(dp), root)
         for r, ds, ns in os.walk(dp):
             if any(parse_season_dir(d) is not None for d in ds):
                 is_series = True
@@ -453,7 +442,7 @@ def scan_orphans(max_depth=5, diag=None):
     max_depth = _clamp_depth(max_depth)
     libs = []
 
-    for root, lib_name in ((_eng().L_ROOT, 'local'), (_eng().S_ROOT, 'share')):
+    for root, lib_name in ((state.L_ROOT, 'local'), (state.S_ROOT, 'share')):
         info = {'lib': lib_name, 'root': str(root), 'exists': root.exists(),
                 'dirs': 0, 'files': 0, 'strm': 0, 'video': 0, 'meta': 0,
                 'ignored': 0, 'unknown': 0, 'pruned_dirs': 0, 'errors': []}
@@ -478,16 +467,16 @@ def scan_orphans(max_depth=5, diag=None):
                     info['files'] += 1
                     low = fn.lower()
                     ext = os.path.splitext(fn)[1].lower()
-                    if low.startswith('.') or low in _eng()._ORPHAN_IGNORE_NAMES:
+                    if low.startswith('.') or low in _ORPHAN_IGNORE_NAMES:
                         info['ignored'] += 1
                         continue
                     if ext == '.strm':
                         info['strm'] += 1
                         continue
-                    if ext in _eng().VIDEO_EXTS:
+                    if ext in VIDEO_EXTS:
                         info['video'] += 1
                         continue
-                    if ext in _eng()._METADATA_EXTS:
+                    if ext in _METADATA_EXTS:
                         info['meta'] += 1
                         continue
                     fp = os.path.join(dp, fn)
@@ -525,7 +514,7 @@ def _confirmed_wash_residuals(max_depth=5):
         cp = Path(str(r.get('sidecar_path') or ''))
         if not sp or not cp:
             continue
-        base = _eng().L_ROOT if _inside(cp, _eng().L_ROOT) else (_eng().S_ROOT if _inside(cp, _eng().S_ROOT) else None)
+        base = state.L_ROOT if _inside(cp, state.L_ROOT) else (state.S_ROOT if _inside(cp, state.S_ROOT) else None)
         if base is None or not _inside(sp, base) or not _inside(cp, base):
             continue
         try:
@@ -560,7 +549,7 @@ def _confirmed_wash_residuals(max_depth=5):
     # 清掉已经消失/重新入库的旧记录；保留深度之外的记录。
     if len(valid) != len(raw):
         try:
-            with _eng()._WASH_RESIDUAL_LOCK:
+            with state._WASH_RESIDUAL_LOCK:
                 _save_wash_residuals(valid[-5000:])
         except OSError:
             pass
@@ -620,7 +609,7 @@ def _clean_orphan_dirs(paths, dry_run):
             continue
         d = Path(p)
         # 真正删除前再次确认：目录内不能重新出现 STRM/视频；不能出现 journal 未登记的未知文件。
-        base = _eng().L_ROOT if _inside(d, _eng().L_ROOT) else (_eng().S_ROOT if _inside(d, _eng().S_ROOT) else None)
+        base = state.L_ROOT if _inside(d, state.L_ROOT) else (state.S_ROOT if _inside(d, state.S_ROOT) else None)
         if base is None:
             errors.append(f'{p}: 不在媒体库内，跳过'); continue
         kind = _classify_dir(d, base)
@@ -642,14 +631,14 @@ def _clean_orphan_dirs(paths, dry_run):
         except OSError as e:
             errors.append(f'{p}: {e}')
     if not dry_run and removed:
-        with _eng()._WASH_RESIDUAL_LOCK:
+        with state._WASH_RESIDUAL_LOCK:
             raw = _load_wash_residuals()
             kept = [r for r in raw if str(Path(r.get('sidecar_path') or '').parent) not in set(removed)]
             try:
                 _save_wash_residuals(kept[-5000:])
             except OSError as e:
                 errors.append(f'残留日志更新失败: {e}')
-        _eng().write_audit_log('洗版残留清理',
+        governance.write_audit_log('洗版残留清理',
                         f'清理已确认洗版残留目录 {len(removed)} 个',
                         [f'删除 {len(removed)} 个已确认残留目录'] + removed[:50]
                         + (['错误: ' + e for e in errors[:3]] if errors else []))
@@ -710,16 +699,16 @@ def action_clean_orphan_dirs(args):
 
 def purge_old():
     """清理过期治理计划（保留 7 天供审计）。"""
-    if _eng().STATE_DIR.exists():
+    if state.STATE_DIR.exists():
         plan_cut = time.time() - 7 * 86400
-        for f in _eng().STATE_DIR.glob('plan_*.json'):
+        for f in state.STATE_DIR.glob('plan_*.json'):
             try:
                 if f.stat().st_mtime < plan_cut:
                     f.unlink()
             except OSError:
                 pass
         try:
-            _eng().db_purge_plans(plan_cut)   # SQLite 索引同步清理
+            storage.db_purge_plans(plan_cut)   # SQLite 索引同步清理
         except Exception:
             pass
 
@@ -750,10 +739,10 @@ def scan_empty_dirs(root_path, limit=100):
     preview 每条 {path, rel, abs_path, type, rule} 与上游预览结构对齐。
     """
     base = Path(str(root_path or ''))
-    if _inside(base, _eng().L_ROOT):
-        root = Path(_eng().L_ROOT)
-    elif _inside(base, _eng().S_ROOT):
-        root = Path(_eng().S_ROOT)
+    if _inside(base, state.L_ROOT):
+        root = Path(state.L_ROOT)
+    elif _inside(base, state.S_ROOT):
+        root = Path(state.S_ROOT)
     else:
         return {'status': 'error', 'message': '扫描目录必须在本地/分享库根内'}
     folders = 0
@@ -770,7 +759,7 @@ def scan_empty_dirs(root_path, limit=100):
                     _walk(sub, depth + 1)
             return
         # 子树全空：只报「媒体目录」（目录名带 tmdb 标记），根/分类层不报
-        if d == root or not _eng()._RE_DIR_TMDB.search(d.name):
+        if d == root or not _RE_DIR_TMDB.search(d.name):
             return
         hits.append(d)
 
@@ -801,14 +790,14 @@ def clean_empty_dirs(paths):
     backup_root = None
     try:
         with mutation_lock():
-            backup_root = _eng().STATE_DIR / 'residue_backup' / time.strftime('%Y%m%d-%H%M%S')
+            backup_root = state.STATE_DIR / 'residue_backup' / time.strftime('%Y%m%d-%H%M%S')
             for p in (paths or []):
                 d = Path(str(p))
-                base = _eng().L_ROOT if _inside(d, _eng().L_ROOT) else (
-                    _eng().S_ROOT if _inside(d, _eng().S_ROOT) else None)
+                base = state.L_ROOT if _inside(d, state.L_ROOT) else (
+                    state.S_ROOT if _inside(d, state.S_ROOT) else None)
                 if base is None:
                     errors.append(f'{p}: 不在媒体库内，跳过'); continue
-                if not _eng()._RE_DIR_TMDB.search(d.name):
+                if not _RE_DIR_TMDB.search(d.name):
                     errors.append(f'{p}: 非媒体目录，跳过'); continue
                 if _has_strm_tree(d):
                     errors.append(f'{p}: 目录内已出现 .strm，跳过'); continue
@@ -818,7 +807,7 @@ def clean_empty_dirs(paths):
                 shutil.move(str(d), str(dst))
                 moved.append({'path': str(d), 'backup': str(dst)})
             if moved:
-                _eng().notify_emby_deleted([m['path'] for m in moved], background=True)
+                emby.notify_emby_deleted([m['path'] for m in moved], background=True)
     except MutationBusy as e:
         return {'status': 'busy', 'message': str(e)}
     except OSError as e:

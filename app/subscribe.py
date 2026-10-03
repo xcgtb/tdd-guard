@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,36 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state, tmdb, emby, lib, storage, tg
+
 log = logging.getLogger('media_agent')
-
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
-
-
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
 
 
 def _load_sub_state() -> dict:
@@ -46,13 +23,13 @@ def _load_sub_state() -> dict:
     - 文件损坏：从 SQLite 兜底自愈（回写文件）；
     - 文件缺失：视为「主动重置」返回空 dict（测试隔离/用户手删的语义），
       同时清掉库里的残留，防止旧状态复活。"""
-    p = _eng().SUB_STATE_FILE
+    p = state.SUB_STATE_FILE
     store = p.name
     try:
         raw = p.read_text(encoding='utf-8')
     except OSError:
         try:
-            _eng().db_clear_sub_state(store)
+            storage.db_clear_sub_state(store)
         except Exception:
             pass
         return {}
@@ -62,7 +39,7 @@ def _load_sub_state() -> dict:
             raise ValueError('not a dict')
     except ValueError:
         try:
-            data = _eng().db_load_sub_state(store) or {}
+            data = storage.db_load_sub_state(store) or {}
         except Exception:
             data = {}
         if data:
@@ -72,29 +49,32 @@ def _load_sub_state() -> dict:
                 pass
         return data
     try:
-        _eng().db_save_sub_state(store, data)
+        storage.db_save_sub_state(store, data)
     except Exception:
         pass
     return data
 
-def _save_sub_state(state: dict):
-    _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _eng().SUB_STATE_FILE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(_eng().SUB_STATE_FILE)
+
+load_sub_state = _load_sub_state  # 公开名（bot / 路由用这个）
+
+def _save_sub_state(sub_state: dict):
+    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = state.SUB_STATE_FILE.with_suffix('.tmp')
+    tmp.write_text(json.dumps(sub_state, ensure_ascii=False, indent=2), encoding='utf-8')
+    tmp.replace(state.SUB_STATE_FILE)
     try:
-        _eng().db_save_sub_state(_eng().SUB_STATE_FILE.name, state)   # 先文件后库
+        storage.db_save_sub_state(state.SUB_STATE_FILE.name, sub_state)   # 先文件后库
     except Exception:
         pass
 
 def _subscription_report_file():
-    return _eng().STATE_DIR / 'subscription_report.json'
+    return state.STATE_DIR / 'subscription_report.json'
 
 def _save_subscription_report(updates):
     """保存最近一次真正成功推送的追更汇报。晨报只引用这份实际汇报。"""
     try:
         p = _subscription_report_file()
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
         payload = {'ts': time.time(), 'date': time.strftime('%Y-%m-%d', time.localtime()), 'updates': updates or []}
         tmp = p.with_suffix('.tmp')
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
@@ -120,7 +100,7 @@ def _emby_series_latest_ep(series_tmdb_id: str):
     if not series_tmdb_id: return None
     items = []
     try:
-        data = _eng().emby_request('/Items', {
+        data = emby.emby_request('/Items', {
             'Recursive': 'true', 'IncludeItemTypes': 'Series',
             'Fields': 'ProviderIds,Name,Path', 'Limit': 50000,
             'AnyProviderIdEquals': f'Tmdb.{series_tmdb_id}',
@@ -130,7 +110,7 @@ def _emby_series_latest_ep(series_tmdb_id: str):
         items = []
     if not items:
         try:
-            data = _eng().emby_request('/Items', {
+            data = emby.emby_request('/Items', {
                 'Recursive': 'true', 'IncludeItemTypes': 'Series',
                 'Fields': 'ProviderIds,Name,Path', 'Limit': 50000,
             }) or {}
@@ -148,7 +128,7 @@ def _emby_series_latest_ep(series_tmdb_id: str):
         if series.get('Name') and series.get('Name') not in names:
             names.append(series.get('Name'))
         try:
-            eps = _eng().emby_request('/Items', {
+            eps = emby.emby_request('/Items', {
                 'ParentId': sid, 'Recursive': 'true', 'IncludeItemTypes': 'Episode',
                 'Fields': 'ParentIndexNumber,IndexNumber,IndexNumberEnd,DateCreated,Path',
                 'Limit': 50000,
@@ -183,7 +163,7 @@ def _disk_series_eps(series_tmdb_id: str):
     上游 TgtoDrive 把 tmdb 写在目录名 `{tmdb-xxx}` 里，而 Emby 的刮削器不会把
     目录名里的 tmdb 后缀解析进 ProviderIds，导致 ``_emby_series_latest_ep`` 按
     ``ProviderIds.Tmdb`` 查不到 → 追更拿不到任何分集、「不能用」。
-    这里直接扫描两库磁盘，复用 _eng().Lib 已经建好的 `tmdb_refs['tv:<id>']` 索引，
+    这里直接扫描两库磁盘，复用 lib.Lib 已经建好的 `tmdb_refs['tv:<id>']` 索引，
     按目录名 tmdb 匹配并 union 分集。返回结构与 ``_emby_series_latest_ep`` 一致，
     多一个 ``source='disk'`` 便于日志区分。
     """
@@ -192,12 +172,12 @@ def _disk_series_eps(series_tmdb_id: str):
     eps = set()
     names = []
     try:
-        for lib in (_eng()._get_lib(_eng().L_ROOT), _eng()._get_lib(_eng().S_ROOT)):
-            for key in lib.tmdb_refs.get('tv:' + str(series_tmdb_id), ()):
-                disp = lib.meta.get(key, ('', '', None))[0]
+        for disk_lib in (lib._get_lib(state.L_ROOT), lib._get_lib(state.S_ROOT)):
+            for key in disk_lib.tmdb_refs.get('tv:' + str(series_tmdb_id), ()):
+                disp = disk_lib.meta.get(key, ('', '', None))[0]
                 if disp and disp not in names:
                     names.append(disp)
-                for sn, files in lib.tv.get(key, {}).items():
+                for sn, files in disk_lib.tv.get(key, {}).items():
                     if sn <= 0:
                         continue
                     for f in files:
@@ -244,6 +224,9 @@ def _keys_to_eps(keys):
         if p:
             out.add(p)
     return out
+
+
+keys_to_eps = _keys_to_eps  # 公开名（bot 用这个）
 
 def _fmt_ep_ranges(eps):
     """把集列表格式化成人类可读的区间串。
@@ -313,7 +296,7 @@ def check_subscriptions(send_notify=True) -> dict:
         # 时，回退到磁盘目录名 tmdb 兜底，避免追更拿不到分集而「不能用」。
         if not latest:
             latest = _disk_series_eps(tmdb_id)
-        tmdb_info = _eng()._tmdb_series_info(tmdb_id) if check_tmdb else None
+        tmdb_info = tmdb._tmdb_series_info(tmdb_id) if check_tmdb else None
 
         # 无 Emby 数据且无 TMDB → 跳过（保持旧行为）
         if not latest and not tmdb_info: continue
@@ -398,7 +381,7 @@ def check_subscriptions(send_notify=True) -> dict:
     # 保证下一轮算出同一批 new_eps 继续重试 —— 既不丢通知也不重复刷屏。
     sent_ok = True
     if send_notify and updates:
-        lines = [_eng().tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
+        lines = [tg.tg_title('🔔', '追更订阅', f'{len(updates)} 部有变化')]
         for u in updates:
             lines.append('')
             lines.append(f"📺 <b>《{html.escape(str(u['name'] or ''))}》</b>")
@@ -408,7 +391,7 @@ def check_subscriptions(send_notify=True) -> dict:
                 lines.append(f"　🆕 新增入库 <b>{_fmt_ep_ranges(_keys_to_eps(u['new_eps']))}</b>")
             if u['newly_missing']:
                 lines.append(f"　⚠️ 缺集 <b>{_fmt_ep_ranges(_keys_to_eps(u['newly_missing']))}</b>")
-        sent_ok = _eng().notify_telegram('\n'.join(lines))
+        sent_ok = tg.notify_telegram('\n'.join(lines))
         if sent_ok:
             _save_subscription_report(updates)
         else:

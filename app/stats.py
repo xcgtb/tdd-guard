@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""从 engine.py 拆出。跨层符号统一经 _eng() 惰性访问（monkeypatch 穿透 + 双导入兼容）。"""
+"""从 engine.py 拆出。共享状态在 state，跨模块符号按所属模块 `模块.名字` 在调用时访问（monkeypatch 所属模块即可穿透）。"""
 import os, re, sys, json, threading, shutil, fcntl, time, argparse, datetime, hashlib, logging, traceback
 import urllib.parse, urllib.request, urllib.error
 from pathlib import Path
@@ -8,36 +8,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import contextlib, dataclasses, html
 
+from . import config as _cfg
+from . import logger
+from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+                   analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
+from . import state, lib
+
 log = logging.getLogger('media_agent')
-
-try:
-    from .core import (esc, parse_season_dir, get_ep, title_key,
-                       governance_title_key, analyze_season_episodes, parse_emby_library,
-                       quality_label, RE_SXXEXX)
-except ImportError:
-    from core import (esc, parse_season_dir, get_ep, title_key,
-                      governance_title_key, analyze_season_episodes, parse_emby_library,
-                      quality_label, RE_SXXEXX)
-
-
-try:
-    from . import config as _cfg
-    from . import logger
-except ImportError:
-    import config as _cfg
-    import logger
-
-
-def _eng():
-    try:
-        from . import engine as _e
-        return _e
-    except ImportError:
-        try:
-            import engine as _e
-            return _e
-        except ImportError:
-            return None
 
 
 def _recompute_all_stats():
@@ -68,7 +45,7 @@ def _recompute_all_stats():
         'share_total': 0,
     }
 
-    for root, key in ((_eng().L_ROOT, 'local'), (_eng().S_ROOT, 'share')):
+    for root, key in ((state.L_ROOT, 'local'), (state.S_ROOT, 'share')):
         if not root.exists():
             continue
         for f in root.rglob('*.strm'):
@@ -112,88 +89,88 @@ def _recompute_all_stats():
         'share_other': out['share_other'],
     }
     now = time.time()
-    _eng()._lib_stats_cache['ts'] = now
-    _eng()._lib_stats_cache['data'] = result
+    state._lib_stats_cache['ts'] = now
+    state._lib_stats_cache['data'] = result
     # 同一次遍历的总数同步写入 STRM 计数缓存（内存+磁盘），两处数字永远一致
-    _eng()._strm_count_cache.update({'ts': now, 'local': out['local_total'], 'share': out['share_total']})
+    state._strm_count_cache.update({'ts': now, 'local': out['local_total'], 'share': out['share_total']})
     _save_strm_count_disk(out['local_total'], out['share_total'])
     return result
 
 def action_library_stats(args):
     # 缓存命中则直接返回
     now = time.time()
-    if _eng()._lib_stats_cache['data'] is not None and (now - _eng()._lib_stats_cache['ts']) < _eng()._CACHE_TTL:
-        return _eng()._lib_stats_cache['data']
+    if state._lib_stats_cache['data'] is not None and (now - state._lib_stats_cache['ts']) < state._CACHE_TTL:
+        return state._lib_stats_cache['data']
     return _recompute_all_stats()
 
 def _load_strm_count_disk():
     try:
-        data = json.loads(_eng()._STRM_COUNT_CACHE_FILE.read_text(encoding='utf-8'))
+        data = json.loads(state._STRM_COUNT_CACHE_FILE.read_text(encoding='utf-8'))
         return int(data.get('local', 0)), int(data.get('share', 0)), float(data.get('ts', 0))
     except (OSError, ValueError):
         return None
 
 def _save_strm_count_disk(local, share):
     try:
-        _eng().STATE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _eng()._STRM_COUNT_CACHE_FILE.with_suffix('.tmp')
+        state.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = state._STRM_COUNT_CACHE_FILE.with_suffix('.tmp')
         tmp.write_text(json.dumps({'ts': time.time(), 'local': local, 'share': share}),
                        encoding='utf-8')
-        tmp.replace(_eng()._STRM_COUNT_CACHE_FILE)
+        tmp.replace(state._STRM_COUNT_CACHE_FILE)
     except OSError as e:
         log.warning('STRM 计数缓存写入失败: %s', e)
 
 def _strm_count_bg_refresh():
     """后台重算统计（单飞）。走 _recompute_all_stats 统一遍历，
     同时更新分类统计与 STRM 计数，保证两处数字一致。"""
-    if not _eng()._strm_count_refreshing.acquire(blocking=False):
+    if not state._strm_count_refreshing.acquire(blocking=False):
         return
     try:
         _recompute_all_stats()
         log.info('后台刷新统计完成: local=%d share=%d',
-                 _eng()._strm_count_cache['local'], _eng()._strm_count_cache['share'])
+                 state._strm_count_cache['local'], state._strm_count_cache['share'])
     except Exception as e:
         log.warning('统计后台刷新失败: %s', e)
     finally:
-        _eng()._strm_count_refreshing.release()
+        state._strm_count_refreshing.release()
 
 def _get_strm_counts():
     """STRM 总数三级缓存：内存(5分钟) → 磁盘(立即返回+后台刷新) → 同步首算。
     大库 rglob 全量遍历很慢，磁盘缓存保证总览页秒开，后台静默刷新。"""
     now = time.time()
-    if now - _eng()._strm_count_cache['ts'] < _eng()._CACHE_TTL and _eng()._strm_count_cache['ts'] > 0:
-        return _eng()._strm_count_cache['local'], _eng()._strm_count_cache['share']
+    if now - state._strm_count_cache['ts'] < state._CACHE_TTL and state._strm_count_cache['ts'] > 0:
+        return state._strm_count_cache['local'], state._strm_count_cache['share']
     disk = _load_strm_count_disk()
     if disk is not None:
         l, s_, ts = disk
-        _eng()._strm_count_cache.update({'ts': ts or (now - _eng()._CACHE_TTL), 'local': l, 'share': s_})
-        if time.time() - _eng()._strm_count_cache['ts'] >= _eng()._CACHE_TTL:
+        state._strm_count_cache.update({'ts': ts or (now - state._CACHE_TTL), 'local': l, 'share': s_})
+        if time.time() - state._strm_count_cache['ts'] >= state._CACHE_TTL:
             threading.Thread(target=_strm_count_bg_refresh, daemon=True,
                              name='strm-count-refresh').start()
-        return _eng()._strm_count_cache['local'], _eng()._strm_count_cache['share']
+        return state._strm_count_cache['local'], state._strm_count_cache['share']
     # 首次无任何缓存：同步算一次并落盘
-    l = sum(1 for _ in _eng().L_ROOT.rglob('*.strm')) if _eng().L_ROOT.exists() else 0
-    s_ = sum(1 for _ in _eng().S_ROOT.rglob('*.strm')) if _eng().S_ROOT.exists() else 0
-    _eng()._strm_count_cache.update({'ts': now, 'local': l, 'share': s_})
+    l = sum(1 for _ in state.L_ROOT.rglob('*.strm')) if state.L_ROOT.exists() else 0
+    s_ = sum(1 for _ in state.S_ROOT.rglob('*.strm')) if state.S_ROOT.exists() else 0
+    state._strm_count_cache.update({'ts': now, 'local': l, 'share': s_})
     _save_strm_count_disk(l, s_)
     log.info('缓存刷新 STRM 计数: local=%d share=%d', l, s_)
     return l, s_
 
 def invalidate_stats_cache():
     """清空统计缓存（删除后调用）"""
-    _eng()._strm_count_cache['ts'] = 0
-    _eng()._lib_stats_cache['ts'] = 0
-    _eng()._lib_stats_cache['data'] = None
+    state._strm_count_cache['ts'] = 0
+    state._lib_stats_cache['ts'] = 0
+    state._lib_stats_cache['data'] = None
 
 def invalidate_media_caches(keep_emby_lib=False):
-    """文件变动后统一失效内存缓存（分集 / Emby 索引 / _eng().Lib 快照 / 统计）。
+    """文件变动后统一失效内存缓存（分集 / Emby 索引 / lib.Lib 快照 / 统计）。
     keep_emby_lib=True 时保留片库映射缓存（单剧删除会就地修补它，避免整页重跑 TMDB 对照）。"""
-    _eng()._ep_cache['ts'] = 0
-    _eng()._ep_cache['data'] = None
-    _eng()._emby_index_cache['ts'] = 0
-    _eng()._emby_index_cache['data'] = None
+    state._ep_cache['ts'] = 0
+    state._ep_cache['data'] = None
+    state._emby_index_cache['ts'] = 0
+    state._emby_index_cache['data'] = None
     if not keep_emby_lib:
-        _eng()._emby_lib_cache['ts'] = 0
-        _eng()._emby_lib_cache['data'] = None
-    _eng()._invalidate_lib_cache()
+        state._emby_lib_cache['ts'] = 0
+        state._emby_lib_cache['data'] = None
+    lib._invalidate_lib_cache()
     invalidate_stats_cache()
