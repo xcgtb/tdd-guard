@@ -14,6 +14,7 @@ from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_ke
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX,
                    compare_cover, explain_compare)
 from . import state, wash, emby, lib, stats, storage, tg
+from .tgmsg import reports as tgmsg_reports, transport as tgmsg_transport
 
 log = logging.getLogger('media_agent')
 
@@ -1232,11 +1233,7 @@ def _run_inter_clean(args):
                         detail + [f'⚠️ {w}' for w in warns])
         # Bot 端发起的清理会传 notify=False：由 Bot 自己编辑确认消息，避免重复弹两条
         if (n_loc or n_sh) and getattr(args, 'notify', True):
-            tg.notify_telegram('\n'.join([
-                tg.tg_title('🗑️', '清理完成', tg.tg_stamp()), '',
-                tg.tg_row('💾', '释放本地', n_loc),
-                tg.tg_row('📤', '淘汰分享', n_sh),
-                tg.tg_row('🔄', 'Emby 刷新', '✅' if refreshed else '❌')]))
+            tgmsg_transport.notify(str(tgmsg_reports.clean_done(n_loc, n_sh, refreshed)))
         if args.plan:
             save_plan_state(args.plan, 'done', {
                 'executed_at': time.time(),

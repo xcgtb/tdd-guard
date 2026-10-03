@@ -10,7 +10,7 @@ import contextlib, dataclasses, html
 
 from . import config as _cfg
 from . import logger
-from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
+from .core import (md_esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
 from . import state, governance, morning, emby, lib, storage
 
@@ -233,7 +233,7 @@ def action_stats(args):
         for src in ('本地影视库', '分享影视库'):
             for cat in sorted(tv_tree.get(src, {})):
                 shows = tv_tree[src][cat]
-                lines = [f'《{esc(n)}》`+{c}集`' for n, c in sorted(shows.items(), key=lambda x: x[1], reverse=True)]
+                lines = [f'《{md_esc(n)}》`+{c}集`' for n, c in sorted(shows.items(), key=lambda x: x[1], reverse=True)]
                 rep.append(f'┌ 📂 **{src} · {cat}** ({len(shows)}部)')
                 rep += ['│  • ' + '  • '.join(lines[i:i + 2]) for i in range(0, len(lines), 2)]
                 rep.append('└')
@@ -244,12 +244,12 @@ def action_stats(args):
             for cat in sorted(mov_tree.get(src, {})):
                 names = mov_tree[src][cat]
                 rep.append(f'┌ 📂 **{src} · {cat}** ({len(names)}部)')
-                tags = [f'《{esc(n)}》' for n in names]
+                tags = [f'《{md_esc(n)}》' for n in names]
                 rep += ['│  • ' + '、'.join(tags[i:i + 3]) for i in range(0, len(tags), 3)]
                 rep.append('└')
     else: rep.append('  • 暂无新增电影')
     if warn:
-        rep.insert(1, f'⚠️ 本次扫描失败（{esc(warn)}），以下为旧数据')
+        rep.insert(1, f'⚠️ 本次扫描失败（{md_esc(warn)}），以下为旧数据')
     return {'status': 'success', 'text': '\n'.join(rep),
             'ok': data.get('ok', True), 'warning': warn,
             'from_cache': data.get('from_cache', False), 'cache_ts': data.get('ts', 0),
@@ -304,10 +304,13 @@ def action_played(args):
     return {'status': 'success', 'records': records, 'alerts': alerts}
 
 def action_search(args):
-    tokens = [t for t in args.kw.casefold().split() if t]
+    """模糊搜片。`text` 是给 Web /api/search 的 Markdown 文本（保持旧契约），
+    `items` 是给 Telegram Bot 渲染 HTML 的结构化结果（name/lib/type/cat/path）。"""
+    kw = getattr(args, 'kw', '') or ''
+    tokens = [t for t in kw.casefold().split() if t]
     if not tokens:
-        return {'status': 'success', 'text': '请输入片名关键词'}
-    found = []
+        return {'status': 'success', 'text': '请输入片名关键词', 'items': [], 'total': 0, 'kw': kw}
+    items, found = [], []
     for root, tag in ((state.L_ROOT, '本地影视库'), (state.S_ROOT, '分享影视库')):
         if not root.exists(): continue
         for dp, dns, fns in os.walk(root):
@@ -318,11 +321,12 @@ def action_search(args):
                 p = Path(dp); rel = p.relative_to(root).parts
                 m_type = rel[0] if rel else '影视库'; m_cat = rel[1] if len(rel) > 1 else '分类'
                 icon = '🎬' if any(x in m_type for x in ('电影', '演唱会')) else '📺'
-                found.append(f'{icon} **《{esc(p.name)}》**\n  ├ 📂 归属库: `{tag}`\n  ├ 🏷️ 分类: `{m_type} / {m_cat}`\n  └ 📍 路径: `{p}`')
-    text = '\n\n'.join(found[:8]) if found else f'❌ 未在两库中检索到包含关键词《{esc(args.kw)}》的资源。'
+                items.append({'name': p.name, 'lib': tag, 'type': m_type, 'cat': m_cat, 'path': str(p)})
+                found.append(f'{icon} **《{md_esc(p.name)}》**\n  ├ 📂 归属库: `{tag}`\n  ├ 🏷️ 分类: `{m_type} / {m_cat}`\n  └ 📍 路径: `{p}`')
+    text = '\n\n'.join(found[:8]) if found else f'❌ 未在两库中检索到包含关键词《{md_esc(kw)}》的资源。'
     if len(found) > 8: text += f'\n\n… 共 {len(found)} 条，仅显示前 8 条，请补充关键词缩小范围'
-    governance.write_audit_log('模糊搜片', f'关键词: {args.kw}，命中 {len(found)} 条')
-    return {'status': 'success', 'text': text}
+    governance.write_audit_log('模糊搜片', f'关键词: {kw}，命中 {len(found)} 条')
+    return {'status': 'success', 'text': text, 'items': items, 'total': len(items), 'kw': kw}
 
 def action_logs(args):
     n = int(args.kw) if args.kw.isdigit() else 35

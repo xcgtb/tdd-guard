@@ -32,9 +32,13 @@ DEFAULT_KIDS_KW: Tuple[str, ...] = (
 )
 
 # ═══════════════════ 文本处理 ═══════════════════
-def esc(s) -> str:
-    """Markdown 转义"""
+def md_esc(s) -> str:
+    """Markdown 转义（注意：这是 Markdown 转义，不是 HTML 转义；Telegram HTML 请用 tgmsg.html.h）"""
     return re.sub(r'([_*`\[])', r'\\\1', str(s))
+
+
+# 兼容别名：若干历史模块仍 `from .core import esc`（仅 ingest 的 Web Markdown 文本在用）
+esc = md_esc
 
 @lru_cache(maxsize=8192)
 def parse_season_dir(name: str) -> Optional[int]:

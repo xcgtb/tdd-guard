@@ -92,6 +92,15 @@ def _is_module(root, dotted):
     return p.with_suffix('.py').is_file() or (p / '__init__.py').is_file()
 
 
+def _module_path(root, dotted):
+    """点分模块/包名 -> 实际 .py 文件路径：包返回 __init__.py，普通模块返回 X.py。
+    子包（app/tgmsg/）必须落到 __init__.py，否则属性存在性检查会被静默跳过。"""
+    p = Path(root).joinpath(*dotted)
+    if p.is_dir():
+        return p / '__init__.py'
+    return p.with_suffix('.py')
+
+
 def _toplevel_names(path, cache):
     if path in cache:
         return cache[path]
@@ -178,7 +187,7 @@ def _check_file(path, root, cache):
             for a in n.names:
                 if _is_module(root, tgt + (a.name,)):
                     if a.name != 'engine':
-                        aliases[a.asname or a.name] = Path(root).joinpath(*tgt, a.name).with_suffix('.py')
+                        aliases[a.asname or a.name] = _module_path(root, tgt + (a.name,))
                 elif '.'.join(tgt) not in NAME_IMPORT_ALLOWED:
                     add(n.lineno, '`from %s import %s`：只允许从 core（routers 另可 deps）按名字导入，'
                         '其余请 `from . import 模块` 后用 `模块.%s`' % ('.'.join(tgt), a.name, a.name))
@@ -186,7 +195,7 @@ def _check_file(path, root, cache):
             for a in n.names:
                 parts = tuple(a.name.split('.'))
                 if a.asname and parts[0] == 'app' and parts[-1] != 'engine' and _is_module(root, parts):
-                    aliases[a.asname] = Path(root).joinpath(*parts).with_suffix('.py')
+                    aliases[a.asname] = _module_path(root, parts)
 
     # 5. 属性存在性 + 局部遮蔽
     if aliases:
