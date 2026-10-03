@@ -6,7 +6,7 @@
 import time, threading
 from fastapi import APIRouter, Depends, HTTPException
 
-from app import state, governance, wash, morning, storage, scheduler
+from app import state, governance, wash, morning, storage, scheduler, sync
 from app.routers.deps import auth, Args, spawn
 
 router = APIRouter()
@@ -77,6 +77,8 @@ def api_set_manual_done(body: dict = None):
     data = storage.db_doc_update(storage.DOC_MANUAL_DONE, _apply, None)
     if data is None:
         return {'status': 'error', 'message': '保存失败（数据库不可用）'}
+    # 「已完结」标记影响探索页/片库映射的完结判断：广播 library（蕴含 explore）
+    sync.bump('library', reason='manual_done')
     return {'status': 'success', 'items': data}
 
 
@@ -200,4 +202,6 @@ def api_get_gov_auto():
 
 @router.post('/api/governance/auto', dependencies=[Depends(auth)])
 def api_set_gov_auto(body: dict = None):
-    return {'status': 'success', 'settings': scheduler.gov_auto_update(body or {})}
+    settings = scheduler.gov_auto_update(body or {})
+    sync.bump('governance', reason='gov_auto')
+    return {'status': 'success', 'settings': settings}

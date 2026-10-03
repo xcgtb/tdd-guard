@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, lib, storage
+from . import state, lib, storage, sync
 
 log = logging.getLogger('media_agent')
 
@@ -151,21 +151,27 @@ def _get_strm_counts():
     log.info('缓存刷新 STRM 计数: local=%d share=%d', l, s_)
     return l, s_
 
-def invalidate_stats_cache():
-    """清空统计缓存（删除后调用）"""
+def _clear_stats_caches():
+    """只清统计内存缓存（供失效总线回调调用；不再触发 bump，避免递归）。"""
     state._strm_count_cache['ts'] = 0
     state._lib_stats_cache['ts'] = 0
     state._lib_stats_cache['data'] = None
 
+def invalidate_stats_cache():
+    """清空统计缓存（删除后调用）。统计属于 library 域，统一走失效总线：
+    版本号 +1 并执行注册的清理回调（其它进程/浏览器据此自动刷新）。"""
+    sync.bump('library')
+
 def invalidate_media_caches(keep_emby_lib=False):
-    """文件变动后统一失效内存缓存（分集 / Emby 索引 / lib.Lib 快照 / 统计）。
-    keep_emby_lib=True 时保留片库映射缓存（单剧删除会就地修补它，避免整页重跑 TMDB 对照）。"""
-    state._ep_cache['ts'] = 0
-    state._ep_cache['data'] = None
-    state._emby_index_cache['ts'] = 0
-    state._emby_index_cache['data'] = None
-    if not keep_emby_lib:
-        state._emby_lib_cache['ts'] = 0
-        state._emby_lib_cache['data'] = None
-    lib._invalidate_lib_cache()
-    invalidate_stats_cache()
+    """文件变动后统一失效内存缓存（分集 / Emby 索引 / 片库映射 / lib.Lib 快照 / 统计）。
+
+    经失效总线 bump('library')：版本号 +1、执行注册回调、给磁盘(库)缓存打 stale 标记。
+    keep_emby_lib=True：单剧删除流程随后会就地修补片库映射缓存，这里先把内存副本存下来，
+    bump 的回调清完再放回去，避免整页重跑 TMDB 对照（磁盘副本由删除流程自行修补）。"""
+    if keep_emby_lib:
+        saved_ts, saved_data = state._emby_lib_cache['ts'], state._emby_lib_cache['data']
+        sync.bump('library')
+        state._emby_lib_cache['ts'], state._emby_lib_cache['data'] = saved_ts, saved_data
+        state._stale.discard('emby_overview')   # 该缓存已就地修补，不算 stale
+        return
+    sync.bump('library')

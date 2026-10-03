@@ -12,7 +12,7 @@ from . import config as _cfg
 from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX)
-from . import state, governance, emby, lib, storage
+from . import state, governance, emby, lib, storage, sync
 
 log = logging.getLogger('media_agent')
 
@@ -638,6 +638,8 @@ def _clean_orphan_dirs(paths, dry_run):
                         f'清理已确认洗版残留目录 {len(removed)} 个',
                         [f'删除 {len(removed)} 个已确认残留目录'] + removed[:50]
                         + (['错误: ' + e for e in errors[:3]] if errors else []))
+        # 真实删除了目录：广播 library（蕴含 explore）与 records
+        sync.bump('library', 'records', reason='wash_orphan')
     return {'status': 'success', 'dry_run': dry_run,
             'removed': removed, 'count': len(removed), 'errors': errors}
 
@@ -797,5 +799,7 @@ def clean_empty_dirs(paths):
         return {'status': 'busy', 'message': str(e)}
     except OSError as e:
         errors.append(str(e))
+    if moved:
+        sync.bump('library', 'records', reason='wash_empty')   # 真实移除了空目录
     return {'status': 'success', 'moved': moved, 'count': len(moved),
             'errors': errors, 'backup_root': str(backup_root) if moved else ''}

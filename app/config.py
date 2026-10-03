@@ -161,12 +161,28 @@ def save_config(cfg: dict) -> dict:
     return clean
 
 
+def _emby_fingerprint(cfg: dict):
+    """Emby 连接/路径指纹：变了说明片库数据来源变了，需要同时失效 library 缓存。"""
+    return (str(cfg.get('emby_host') or ''), str(cfg.get('emby_key') or ''),
+            str(cfg.get('emby_local_path') or ''), str(cfg.get('emby_share_path') or ''))
+
+
 def update_config(fn) -> dict:
-    """加锁的读-改-写：fn(cfg) 就地修改 cfg（返回值忽略），落盘后返回保存的 dict。"""
+    """加锁的读-改-写：fn(cfg) 就地修改 cfg（返回值忽略），落盘后返回保存的 dict。
+
+    落盘后经失效总线广播 config 域（所有实例 + 前端立即刷新配置）；
+    Emby 主机/Key/路径发生变化时同时广播 library 域（片库数据来源已变）。
+    """
     with _CFG_LOCK:
         cfg = load_config()
+        before = _emby_fingerprint(cfg)
         fn(cfg)
-        return save_config(cfg)
+        saved = save_config(cfg)
+        after = _emby_fingerprint(saved)
+    # 函数级导入：config 是叶子模块，sync 依赖 state/storage，顶层导入会成环
+    from . import sync
+    sync.bump('config', *(['library'] if after != before else []), reason='config')
+    return saved
 
 
 # ═══════════════════ 结构化访问 ═══════════════════

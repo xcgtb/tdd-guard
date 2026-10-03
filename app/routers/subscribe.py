@@ -4,7 +4,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 
 from app import config as _cfg
-from app import state, morning, subscribe
+from app import state, morning, subscribe, sync
 from app.routers.deps import auth
 
 router = APIRouter()
@@ -56,6 +56,7 @@ def api_save_subs(body: dict = None):
         subscribe.check_subscriptions(send_notify=False)
     except Exception:
         pass
+    sync.bump('subscriptions', reason='subs_save')
     return {'status': 'success', 'subscriptions': subscribe.get_subscriptions()}
 
 
@@ -76,6 +77,7 @@ def api_subs_settings(body: dict = None):
             cfg['subscribe_check_tmdb'] = '1' if body['check_tmdb'] else '0'
     cfg = _cfg.update_config(_apply)
     state.reload_config()
+    sync.bump('subscriptions', reason='subs_settings')
     return {'status': 'success',
             'enabled': cfg['subscribe_enabled'] == '1',
             'interval_min': int(cfg['subscribe_interval_min']),
@@ -89,6 +91,7 @@ def api_subs_check_now():
         r = subscribe.check_subscriptions(send_notify=True)
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
+    sync.bump('subscriptions', reason='subs_check')
     return {'status': 'success', **r}
 
 

@@ -2270,6 +2270,7 @@ function showLoginOverlay(){
       var r = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ username: $('loginUser').value, password: $('loginPass').value }) });
       if (!r.ok) { $('loginErr').textContent = '用户名或密码错误'; return; }
+      if (typeof syncResume === 'function') syncResume();   // 登录成功：恢复多端同步轮询
       location.reload();
     } catch(e){ $('loginErr').textContent = '登录失败：' + e.message; }
   };
@@ -2295,6 +2296,10 @@ async function api(path, opts){
     }
     var j = await r.json().catch(function(){ return { detail: '响应解析失败' }; });
     if (!r.ok) throw new Error(j.detail || j.message || ('HTTP ' + r.status));
+    // 自身写操作成功后：让同步总线只「认领」新版本号，不重载当前页签（避免自己刷新自己）
+    if (opts.method && String(opts.method).toUpperCase() !== 'GET' && typeof syncPoll === 'function') {
+      try { syncPoll({ adoptOnly: true }); } catch(e){}
+    }
     return j;
   } catch(e){
     if (e && e.name === 'AbortError') throw new Error('请求超时');
@@ -2496,6 +2501,113 @@ function switchTab(id){
   if (id === 'orphans')    loadOrphans();
   if (id === 'daily' && !statsAutoLoaded) { statsAutoLoaded = true; loadStats(false, false); }
 }
+
+/* ═══════════ 缓存失效总线：多端自动刷新 ═══════════
+   后端任一入口（Web / Bot / 定时任务 / CLI）改动数据都会让对应「域」的版本号 +1。
+   前端只轮询版本号（GET /api/sync/versions，不经 CSRF），发现当前可见页签关心的域变了
+   就重载该页签，从而实现多浏览器 / 多设备自动刷新；自身写操作只认领版本号、不重载当前页签。 */
+var SYNC = { v: null, busy: false, pending: new Set(), authOk: true, timer: null };
+var SYNC_INTERVAL = 5000;
+// 页签 id → 关心的数据域；任一所关心域的版本变化都会触发该页签重载
+var TAB_DOMAINS = {
+  dashboard:  ['library', 'ingest', 'plans', 'governance', 'config'],
+  governance: ['governance', 'plans'],
+  orphans:    ['library'],
+  mapping:    ['library'],
+  explore:    ['explore', 'subscriptions'],
+  subscribe:  ['subscriptions'],
+  daily:      ['library', 'ingest'],
+  morning:    ['subscriptions', 'ingest', 'library', 'config'],
+  history:    ['records'],
+  plans:      ['plans'],
+  settings:   ['config']
+};
+function syncDomains(tabId){ return TAB_DOMAINS[tabId] || []; }
+
+function syncModalOpen(){
+  var m = $('modalBg');
+  if (m && m.classList.contains('show')) return true;
+  return !!$('loginOverlay');
+}
+function syncInputFocused(tabId){
+  var el = document.activeElement;
+  if (!el) return false;
+  var tag = (el.tagName || '').toLowerCase();
+  if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return false;
+  var tab = $('tab-' + tabId);
+  return !!(tab && tab.contains(el));
+}
+// 满足全部条件才允许自动重载，避免打断用户操作
+function syncReloadAllowed(tabId){
+  if (__hintPolls > 0) return false;                 // 有任务在轮询，先别打断
+  if (syncModalOpen()) return false;                 // 弹窗 / 登录框打开
+  if (syncInputFocused(tabId)) return false;         // 正在输入
+  if (tabId === 'settings' && typeof coverIsDirty === 'function' && coverIsDirty()) return false;  // 设置有未保存改动
+  return true;
+}
+// 重新执行某页签的加载器：不重置筛选 / 滚动位置
+async function reloadTab(id){
+  try {
+    if (id === 'dashboard')  loadDashboard();
+    else if (id === 'governance') { loadLatestGov(); loadGovTruth(); }
+    else if (id === 'orphans') loadOrphans();
+    else if (id === 'mapping') loadEmbyLibrary(false, true, true);   // 只读缓存刷新，不触发全量 TMDB 对照
+    else if (id === 'explore') loadExplore();                        // 沿用当前查询 / 页码
+    else if (id === 'subscribe') loadSubscriptions();
+    else if (id === 'daily') loadStats(false, false);
+    else if (id === 'morning') loadMorning();
+    else if (id === 'history') loadRecords();
+    else if (id === 'plans') loadPlans();
+    else if (id === 'settings') { loadConfig(); loadBotStatus(); loadStrategy(); loadIngest(); loadGovAuto(); loadCoverStrategy(); }
+  } catch(e){}
+}
+
+async function syncPoll(opts){
+  opts = opts || {};
+  if (SYNC.busy) return;
+  if (!SYNC.authOk && !opts.adoptOnly) return;   // 401 后停止轮询，登录成功再恢复
+  SYNC.busy = true;
+  var v = null;
+  try {
+    var r = await fetch('/api/sync/versions', { credentials: 'same-origin' });
+    if (r.status === 401){ SYNC.authOk = false; return; }   // 未登录 / 会话过期：停止轮询
+    if (!r.ok) return;                                      // 其它错误：下一拍再试
+    var j = await r.json();
+    v = j && j.v;
+  } catch(e){
+    return;                                                 // 网络错误：静默，下一拍再试
+  } finally {
+    SYNC.busy = false;
+  }
+  if (!v) return;
+  var prev = SYNC.v;
+  SYNC.v = v;
+  if (prev === null || opts.adoptOnly) return;    // 首次 / 自身写入：只认领版本号，不重载
+  var tab = window.__activeTab;
+  if (syncDomains(tab).some(function(d){ return (v[d] || 0) !== (prev[d] || 0); })) {
+    if (syncReloadAllowed(tab)) reloadTab(tab);
+    else SYNC.pending.add(tab);                   // 暂缓，条件满足后再重载
+  }
+}
+
+function syncTick(){
+  if (document.hidden || document.visibilityState !== 'visible') return;   // 仅页面可见时轮询
+  var tab = window.__activeTab;
+  if (SYNC.pending.size && SYNC.pending.has(tab) && syncReloadAllowed(tab)) {
+    SYNC.pending.delete(tab);
+    reloadTab(tab);
+  } else if (SYNC.pending.size && !SYNC.pending.has(tab)) {
+    SYNC.pending.clear();       // 已切走：该页签切换时本就会重载，丢弃过期请求
+  }
+  syncPoll();
+}
+function syncResume(){ SYNC.authOk = true; syncTick(); }   // 登录成功后恢复轮询
+
+document.addEventListener('visibilitychange', function(){ if (!document.hidden) syncTick(); });
+window.addEventListener('focus', function(){ syncTick(); });
+window.addEventListener('online', function(){ syncTick(); });
+SYNC.timer = setInterval(function(){ syncTick(); }, SYNC_INTERVAL);
+syncTick();
 
 /* 手机 Floating Dock：向下滚动时收起，停止/向上滚动或接近底部时恢复。页面本身始终保留安全底距。 */
 (function(){

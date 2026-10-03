@@ -607,6 +607,18 @@ def db_kv_set(key, value):
         return False
 
 
+def db_kv_many(prefix=''):
+    """一次读齐 kv 里 k 以 prefix 开头的键，返回 {k: v}（值原样字符串）；失败返回 {}。
+    前缀里的 % _ \\ 按字面匹配（LIKE ... ESCAPE），避免下划线被当成通配符。"""
+    try:
+        esc = str(prefix).replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        cur = _execute("SELECT k, v FROM kv WHERE k LIKE ? ESCAPE '\\'", (esc + '%',))
+        return {k: v for k, v in cur.fetchall()}
+    except _ERRORS as e:
+        _warn('kv_many', e)
+        return {}
+
+
 def db_kv_incr(key):
     """原子自增（不存在/非整数视为 0），返回新值；失败返回 0。"""
     try:

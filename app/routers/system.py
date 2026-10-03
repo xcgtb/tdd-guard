@@ -4,7 +4,7 @@ import time, threading
 from fastapi import APIRouter, Depends, HTTPException
 
 from app import config as _cfg
-from app import state, governance, morning, ingest, emby, stats, bot, tasks, subscribe
+from app import state, governance, morning, ingest, emby, stats, bot, tasks, subscribe, sync
 from app.routers.deps import auth, _current_task_dict, APP_VERSION
 
 router = APIRouter()
@@ -150,3 +150,11 @@ def api_cache_refresh():
 @router.get('/api/bot/status', dependencies=[Depends(auth)])
 def api_bot_status():
     return {'status': 'success', 'bot': bot.status()}
+
+
+@router.get('/api/sync/versions', dependencies=[Depends(auth)])
+def api_sync_versions():
+    """多端同步：返回各数据域的当前版本号（GET，不进 CSRF 中间件）。
+    顺带补跑「其它进程（如 CLI）写库」造成的缓存失效，保证本进程内存缓存与库一致。"""
+    sync.check_external()
+    return {'status': 'success', 'v': sync.versions(), 'ts': time.time()}

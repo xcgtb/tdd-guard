@@ -209,5 +209,13 @@ _strm_count_cache = {'ts': 0, 'local': 0, 'share': 0}
 _lib_stats_cache = {'ts': 0, 'data': None}
 _CACHE_TTL = 300
 
+# 需要「立即后台重建」的磁盘(库)缓存名集合（sync.py 的 library 失效回调写入）。
+# 关键：emby 索引 / 片库映射总览 是 SQLite(库) 持久缓存，只清内存的话读者会把旧库副本
+# 再塞回内存、永远不更新。读取方必须检查：
+#   - tmdb.emby_library_index()        读 state._emby_index_cache 前先看 'emby_index' in state._stale
+#   - morning.emby_library_overview()  读 state._emby_lib_cache 前先看 'emby_overview' in state._stale
+# 命中则立即后台刷新（并 discard 标记），不走「磁盘旧值 + 到期才刷新」的懒惰路径。
+_stale = set()
+
 
 _strm_count_refreshing = threading.Lock()

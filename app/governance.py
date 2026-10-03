@@ -13,7 +13,7 @@ from . import logger
 from .core import (esc, parse_season_dir, get_ep, title_key, governance_title_key,
                    analyze_season_episodes, parse_emby_library, quality_label, RE_SXXEXX,
                    compare_cover, explain_compare)
-from . import state, wash, emby, lib, stats, storage, tg
+from . import state, wash, emby, lib, stats, storage, tg, sync
 
 log = logging.getLogger('media_agent')
 
@@ -1073,6 +1073,9 @@ def action_inter_check(args):
         'identity_conflict_count': len(identity_conflicts),
     }
     save_latest_scan(pid, result)
+    # 扫描结果（治理单 + 最近快照）已落库：广播 plans 域（蕴含 governance），
+    # 其它浏览器/设备会自动刷新治理清单与概览。
+    sync.bump('plans', reason='inter_check')
     return result
 
 def action_inter_clean(args):
@@ -1247,6 +1250,9 @@ def _run_inter_clean(args):
                     'warnings': warns,
                 },
             })
+        # 真实清理（非 dry-run）改变了文件与计划/审计：广播 library（蕴含 explore）
+        # 与 plans（蕴含 governance）、records，多端自动刷新。
+        sync.bump('library', 'plans', 'records', reason='inter_clean')
     return {'status': 'success', 'loc_cnt': n_loc, 'sh_cnt': n_sh, 'refreshed': refreshed,
             'detail': detail, 'warnings': warns, 'dry_run': args.dry_run,
             'skipped': skipped, 'unconfirmed_files': unconfirmed}
